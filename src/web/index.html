@@ -2083,6 +2083,29 @@ function Header({ health, sessions, tmuxSessions, fleet, onScan, scanning, skipP
       }),
       '--dangerously-skip-permissions',
     ),
+
+    // Restart server button
+    h('button', {
+      className: 'btn',
+      onClick: async () => {
+        if (!confirm('Restart the API server? The page will reload in a few seconds.')) return;
+        try {
+          await fetch('/api/restart', { method: 'POST' });
+          toast('Server restarting...', 'info');
+          setTimeout(() => { window.location.reload(); }, 3000);
+        } catch { toast('Restart failed', 'error'); }
+      },
+      title: 'Restart API server',
+      style: {
+        background: '#21262d', border: '1px solid #30363d', borderRadius: 8,
+        color: '#8b949e', padding: '6px 10px', fontSize: '0.75rem', fontWeight: 600,
+        display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer',
+        transition: 'all 0.15s', whiteSpace: 'nowrap',
+      },
+    },
+      h('span', { className: 'material-icons-round', style: { fontSize: '14px' } }, 'restart_alt'),
+      'Restart',
+    ),
   );
 }
 

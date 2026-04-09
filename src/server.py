@@ -707,6 +707,19 @@ async def handle_browse(request: web.Request) -> web.Response:
         return web.json_response({"ok": False, "error": f"Parse error: {exc}"}, status=500)
 
 
+async def handle_restart(request: web.Request) -> web.Response:
+    """POST /api/restart — restart the server process."""
+    import os, sys, asyncio
+
+    async def _delayed_restart():
+        await asyncio.sleep(0.5)
+        # Re-exec the same process
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+
+    asyncio.ensure_future(_delayed_restart())
+    return web.json_response({"ok": True, "message": "Restarting..."})
+
+
 async def handle_preferences_get(request: web.Request) -> web.Response:
     return web.json_response(_load_prefs())
 
@@ -1294,6 +1307,7 @@ def create_app(
     app.router.add_post("/api/mkdir", handle_mkdir)
     app.router.add_get("/api/preferences", handle_preferences_get)
     app.router.add_post("/api/preferences", handle_preferences_post)
+    app.router.add_post("/api/restart", handle_restart)
 
     # WebSocket
     app.router.add_get("/ws", handle_ws)
