@@ -31,7 +31,7 @@ from aiohttp import web
 
 from .config import DEFAULT_BIND, DEFAULT_PORT, SCAN_INTERVAL, detect_local_machine
 from .fleet import discover_fleet
-from .launcher import launch_claude_session, launch_tmux_attach
+from .launcher import launch_claude_session, launch_tmux_attach, launch_tmux_attach_remote
 from .scanner import ClaudeSession, scan_all
 from .tmux_manager import TmuxSession, list_all_tmux, create_tmux_session, kill_tmux_session
 
@@ -285,6 +285,21 @@ async def handle_tmux_connect(request: web.Request) -> web.Response:
     return web.json_response(result, status=status)
 
 
+async def handle_tmux_connect_remote(request: web.Request) -> web.Response:
+    """Open a terminal ON THE REMOTE MACHINE attached to a tmux session."""
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid JSON body"}, status=400)
+    machine = body.get("machine", "")
+    session_name = body.get("session_name", "")
+    if not machine or not session_name:
+        return web.json_response({"ok": False, "error": "machine and session_name required"}, status=400)
+    result = await launch_tmux_attach_remote(session_name, machine)
+    status = 200 if result.get("ok") else 500
+    return web.json_response(result, status=status)
+
+
 async def handle_tmux_kill(request: web.Request) -> web.Response:
     """Kill a tmux session."""
     try:
@@ -413,6 +428,7 @@ def create_app(
     app.router.add_get("/api/tmux/{machine}", handle_tmux_machine)
     app.router.add_post("/api/tmux/create", handle_tmux_create)
     app.router.add_post("/api/tmux/connect", handle_tmux_connect)
+    app.router.add_post("/api/tmux/connect-remote", handle_tmux_connect_remote)
     app.router.add_post("/api/tmux/kill", handle_tmux_kill)
     app.router.add_get("/api/preferences", handle_preferences_get)
     app.router.add_post("/api/preferences", handle_preferences_post)

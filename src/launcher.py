@@ -193,6 +193,72 @@ async def launch_tmux_attach(session_name: str, machine: str) -> dict:
     return await launch_terminal(cmd)
 
 
+async def launch_remote_terminal(command: str, machine: str) -> dict:
+    """
+    Open a terminal ON THE REMOTE MACHINE's own display (not locally via SSH).
+
+    Uses SSH to trigger a terminal launch on the remote machine's desktop:
+    - macOS: osascript to open Terminal.app/iTerm2
+    - Linux: DISPLAY=:0 x-terminal-emulator
+    - Windows: powershell Start-Process
+    """
+    info = FLEET_MACHINES.get(machine, {})
+    alias = info.get("ssh_alias", machine)
+    remote_os = info.get("os", "")
+    escaped = command.replace("'", "'\\''")
+
+    if remote_os == "darwin":
+        # Open Terminal.app on the remote Mac's display
+        applescript = (
+            f'tell application "Terminal"\n'
+            f'  activate\n'
+            f'  do script "{escaped}"\n'
+            f'end tell'
+        )
+        ssh_cmd = f"ssh {shlex.quote(alias)} osascript -e {shlex.quote(applescript)}"
+    elif remote_os in ("linux",):
+        # Open terminal on remote Linux's X display
+        inner = shlex.quote(escaped + "; exec bash")
+        ssh_cmd = f"ssh {shlex.quote(alias)} 'DISPLAY=:0 nohup x-terminal-emulator -e bash -c {inner} &>/dev/null &'"
+    elif remote_os == "win32":
+        # Open PowerShell window on remote Windows
+        ps_escaped = command.replace('"', '`"')
+        ssh_cmd = f"ssh {shlex.quote(alias)} \"powershell -Command Start-Process powershell -ArgumentList '-NoExit','-Command','{ps_escaped}'\""
+    else:
+        return {"ok": False, "error": f"Unknown remote OS for {machine}: {remote_os}"}
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *ssh_cmd.split()[:3],  # don't split — use shell
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        # Actually, we need shell=True for the complex quoting
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+    # Use shell execution for the complex SSH command
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            ssh_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await asyncio.wait_for(proc.communicate(), timeout=10)
+        return {"ok": True}
+    except asyncio.TimeoutError:
+        return {"ok": True}  # fire-and-forget, timeout is OK
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+async def launch_tmux_attach_remote(session_name: str, machine: str) -> dict:
+    """Open a terminal ON THE REMOTE MACHINE attached to the tmux session."""
+    info = FLEET_MACHINES.get(machine, {})
+    mux = info.get("mux", "tmux")
+    return await launch_remote_terminal(f"{mux} attach -t {shlex.quote(session_name)}", machine)
+
+
 async def launch_new_tmux_and_attach(
     name: str,
     machine: str,

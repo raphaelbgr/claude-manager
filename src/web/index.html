@@ -555,7 +555,7 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
 
 // ─── Tmux Card ────────────────────────────────────────────────────────────────
 
-function TmuxCard({ session, onConnect, connecting, onKill, killing }) {
+function TmuxCard({ session, onConnect, connecting, onKill, killing, onRemoteAttach, remoteAttaching }) {
   const isAttached = session.attached;
   const local = isLocalMachine(session.machine);
   const connectLabel = connecting ? 'Attaching…' : (local ? '▶ Attach' : '▶ SSH + Attach');
@@ -599,6 +599,21 @@ function TmuxCard({ session, onConnect, connecting, onKill, killing }) {
             opacity: killing ? 0.6 : 1,
           }
         }, killing ? 'Killing…' : 'Kill'),
+        !local && h('button', {
+          className: 'btn',
+          onClick: () => onRemoteAttach(session),
+          disabled: remoteAttaching,
+          title: `Open terminal on ${session.machine}'s own display`,
+          style: {
+            fontSize: '0.72rem', fontWeight: 600,
+            background: remoteAttaching ? '#1a2a3a' : '#21262d',
+            color: '#a371f7',
+            border: '1px solid #3a2a5a',
+            borderRadius: 6, padding: '4px 10px',
+            cursor: remoteAttaching ? 'not-allowed' : 'pointer',
+            opacity: remoteAttaching ? 0.6 : 1,
+          }
+        }, remoteAttaching ? 'Opening…' : '🖥 Remote'),
         h('button', {
           className: 'btn',
           onClick: () => onConnect(session),
@@ -953,7 +968,7 @@ function SessionsPanel({ sessions, filter, onLaunch, onTmuxLaunch, launchingId, 
 
 // ─── Tmux Panel ───────────────────────────────────────────────────────────────
 
-function TmuxPanel({ tmuxSessions, fleet, onConnectTmux, connectingId, onKillTmux, killingId, onNewSession, filter, scanning, collapseState, setCollapseState }) {
+function TmuxPanel({ tmuxSessions, fleet, onConnectTmux, connectingId, onKillTmux, killingId, onRemoteAttach, remoteAttachingId, onNewSession, filter, scanning, collapseState, setCollapseState }) {
   const filtered = useMemo(() => {
     if (!filter || !filter.trim()) return tmuxSessions;
     const q = filter.toLowerCase();
@@ -1006,6 +1021,8 @@ function TmuxPanel({ tmuxSessions, fleet, onConnectTmux, connectingId, onKillTmu
                   connecting: connectingId === `${s.machine}-${s.session_name || s.name}`,
                   onKill: onKillTmux,
                   killing: killingId === `${s.machine}-${s.session_name || s.name}`,
+                  onRemoteAttach: onRemoteAttach,
+                  remoteAttaching: remoteAttachingId === `${s.machine}-${s.session_name || s.name}`,
                 })
               )
             );
@@ -1494,6 +1511,31 @@ function App() {
     }
   }, []);
 
+  // ── Remote attach (open terminal on the remote machine's display) ────────
+  const [remoteAttachingId, setRemoteAttachingId] = useState(null);
+  const handleRemoteAttach = useCallback(async (session) => {
+    const name = session.session_name || session.name;
+    const key = `${session.machine}-${name}`;
+    setRemoteAttachingId(key);
+    try {
+      const res = await fetch('/api/tmux/connect-remote', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ machine: session.machine, session_name: name }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        toast(`Opened terminal on ${session.machine}`, 'success');
+      } else {
+        toast(data.error || 'Remote attach failed', 'error');
+      }
+    } catch {
+      toast('Network error', 'error');
+    } finally {
+      setRemoteAttachingId(null);
+    }
+  }, []);
+
   // ── Render ────────────────────────────────────────────────────────────────
   return h(Fragment, null,
     h('div', {
@@ -1641,6 +1683,8 @@ function App() {
                   connectingId,
                   onKillTmux: handleKillTmux,
                   killingId,
+                  onRemoteAttach: handleRemoteAttach,
+                  remoteAttachingId,
                   onNewSession: () => setShowModal(true),
                   filter,
                   scanning,
