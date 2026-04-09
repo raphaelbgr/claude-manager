@@ -248,7 +248,9 @@ async def handle_sessions_launch(request: web.Request) -> web.Response:
             # Client just opens a terminal that SSHes into the machine.
             # The psmux session runs claude in the background.
             project = cwd.replace("\\", "/").rstrip("/").split("/")[-1] if cwd else "claude"
-            safe_name = re.sub(r"[^a-zA-Z0-9_-]", "-", project) or "claude"
+            project_safe = re.sub(r"[^a-zA-Z0-9_-]", "-", project) or "claude"
+            existing_names = [t.name for t in request.app["state"]["tmux"] if t.machine == machine]
+            safe_name = adapter.generate_mux_session_name(machine, project_safe, existing_names)
             claude_cmd = adapter.build_session_command(cwd, session_id, skip)
             from .tmux_manager import create_tmux_session
             create_result = await create_tmux_session(machine, safe_name, cwd=cwd, command=claude_cmd)
@@ -263,7 +265,9 @@ async def handle_sessions_launch(request: web.Request) -> web.Response:
         else:
             # tmux on macOS/Linux: create session + attach works perfectly
             project = cwd.replace("\\", "/").rstrip("/").split("/")[-1] if cwd else "claude"
-            safe_name = re.sub(r"[^a-zA-Z0-9_-]", "-", project) or "claude"
+            project_safe = re.sub(r"[^a-zA-Z0-9_-]", "-", project) or "claude"
+            existing_names = [t.name for t in request.app["state"]["tmux"] if t.machine == machine]
+            safe_name = adapter.generate_mux_session_name(machine, project_safe, existing_names)
             claude_cmd = adapter.build_session_command(cwd, session_id, skip)
             result = await launch_new_tmux_and_attach(safe_name, machine, cwd=cwd, command=claude_cmd)
     else:

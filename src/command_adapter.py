@@ -166,6 +166,30 @@ class CommandAdapter:
             return command
 
 
+    def generate_mux_session_name(self, machine: str, project_folder: str, existing_names: list[str]) -> str:
+        """Generate a unique mux session name with auto-increment.
+
+        Format: {machine}/{project}-session-{NN}
+        Increments the suffix until the name is not in existing_names.
+        """
+        import re
+        base = f"{machine}/{project_folder}-session"
+        max_n = 0
+        for name in existing_names:
+            m = re.match(re.escape(base) + r"-(\d+)$", name)
+            if m:
+                max_n = max(max_n, int(m.group(1)))
+        n = max_n + 1
+        return f"{base}-{n:02d}"
+
+    def generate_claude_session_name(self, machine: str, project_folder: str, session_number: int) -> str:
+        """Generate a Claude session display name.
+
+        Format: [{mux_type}] {machine}/{project} session {NN}
+        """
+        return f"[{self.mux_type}] {machine}/{project_folder} session {session_number:02d}"
+
+
 def get_adapter(machine_name: str) -> CommandAdapter:
     """Get the appropriate CommandAdapter for a fleet machine.
 
