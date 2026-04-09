@@ -76,8 +76,9 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if args.enable_gui:
-        print("Desktop GUI not yet implemented (Phase 4). Run without --enable-gui to start the API server.")
-        sys.exit(1)
+        from .desktop import run_desktop
+        run_desktop(args.bind, args.port)
+        return
 
     # Default: start API server
     from .server import run_server
