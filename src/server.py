@@ -239,7 +239,9 @@ async def handle_sessions_launch(request: web.Request) -> web.Response:
     if mode == "tmux":
         # Launch claude inside a new tmux session, then attach to it
         import re, shlex as _shlex
-        safe_name = re.sub(r"[^a-zA-Z0-9_-]", "-", session_id[:20]) or "claude"
+        # Use project folder name for a readable tmux session name
+        project = cwd.replace("\\", "/").rstrip("/").split("/")[-1] if cwd else "claude"
+        safe_name = re.sub(r"[^a-zA-Z0-9_-]", "-", project) or "claude"
         # Build the full command including cd to correct directory
         skip_flag = " --dangerously-skip-permissions" if skip else ""
         claude_cmd = f"cd {_shlex.quote(cwd)} && claude --resume {session_id}{skip_flag}"

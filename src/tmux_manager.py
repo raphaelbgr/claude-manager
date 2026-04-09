@@ -136,11 +136,20 @@ async def list_all_tmux(local_machine: str, fleet_status: dict) -> list[TmuxSess
         if not status.get("online", False):
             continue
         dispatch_port = info.get("dispatch_port")
+        ssh_alias = info.get("ssh_alias", machine_name)
+        mux = info.get("mux", "tmux")
         if dispatch_port:
-            tasks.append(list_remote_tmux_via_api(machine_name, info["ip"], dispatch_port))
+            # API first, SSH fallback if empty/failed
+            async def _api_with_ssh_fallback(
+                _name=machine_name, _ip=info["ip"], _port=dispatch_port,
+                _alias=ssh_alias, _mux=mux,
+            ):
+                sessions = await list_remote_tmux_via_api(_name, _ip, _port)
+                if not sessions:
+                    sessions = await list_remote_tmux(_name, _alias, _mux)
+                return sessions
+            tasks.append(_api_with_ssh_fallback())
         else:
-            ssh_alias = info.get("ssh_alias", machine_name)
-            mux = info.get("mux", "tmux")
             tasks.append(list_remote_tmux(machine_name, ssh_alias, mux))
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
