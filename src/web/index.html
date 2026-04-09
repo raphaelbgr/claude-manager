@@ -162,6 +162,82 @@
       .main-panels { flex-direction: column !important; }
       .panel-sessions, .panel-tmux { width: 100% !important; min-width: 0 !important; }
     }
+
+    /* Filter bar */
+    .filter-bar {
+      background: #0d1117;
+      border-bottom: 1px solid #30363d;
+      padding: 8px 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      flex-shrink: 0;
+      position: sticky;
+      top: 57px;
+      z-index: 90;
+    }
+    .filter-row {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .filter-label {
+      font-size: 0.65rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #484f58;
+      flex-shrink: 0;
+      min-width: 58px;
+    }
+    .filter-pill {
+      font-size: 0.7rem;
+      font-weight: 600;
+      padding: 3px 10px;
+      border-radius: 20px;
+      border: 1px solid #30363d;
+      background: #21262d;
+      color: #6e7681;
+      cursor: pointer;
+      transition: all 0.15s;
+      white-space: nowrap;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .filter-pill:hover { border-color: #444c56; color: #8b949e; }
+    .filter-pill.active-machine { background: #1f3a5f; color: #58a6ff; border-color: #2d4f7a; }
+    .filter-pill.active-working { background: #3a2a0a; color: #e3b341; border-color: #5a4a1a; }
+    .filter-pill.active-active  { background: #1a3a2a; color: #3fb950; border-color: #2a5a3a; }
+    .filter-pill.active-idle    { background: #21262d; color: #8b949e; border-color: #444c56; }
+    .filter-select {
+      font-size: 0.72rem;
+      background: #21262d;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      color: #8b949e;
+      padding: 3px 8px;
+      cursor: pointer;
+      outline: none;
+    }
+    .filter-select:focus { border-color: #58a6ff; }
+    .filter-select option { background: #161b22; color: #e6edf3; }
+    .filter-reset {
+      font-size: 0.68rem;
+      color: #58a6ff;
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 0 4px;
+      text-decoration: underline;
+      opacity: 0.8;
+    }
+    .filter-reset:hover { opacity: 1; }
+    .filter-count {
+      font-size: 0.68rem;
+      color: #484f58;
+      margin-left: auto;
+      white-space: nowrap;
+    }
   </style>
 </head>
 <body>
@@ -916,20 +992,9 @@ function PinnedSection({ sessions, pinnedIds, onLaunch, launchingId, onTmuxLaunc
 
 // ─── Sessions Panel ───────────────────────────────────────────────────────────
 
-function SessionsPanel({ sessions, filter, onLaunch, onTmuxLaunch, launchingId, tmuxLaunchingId, skipPermissions, scanning, collapseState, setCollapseState, pinnedIds, onPin, onUnpin }) {
-  const filtered = useMemo(() => {
-    if (!filter.trim()) return sessions;
-    const q = filter.toLowerCase();
-    return sessions.filter(s =>
-      (s.cwd || s.project_path || '').toLowerCase().includes(q) ||
-      (s.summary || '').toLowerCase().includes(q) ||
-      (s.machine || '').toLowerCase().includes(q) ||
-      (s.slug || '').toLowerCase().includes(q) ||
-      (s.name || '').toLowerCase().includes(q)
-    );
-  }, [sessions, filter]);
-
-  const byMachine = useMemo(() => groupBy(filtered, 'machine'), [filtered]);
+function SessionsPanel({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaunchingId, skipPermissions, scanning, collapseState, setCollapseState, pinnedIds, onPin, onUnpin }) {
+  // sessions is already filtered/sorted by App; just group by machine
+  const byMachine = useMemo(() => groupBy(sessions, 'machine'), [sessions]);
 
   if (!sessions.length) {
     return h('div', {
@@ -967,7 +1032,7 @@ function SessionsPanel({ sessions, filter, onLaunch, onTmuxLaunch, launchingId, 
   return h('div', null,
     // Pinned section (always above machine sections)
     h(PinnedSection, {
-      sessions: filtered,
+      sessions: sessions,
       pinnedIds: pinnedIds || [],
       onLaunch,
       launchingId,
@@ -1040,17 +1105,9 @@ function SessionsPanel({ sessions, filter, onLaunch, onTmuxLaunch, launchingId, 
 
 // ─── Tmux Panel ───────────────────────────────────────────────────────────────
 
-function TmuxPanel({ tmuxSessions, fleet, onConnectTmux, connectingId, onKillTmux, killingId, onRemoteAttach, remoteAttachingId, onNewSession, filter, scanning, collapseState, setCollapseState }) {
-  const filtered = useMemo(() => {
-    if (!filter || !filter.trim()) return tmuxSessions;
-    const q = filter.toLowerCase();
-    return tmuxSessions.filter(s =>
-      (s.session_name || s.name || '').toLowerCase().includes(q) ||
-      (s.machine || '').toLowerCase().includes(q)
-    );
-  }, [tmuxSessions, filter]);
-
-  const byMachine = useMemo(() => groupBy(filtered, s => s.machine || 'unknown'), [filtered]);
+function TmuxPanel({ tmuxSessions, fleet, onConnectTmux, connectingId, onKillTmux, killingId, onRemoteAttach, remoteAttachingId, onNewSession, scanning, collapseState, setCollapseState }) {
+  // tmuxSessions is already machine-filtered by App
+  const byMachine = useMemo(() => groupBy(tmuxSessions, s => s.machine || 'unknown'), [tmuxSessions]);
 
   return h('div', { style: { display: 'flex', flexDirection: 'column', height: '100%' } },
     h('div', { className: 'panel-scroll', style: { flex: 1 } },
@@ -1064,7 +1121,7 @@ function TmuxPanel({ tmuxSessions, fleet, onConnectTmux, connectingId, onKillTmu
         h('span', { style: { display: 'inline-block', animation: 'spin 0.8s linear infinite' } }, '↻'),
         h('span', null, 'Scanning…'),
       ),
-      !filtered.length
+      !tmuxSessions.length
         ? h('div', {
             style: {
               display: 'flex', flexDirection: 'column', alignItems: 'center',
@@ -1073,7 +1130,7 @@ function TmuxPanel({ tmuxSessions, fleet, onConnectTmux, connectingId, onKillTmu
             }
           },
             h('span', { style: { fontSize: '1.5rem' } }, '⊡'),
-            h('span', { style: { fontSize: '0.875rem' } }, filter && filter.trim() ? 'No tmux sessions match filter' : 'No tmux sessions'),
+            h('span', { style: { fontSize: '0.875rem' } }, 'No tmux sessions'),
           )
         : Object.entries(byMachine).map(([machine, sessions]) => {
             const machineKey = `tmux:${machine}`;
@@ -1205,7 +1262,7 @@ function FleetBar({ fleet, lastScan, wsConnected }) {
 
 // ─── Header ───────────────────────────────────────────────────────────────────
 
-function Header({ health, sessions, tmuxSessions, fleet, filter, onFilterChange, onScan, scanning, skipPermissions, onSkipPermissionsChange }) {
+function Header({ health, sessions, tmuxSessions, fleet, onScan, scanning, skipPermissions, onSkipPermissionsChange }) {
   const online = Object.values(fleet || {}).filter(m => m.online).length;
   const total = Object.keys(fleet || {}).length;
 
@@ -1250,19 +1307,8 @@ function Header({ health, sessions, tmuxSessions, fleet, filter, onFilterChange,
       }, `${online}/${total} fleet`),
     ),
 
-    // Filter input
-    h('div', {
-      style: { flex: 1, minWidth: 160, maxWidth: 320 }
-    },
-      h('input', {
-        type: 'text',
-        className: 'form-input',
-        placeholder: 'Filter sessions & tmux…',
-        value: filter,
-        onChange: e => onFilterChange(e.target.value),
-        style: { fontSize: '0.8rem', padding: '6px 12px' }
-      }),
-    ),
+    // Spacer
+    h('div', { style: { flex: 1 } }),
 
     // Scan button
     h('button', {
@@ -1308,6 +1354,156 @@ function Header({ health, sessions, tmuxSessions, fleet, filter, onFilterChange,
   );
 }
 
+// ─── Filter Bar ───────────────────────────────────────────────────────────────
+
+function FilterBar({ sessions, tmuxSessions, fleet, filters, setFilters }) {
+  // Derive unique machines from sessions + tmux + fleet
+  const allMachines = useMemo(() => {
+    const s = new Set();
+    sessions.forEach(x => x.machine && s.add(x.machine));
+    tmuxSessions.forEach(x => x.machine && s.add(x.machine));
+    Object.keys(fleet || {}).forEach(m => s.add(m));
+    return [...s].sort();
+  }, [sessions, tmuxSessions, fleet]);
+
+  // Machine counts (sessions only)
+  const machineCounts = useMemo(() => {
+    const c = {};
+    sessions.forEach(s => { if (s.machine) c[s.machine] = (c[s.machine] || 0) + 1; });
+    return c;
+  }, [sessions]);
+
+  const isFiltersActive = filters.machines.size > 0 || filters.statuses.size > 0 || filters.timeRange !== 'all' || filters.sortBy !== 'recent' || filters.text.trim();
+
+  const toggleMachine = (m) => {
+    setFilters(prev => {
+      const next = new Set(prev.machines);
+      if (next.has(m)) next.delete(m); else next.add(m);
+      return { ...prev, machines: next };
+    });
+  };
+
+  const toggleStatus = (s) => {
+    setFilters(prev => {
+      const next = new Set(prev.statuses);
+      if (next.has(s)) next.delete(s); else next.add(s);
+      return { ...prev, statuses: next };
+    });
+  };
+
+  const resetFilters = () => setFilters({ machines: new Set(), statuses: new Set(), timeRange: 'all', sortBy: 'recent', text: '' });
+
+  // Compute result count for sessions
+  const totalSessions = sessions.length;
+  const visibleCount = useMemo(() => {
+    let r = sessions;
+    if (filters.machines.size > 0) r = r.filter(s => filters.machines.has(s.machine));
+    if (filters.statuses.size > 0) r = r.filter(s => filters.statuses.has(s.status));
+    if (filters.timeRange !== 'all') {
+      const cutoffs = { hour: 3600000, today: 86400000, week: 604800000, month: 2592000000 };
+      const cutoff = Date.now() - cutoffs[filters.timeRange];
+      r = r.filter(s => new Date(s.modified).getTime() > cutoff);
+    }
+    if (filters.text.trim()) {
+      const q = filters.text.toLowerCase();
+      r = r.filter(s =>
+        (s.project_path || '').toLowerCase().includes(q) ||
+        (s.summary || '').toLowerCase().includes(q) ||
+        (s.machine || '').toLowerCase().includes(q) ||
+        (s.cwd || '').toLowerCase().includes(q) ||
+        (s.name || '').toLowerCase().includes(q) ||
+        (s.slug || '').toLowerCase().includes(q)
+      );
+    }
+    return r.length;
+  }, [sessions, filters]);
+
+  const statusDefs = [
+    { key: 'working', label: 'WORKING', pillClass: 'active-working' },
+    { key: 'active',  label: 'ACTIVE',  pillClass: 'active-active'  },
+    { key: 'idle',    label: 'IDLE',    pillClass: 'active-idle'    },
+  ];
+
+  const timeRangeOptions = [
+    { value: 'all',   label: 'All Time' },
+    { value: 'hour',  label: 'Last Hour' },
+    { value: 'today', label: 'Today' },
+    { value: 'week',  label: 'This Week' },
+    { value: 'month', label: 'This Month' },
+  ];
+
+  const sortByOptions = [
+    { value: 'recent',   label: 'Most Recent' },
+    { value: 'oldest',   label: 'Oldest' },
+    { value: 'messages', label: 'Most Messages' },
+    { value: 'size',     label: 'Largest Size' },
+    { value: 'name',     label: 'Name A-Z' },
+  ];
+
+  return h('div', { className: 'filter-bar' },
+
+    // Row 1: Machines + Status
+    h('div', { className: 'filter-row' },
+      h('span', { className: 'filter-label' }, 'Machines'),
+      allMachines.map(m =>
+        h('button', {
+          key: m,
+          className: `filter-pill${filters.machines.has(m) ? ' active-machine' : ''}`,
+          onClick: () => toggleMachine(m),
+          title: `Toggle ${m}`,
+        }, `${m}${machineCounts[m] != null ? ` (${machineCounts[m]})` : ''}`)
+      ),
+
+      h('span', { className: 'filter-label', style: { marginLeft: 8 } }, 'Status'),
+      statusDefs.map(({ key, label, pillClass }) =>
+        h('button', {
+          key,
+          className: `filter-pill${filters.statuses.has(key) ? ` ${pillClass}` : ''}`,
+          onClick: () => toggleStatus(key),
+        }, label)
+      ),
+    ),
+
+    // Row 2: Time range + Sort + Search + Reset + Count
+    h('div', { className: 'filter-row' },
+      h('span', { className: 'filter-label' }, 'Time'),
+      h('select', {
+        className: 'filter-select',
+        value: filters.timeRange,
+        onChange: e => setFilters(prev => ({ ...prev, timeRange: e.target.value })),
+      }, timeRangeOptions.map(o => h('option', { key: o.value, value: o.value }, o.label))),
+
+      h('span', { className: 'filter-label', style: { marginLeft: 8 } }, 'Sort'),
+      h('select', {
+        className: 'filter-select',
+        value: filters.sortBy,
+        onChange: e => setFilters(prev => ({ ...prev, sortBy: e.target.value })),
+      }, sortByOptions.map(o => h('option', { key: o.value, value: o.value }, o.label))),
+
+      h('input', {
+        type: 'text',
+        className: 'form-input',
+        placeholder: 'Search sessions…',
+        value: filters.text,
+        onChange: e => setFilters(prev => ({ ...prev, text: e.target.value })),
+        style: { fontSize: '0.75rem', padding: '3px 10px', maxWidth: 200, marginLeft: 8 },
+      }),
+
+      isFiltersActive && h('button', {
+        className: 'filter-reset',
+        onClick: resetFilters,
+        title: 'Reset all filters',
+      }, 'Reset'),
+
+      h('span', { className: 'filter-count' },
+        visibleCount === totalSessions
+          ? `${totalSessions} sessions`
+          : `Showing ${visibleCount} of ${totalSessions} sessions`
+      ),
+    ),
+  );
+}
+
 // ─── Root App ─────────────────────────────────────────────────────────────────
 
 const COLLAPSE_KEY = 'claude-manager-collapse-state';
@@ -1318,7 +1514,13 @@ function App() {
   const [fleet, setFleet]                 = useState({});
   const [health, setHealth]               = useState(null);
   const [lastScan, setLastScan]           = useState(null);
-  const [filter, setFilter]               = useState('');
+  const [filters, setFilters]             = useState({
+    machines: new Set(),
+    statuses: new Set(),
+    timeRange: 'all',
+    sortBy: 'recent',
+    text: '',
+  });
   const [scanning, setScanning]           = useState(false);
   const [launchingId, setLaunchingId]     = useState(null);
   const [tmuxLaunchingId, setTmuxLaunchingId] = useState(null);
@@ -1339,6 +1541,54 @@ function App() {
   useEffect(() => {
     try { localStorage.setItem(COLLAPSE_KEY, JSON.stringify(collapseState)); } catch {}
   }, [collapseState]);
+
+  // ── Filtered sessions ────────────────────────────────────────────────────
+  const filteredSessions = useMemo(() => {
+    let result = sessions;
+
+    if (filters.machines.size > 0) {
+      result = result.filter(s => filters.machines.has(s.machine));
+    }
+
+    if (filters.statuses.size > 0) {
+      result = result.filter(s => filters.statuses.has(s.status));
+    }
+
+    if (filters.timeRange !== 'all') {
+      const cutoffs = { hour: 3600000, today: 86400000, week: 604800000, month: 2592000000 };
+      const cutoff = Date.now() - cutoffs[filters.timeRange];
+      result = result.filter(s => new Date(s.modified).getTime() > cutoff);
+    }
+
+    if (filters.text.trim()) {
+      const q = filters.text.toLowerCase();
+      result = result.filter(s =>
+        (s.project_path || '').toLowerCase().includes(q) ||
+        (s.summary || '').toLowerCase().includes(q) ||
+        (s.machine || '').toLowerCase().includes(q) ||
+        (s.cwd || '').toLowerCase().includes(q) ||
+        (s.name || '').toLowerCase().includes(q) ||
+        (s.slug || '').toLowerCase().includes(q)
+      );
+    }
+
+    const sorters = {
+      recent:   (a, b) => new Date(b.modified) - new Date(a.modified),
+      oldest:   (a, b) => new Date(a.modified) - new Date(b.modified),
+      messages: (a, b) => (b.messages || 0) - (a.messages || 0),
+      size:     (a, b) => (b.file_size || 0) - (a.file_size || 0),
+      name:     (a, b) => (a.cwd || '').localeCompare(b.cwd || ''),
+    };
+    result = [...result].sort(sorters[filters.sortBy] || sorters.recent);
+
+    return result;
+  }, [sessions, filters]);
+
+  // ── Filtered tmux sessions (machine filter only) ─────────────────────────
+  const filteredTmux = useMemo(() => {
+    if (filters.machines.size === 0) return tmuxSessions;
+    return tmuxSessions.filter(s => filters.machines.has(s.machine));
+  }, [tmuxSessions, filters.machines]);
 
   // ── WS message handler ───────────────────────────────────────────────────
   const handleWsMessage = useCallback((msg) => {
@@ -1650,12 +1900,17 @@ function App() {
 
       // Header
       h(Header, {
-        health, sessions, tmuxSessions, fleet, filter,
-        onFilterChange: setFilter,
+        health, sessions, tmuxSessions, fleet,
         onScan: handleScan,
         scanning,
         skipPermissions,
         onSkipPermissionsChange: handleSkipPermissionsChange,
+      }),
+
+      // Filter bar
+      h(FilterBar, {
+        sessions, tmuxSessions, fleet,
+        filters, setFilters,
       }),
 
       // Main panels
@@ -1729,7 +1984,7 @@ function App() {
                   h('span', { style: { fontSize: '0.78rem', textAlign: 'center' } }, 'Discovering machines\nand sessions'),
                 )
               : h(SessionsPanel, {
-                  sessions, filter,
+                  sessions: filteredSessions,
                   onLaunch: handleLaunch,
                   onTmuxLaunch: handleTmuxLaunch,
                   launchingId,
@@ -1784,7 +2039,8 @@ function App() {
                   h('span', { style: { fontSize: '0.875rem' } }, 'Scanning fleet...'),
                 )
               : h(TmuxPanel, {
-                  tmuxSessions, fleet,
+                  tmuxSessions: filteredTmux,
+                  fleet,
                   onConnectTmux: handleConnectTmux,
                   connectingId,
                   onKillTmux: handleKillTmux,
@@ -1792,7 +2048,6 @@ function App() {
                   onRemoteAttach: handleRemoteAttach,
                   remoteAttachingId,
                   onNewSession: () => setShowModal(true),
-                  filter,
                   scanning,
                   collapseState,
                   setCollapseState,
