@@ -60,18 +60,25 @@ class CommandAdapter:
         return f"cd {shlex.quote(path)}"
 
     def build_session_command_ssh(self, cwd: str, session_id: str, skip_permissions: bool = False) -> str:
-        """Build cd + claude resume for SSH direct execution.
+        """Build cd + claude resume for SSH -t direct execution.
 
-        On Windows: wraps in 'powershell -NoExit -Command "..."' so the
-        user gets a PowerShell session (not Git Bash) in the correct dir.
+        The returned string is meant to be wrapped in SINGLE QUOTES by the
+        caller for the SSH argument: ssh host -t '<this string>'
+
+        On Windows: PowerShell command with Set-Location (no single quotes
+        inside — they'd break the outer single-quote SSH wrapper).
         """
-        quoted_id = self.quote_arg(session_id)
         skip_flag = " --dangerously-skip-permissions" if skip_permissions else ""
 
         if self.is_windows:
-            # PowerShell: use Set-Location + semicolons, wrapped in powershell -NoExit
-            ps_cmd = f"Set-Location '{cwd}'; claude --resume {session_id}{skip_flag}"
-            return f'powershell -NoExit -Command "{ps_cmd}"'
+            # PowerShell -NoExit keeps the session open.
+            # No single quotes inside — the caller wraps in single quotes for SSH.
+            # PowerShell Set-Location doesn't need quotes unless path has spaces.
+            if " " in cwd:
+                set_loc = f"Set-Location \"{cwd}\""
+            else:
+                set_loc = f"Set-Location {cwd}"
+            return f'powershell -NoExit -Command "{set_loc}; claude --resume {session_id}{skip_flag}"'
         else:
             cd = self.cd_command_ssh(cwd)
             resume = self.claude_resume_command(session_id, skip_permissions)

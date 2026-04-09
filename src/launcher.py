@@ -166,12 +166,11 @@ async def launch_claude_session(cwd: str, session_id: str, machine: str, skip_pe
         # Build the remote command using the SSH adapter (PowerShell on Windows)
         session_cmd = adapter.build_session_command_ssh(cwd, session_id, skip_permissions)
         terminal_cmd = adapter.for_terminal(session_cmd, keep_open=True)
-        # Avoid shlex.quote on Windows commands — the nested quoting breaks
-        # across multiple shell layers (iTerm2 bash → SSH → Git Bash → PowerShell)
         if adapter.is_windows:
-            # Escape double quotes for the local bash shell, keep rest intact
-            escaped = terminal_cmd.replace('"', '\\"')
-            cmd = f'ssh {alias} -t "{escaped}"'
+            # Windows: the SSH arg must be in single quotes (bash literal)
+            # to preserve backslashes in C:\paths and double quotes in
+            # powershell -Command "...". No single quotes inside the command.
+            cmd = f"ssh {alias} -t '{terminal_cmd}'"
         else:
             cmd = f"ssh {shlex.quote(alias)} -t {shlex.quote(terminal_cmd)}"
 
