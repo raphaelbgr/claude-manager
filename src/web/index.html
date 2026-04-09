@@ -1045,15 +1045,19 @@ function HardwareInfo({ machine, hwCache, fetchHardware }) {
 // ─── Machine Section ──────────────────────────────────────────────────────────
 
 function MachineSection({ machine, children, count, collapseKey, collapseState, setCollapseState }) {
+  const defaultOpen = true;
   const isOpen = (collapseState && collapseKey !== undefined && collapseState[collapseKey] !== undefined)
     ? collapseState[collapseKey]
-    : true; // default open
+    : defaultOpen;
 
-  const toggle = () => {
+  const toggle = useCallback(() => {
     if (setCollapseState && collapseKey !== undefined) {
-      setCollapseState(prev => ({ ...prev, [collapseKey]: !isOpen }));
+      setCollapseState(prev => {
+        const current = prev[collapseKey] !== undefined ? prev[collapseKey] : defaultOpen;
+        return { ...prev, [collapseKey]: !current };
+      });
     }
-  };
+  }, [collapseKey, setCollapseState]);
 
   return h('div', { className: 'machine-section' },
     h('div', {
@@ -1081,19 +1085,22 @@ function MachineSection({ machine, children, count, collapseKey, collapseState, 
 
 const PROJECT_SECTION_MAX = 20; // max cards before showing "Show all N" button
 
-function ProjectSection({ projectPath, children, count, defaultOpen = true, collapseKey, collapseState, setCollapseState }) {
+function ProjectSection({ projectPath, children, count, defaultOpen: defOpen = true, collapseKey, collapseState, setCollapseState }) {
   const shortPath = shortenPath(projectPath) || projectPath || '(unknown)';
   const [showAll, setShowAll] = useState(false);
 
   const isOpen = (collapseState && collapseKey !== undefined && collapseState[collapseKey] !== undefined)
     ? collapseState[collapseKey]
-    : defaultOpen;
+    : defOpen;
 
-  const toggle = () => {
+  const toggle = useCallback(() => {
     if (setCollapseState && collapseKey !== undefined) {
-      setCollapseState(prev => ({ ...prev, [collapseKey]: !isOpen }));
+      setCollapseState(prev => {
+        const current = prev[collapseKey] !== undefined ? prev[collapseKey] : defOpen;
+        return { ...prev, [collapseKey]: !current };
+      });
     }
-  };
+  }, [collapseKey, setCollapseState, defOpen]);
 
   // Slice children array when over the limit (avoids rendering 100+ cards at once)
   const childArray = Array.isArray(children) ? children : (children ? [children] : []);

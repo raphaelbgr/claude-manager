@@ -238,15 +238,25 @@ async def handle_sessions_launch(request: web.Request) -> web.Response:
     mode = body.get("mode", "terminal")
     if mode == "tmux":
         # Launch claude inside a new tmux session, then attach to it
-        import re
+        import re, shlex as _shlex
         safe_name = re.sub(r"[^a-zA-Z0-9_-]", "-", session_id[:20]) or "claude"
-        claude_cmd = f"claude --resume {session_id}"
-        if skip:
-            claude_cmd += " --dangerously-skip-permissions"
+        # Build the full command including cd to correct directory
+        skip_flag = " --dangerously-skip-permissions" if skip else ""
+        claude_cmd = f"cd {_shlex.quote(cwd)} && claude --resume {session_id}{skip_flag}"
         result = await launch_new_tmux_and_attach(safe_name, machine, cwd=cwd, command=claude_cmd)
     else:
         result = await launch_claude_session(cwd, session_id, machine, skip_permissions=skip)
     status = 200 if result.get("ok") else 500
+    # If tmux mode succeeded, refresh the tmux list immediately
+    if mode == "tmux" and result.get("ok"):
+        try:
+            local_machine = request.app["local_machine"]
+            fleet = request.app["state"]["fleet"]
+            tmux = await list_all_tmux(local_machine, fleet)
+            request.app["state"]["tmux"] = tmux
+            await _push_to_ws(request.app, "tmux", [t.to_dict() for t in tmux])
+        except Exception:
+            pass
     return web.json_response(result, status=status)
 
 
