@@ -47,6 +47,7 @@ class ClaudeSession:
     name: str = ""            # session name set by /rename
     cpu_percent: float = 0.0  # CPU usage if active (0.0 if idle/not measured)
     git_branch: str = ""      # git branch from JSONL gitBranch field
+    subprocess_count: int = 0 # number of child processes (recursive)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -238,6 +239,7 @@ def _mark_active_sessions(
                 sess.cpu_percent = round(cpu, 1)
                 if cpu > 5.0:
                     is_working = True
+                sess.subprocess_count = len(proc.children(recursive=True))
             except Exception:
                 pass
             sess.status = "working" if is_working else "active"
@@ -462,6 +464,7 @@ async def scan_remote_via_api(machine_name: str, ip: str, dispatch_port: int) ->
                         file_size=item.get("file_size", 0),
                         name=item.get("name", ""),
                         git_branch=item.get("git_branch", ""),
+                        subprocess_count=item.get("subprocess_count", 0),
                     )
                     sessions.append(s)
                 return sessions
@@ -535,6 +538,7 @@ async def scan_remote(
                 file_size=item.get("file_size", 0),
                 name=item.get("name", ""),
                 git_branch=item.get("git_branch", ""),
+                subprocess_count=item.get("subprocess_count", 0),
             )
             sessions.append(sess)
         except (KeyError, TypeError):

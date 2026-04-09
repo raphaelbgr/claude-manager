@@ -554,13 +554,15 @@ function StatusDot({ status, pulse = false }) {
 
 // ─── Session Card ─────────────────────────────────────────────────────────────
 
-function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching, skipPermissions, onPin, onUnpin, isPinned, onArchive, onUnarchive, isArchived, expanded, onToggleExpand, inMachineSection }) {
+function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching, skipPermissions, onPin, onUnpin, isPinned, onArchive, onUnarchive, isArchived, expanded, onToggleExpand, inMachineSection, hwCache, fetchHardware, onRename }) {
   const isWorking = session.status === 'working';
   const isActive = session.status === 'active' || isWorking;
   const effectivePath = session.cwd || session.project_path || session.project_folder || '';
   const projectName = shortenPath(effectivePath);
   const summary = session.summary || '(no message preview)';
   const [copied, setCopied] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [renameName, setRenameName] = useState('');
 
   const sessionId = session.session_id || '';
   const local = isLocalMachine(session.machine);
@@ -574,6 +576,23 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
       toast('Copied resume command', 'info');
       setTimeout(() => setCopied(false), 2000);
     }).catch(() => { toast('Failed to copy', 'error'); });
+  };
+
+  const handleRename = async () => {
+    const res = await fetch('/api/sessions/rename', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ machine: session.machine, session_id: session.session_id, pid: session.pid, name: renameName }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      session.name = renameName;
+      if (onRename) onRename(session.session_id, renameName);
+      toast('Session renamed', 'success');
+      setRenaming(false);
+    } else {
+      toast(data.error || 'Rename failed', 'error');
+    }
   };
 
   const launchBg    = local ? '#1f3a5f' : '#3a2200';
@@ -630,6 +649,19 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
     !isWorking && isActive && h('span', {
       style: { fontSize: '0.6rem', fontWeight: 700, color: '#3fb950', flexShrink: 0, letterSpacing: '0.04em' }
     }, 'ACTIVE'),
+
+    // Subprocess count badge (only for active/working with subprocs)
+    isActive && session.subprocess_count > 0 && h('span', {
+      style: { fontSize: '0.62rem', color: '#8b949e', fontFamily: 'monospace', whiteSpace: 'nowrap', flexShrink: 0 }
+    }, `${session.subprocess_count} procs`),
+
+    // CPU badge (only for active/working)
+    isActive && session.cpu_percent > 0 && h('span', {
+      style: {
+        fontSize: '0.62rem', fontFamily: 'monospace', whiteSpace: 'nowrap', flexShrink: 0,
+        color: session.cpu_percent > 30 ? '#e3b341' : '#8b949e',
+      }
+    }, `${session.cpu_percent}%CPU`),
 
     // Archived badge
     isArchived && h('span', {
@@ -736,9 +768,9 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
       title: effectivePath,
     }, effectivePath),
 
-    // Session ID + copy
-    sessionId && h('div', { style: { display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 } },
-      h('span', {
+    // Session ID + copy + rename
+    sessionId && h('div', { style: { display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6, flexWrap: 'wrap' } },
+      !renaming && h('span', {
         style: {
           fontSize: '10px', fontFamily: '"SF Mono", "Fira Code", Consolas, monospace',
           color: '#484f58', opacity: 0.7,
@@ -746,7 +778,7 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
         },
         title: sessionId,
       }, sessionId),
-      h('button', {
+      !renaming && h('button', {
         className: 'btn',
         onClick: handleCopy,
         title: `Copy: claude --resume ${sessionId}`,
@@ -762,6 +794,33 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
           style: { fontSize: '14px', verticalAlign: 'middle' },
         }, copied ? 'check' : 'content_copy'),
       ),
+
+      // Session name display
+      !renaming && session.name && h('span', {
+        style: { fontSize: '0.72rem', color: '#8b949e', whiteSpace: 'nowrap' }
+      }, `"${session.name}"`),
+
+      // Rename button (only for active/working sessions)
+      isActive && !renaming && h('button', {
+        className: 'compact-action-btn',
+        onClick: () => { setRenaming(true); setRenameName(session.name || ''); },
+        title: 'Rename session',
+      }, h(Icon, { name: 'edit', size: 11 }), ' Rename'),
+
+      // Inline rename form
+      renaming && h('div', { style: { display: 'flex', gap: 6, alignItems: 'center', flex: 1, minWidth: 0 } },
+        h('input', {
+          className: 'form-input',
+          value: renameName,
+          onChange: e => setRenameName(e.target.value),
+          onKeyDown: e => { if (e.key === 'Enter') handleRename(); if (e.key === 'Escape') setRenaming(false); },
+          style: { fontSize: '0.78rem', padding: '3px 8px', flex: 1 },
+          autoFocus: true,
+          placeholder: 'Session name…',
+        }),
+        h('button', { className: 'compact-action-btn btn-launch', onClick: handleRename }, 'Save'),
+        h('button', { className: 'compact-action-btn', onClick: () => setRenaming(false) }, 'Cancel'),
+      ),
     ),
 
     // Machine + OS badges (full)
@@ -771,6 +830,10 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
       session.cpu_percent > 0 && h(Badge, {
         text: `${session.cpu_percent}% CPU`,
         color: session.cpu_percent > 30 ? '#e3b341' : '#8b949e',
+      }),
+      session.subprocess_count > 0 && h(Badge, {
+        text: `${session.subprocess_count} subprocesses`,
+        color: '#8b949e',
       }),
       session.git_branch && h('span', {
         className: 'compact-action-btn',
@@ -786,6 +849,9 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
         ' ' + session.git_branch,
       ),
     ),
+
+    // Hardware info (only for active/working sessions)
+    isActive && hwCache !== undefined && h(HardwareInfo, { machine: session.machine, hwCache, fetchHardware }),
 
     // Full action buttons row
     h('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap' } },
@@ -917,6 +983,61 @@ function TmuxCard({ session, onConnect, connecting, onKill, killing, onRemoteAtt
           }
         }, connectLabel),
       ),
+    ),
+  );
+}
+
+// ─── Hardware Info Component ──────────────────────────────────────────────────
+
+function HardwareInfo({ machine, hwCache, fetchHardware }) {
+  const cached = hwCache[machine];
+
+  useEffect(() => {
+    if (!cached || Date.now() - cached.timestamp > 30000) {
+      fetchHardware(machine);
+    }
+  }, [machine]);
+
+  if (!cached) return h('div', {
+    style: { fontSize: '0.7rem', color: '#484f58', fontFamily: 'monospace', marginTop: 6, display: 'flex', alignItems: 'center', gap: 6 }
+  },
+    h('span', { style: { display: 'inline-block', animation: 'spin 0.8s linear infinite', fontSize: '0.7rem' } }, '↻'),
+    'Loading hardware info…',
+  );
+
+  if (cached.error) return h('div', {
+    style: { fontSize: '0.7rem', color: '#484f58', fontFamily: 'monospace', marginTop: 6 }
+  }, `hw: ${cached.error}`);
+
+  const { cpu, gpus, memory } = cached.data || {};
+
+  const cpuColor = cpu && cpu.percent > 70 ? '#f85149' : cpu && cpu.percent > 40 ? '#e3b341' : '#8b949e';
+  const ramColor = memory && (memory.used / memory.total) > 0.85 ? '#f85149' : memory && (memory.used / memory.total) > 0.7 ? '#e3b341' : '#8b949e';
+
+  return h('div', {
+    style: { fontSize: '0.7rem', color: '#6e7681', fontFamily: 'monospace', marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }
+  },
+    cpu && h('span', null,
+      h('span', { style: { color: '#484f58' } }, 'CPU: '),
+      h('span', { style: { color: '#8b949e' } }, `${cpu.name || 'CPU'}${cpu.cores ? ` (${cpu.cores} cores)` : ''}`),
+      cpu.percent != null && h('span', { style: { color: cpuColor } }, ` ${cpu.percent}%`),
+    ),
+
+    gpus && gpus.length > 0 && gpus.map((gpu, i) => {
+      const tempColor = gpu.temp > 80 ? '#f85149' : gpu.temp > 60 ? '#e3b341' : '#8b949e';
+      return h('span', { key: i },
+        h('span', { style: { color: '#484f58' } }, i === 0 ? ' | GPU: ' : ' | '),
+        h('span', { style: { color: '#8b949e' } }, gpu.name || 'GPU'),
+        gpu.vram && h('span', { style: { color: '#6e7681' } }, ` ${gpu.vram}`),
+        gpu.temp != null && h('span', { style: { color: tempColor } }, ` ${gpu.temp}°C`),
+        gpu.percent != null && h('span', { style: { color: '#8b949e' } }, ` ${gpu.percent}%`),
+      );
+    }),
+
+    memory && h('span', null,
+      h('span', { style: { color: '#484f58' } }, ' | RAM: '),
+      h('span', { style: { color: ramColor } }, `${memory.used != null ? memory.used.toFixed(1) : '?'}/${memory.total != null ? memory.total.toFixed(1) : '?'} GB`),
+      memory.total > 0 && h('span', { style: { color: '#484f58' } }, ` (${Math.round(memory.used / memory.total * 100)}%)`),
     ),
   );
 }
@@ -1515,7 +1636,7 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
 
 // ─── Pinned Section ───────────────────────────────────────────────────────────
 
-function PinnedSection({ sessions, pinnedIds, onLaunch, launchingId, onTmuxLaunch, tmuxLaunchingId, skipPermissions, onPin, onUnpin, onArchive, onUnarchive, archivedIds, expandedCards, onToggleExpand }) {
+function PinnedSection({ sessions, pinnedIds, onLaunch, launchingId, onTmuxLaunch, tmuxLaunchingId, skipPermissions, onPin, onUnpin, onArchive, onUnarchive, archivedIds, expandedCards, onToggleExpand, hwCache, fetchHardware }) {
   const pinned = sessions.filter(s => pinnedIds.includes(s.session_id));
   if (!pinned.length) return null;
 
@@ -1561,6 +1682,8 @@ function PinnedSection({ sessions, pinnedIds, onLaunch, launchingId, onTmuxLaunc
         expanded: expandedCards.has(s.session_id),
         onToggleExpand: () => onToggleExpand(s.session_id),
         inMachineSection: false,
+        hwCache,
+        fetchHardware,
       })
     ),
   );
@@ -1568,7 +1691,7 @@ function PinnedSection({ sessions, pinnedIds, onLaunch, launchingId, onTmuxLaunc
 
 // ─── Sessions Panel ───────────────────────────────────────────────────────────
 
-function SessionsPanel({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaunchingId, skipPermissions, scanning, collapseState, setCollapseState, pinnedIds, onPin, onUnpin, onArchive, onUnarchive, archivedIds, expandedCards, onToggleExpand }) {
+function SessionsPanel({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaunchingId, skipPermissions, scanning, collapseState, setCollapseState, pinnedIds, onPin, onUnpin, onArchive, onUnarchive, archivedIds, expandedCards, onToggleExpand, hwCache, fetchHardware }) {
   // sessions is already filtered/sorted by App; just group by machine
   const byMachine = useMemo(() => groupBy(sessions, 'machine'), [sessions]);
 
@@ -1622,6 +1745,8 @@ function SessionsPanel({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaun
       archivedIds,
       expandedCards: expandedCards || new Set(),
       onToggleExpand,
+      hwCache,
+      fetchHardware,
     }),
     // Scan progress indicator
     scanning && h('div', {
@@ -1681,6 +1806,8 @@ function SessionsPanel({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaun
                 expanded: (expandedCards || new Set()).has(s.session_id),
                 onToggleExpand: () => onToggleExpand(s.session_id),
                 inMachineSection: true,
+                hwCache,
+                fetchHardware,
               })
             )
           );
@@ -2148,6 +2275,27 @@ function App() {
   const [skipPermissions, setSkipPermissions] = useState(false);
   const [pinnedIds, setPinnedIds]         = useState([]);
   const [archivedIds, setArchivedIds]     = useState([]);
+
+  // Hardware cache: maps machine name → { data, timestamp } or { error, timestamp }
+  const [hwCache, setHwCache] = useState({});
+
+  const fetchHardware = useCallback(async (machine) => {
+    try {
+      const res = await fetch('/api/hardware', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ machine }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setHwCache(prev => ({ ...prev, [machine]: { data: data.hardware, timestamp: Date.now() } }));
+      } else {
+        setHwCache(prev => ({ ...prev, [machine]: { error: data.error || 'unavailable', timestamp: Date.now() } }));
+      }
+    } catch {
+      setHwCache(prev => ({ ...prev, [machine]: { error: 'network error', timestamp: Date.now() } }));
+    }
+  }, []);
 
   // Expanded card state: Set of session_ids, persisted to localStorage
   const [expandedCards, setExpandedCards] = useState(() => {
@@ -2673,6 +2821,8 @@ function App() {
                   archivedIds,
                   expandedCards,
                   onToggleExpand: handleToggleExpand,
+                  hwCache,
+                  fetchHardware,
                 }),
           ),
         ),

@@ -11,6 +11,9 @@ import asyncio
 import json
 import logging
 import pathlib
+import platform
+import subprocess
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -780,6 +783,401 @@ async def handle_sessions_unarchive(request: web.Request) -> web.Response:
 
 
 # ---------------------------------------------------------------------------
+# Hardware info endpoint
+# ---------------------------------------------------------------------------
+
+# Cache: machine -> {"data": {...}, "ts": float}
+_hw_cache: dict[str, dict] = {}
+_HW_CACHE_TTL = 30.0  # seconds
+
+
+def _get_local_hardware() -> dict:
+    """Collect CPU/GPU/memory info from the local machine."""
+    import psutil as _psutil
+
+    # CPU name
+    if platform.system() == "Darwin":
+        try:
+            cpu_name = subprocess.check_output(
+                ["sysctl", "-n", "machdep.cpu.brand_string"], text=True, timeout=3
+            ).strip()
+        except Exception:
+            cpu_name = platform.processor() or "Unknown"
+    else:
+        cpu_name = platform.processor() or "Unknown"
+
+    cpu_cores = _psutil.cpu_count(logical=True)
+    cpu_usage = _psutil.cpu_percent(interval=0.5)
+
+    # CPU temperature
+    cpu_temp = None
+    try:
+        temps = _psutil.sensors_temperatures()
+        if temps:
+            # Try common keys
+            for key in ("coretemp", "cpu_thermal", "k10temp", "zenpower"):
+                entries = temps.get(key, [])
+                if entries:
+                    cpu_temp = round(entries[0].current, 1)
+                    break
+            if cpu_temp is None:
+                # take first available
+                for entries in temps.values():
+                    if entries:
+                        cpu_temp = round(entries[0].current, 1)
+                        break
+    except Exception:
+        pass
+
+    # GPU info
+    gpus: list[dict] = []
+    # Try nvidia-smi first
+    try:
+        nv_out = subprocess.check_output(
+            [
+                "nvidia-smi",
+                "--query-gpu=name,temperature.gpu,utilization.gpu,memory.used,memory.total",
+                "--format=csv,noheader",
+            ],
+            text=True,
+            timeout=5,
+        ).strip()
+        for line in nv_out.splitlines():
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) >= 5:
+                def _parse_num(s: str):
+                    try:
+                        return float(s.split()[0])
+                    except Exception:
+                        return None
+                gpus.append({
+                    "name": parts[0],
+                    "temp_c": _parse_num(parts[1]),
+                    "usage_percent": _parse_num(parts[2]),
+                    "memory_used_mb": _parse_num(parts[3]),
+                    "memory_total_mb": _parse_num(parts[4]),
+                })
+    except Exception:
+        pass
+
+    # macOS fallback: system_profiler for GPU name
+    if not gpus and platform.system() == "Darwin":
+        try:
+            sp_out = subprocess.check_output(
+                ["system_profiler", "SPDisplaysDataType", "-json"],
+                text=True,
+                timeout=10,
+            )
+            sp_data = json.loads(sp_out)
+            displays = sp_data.get("SPDisplaysDataType", [])
+            for disp in displays:
+                name = disp.get("sppci_model") or disp.get("_name") or "Unknown GPU"
+                gpus.append({
+                    "name": name,
+                    "temp_c": None,
+                    "usage_percent": None,
+                    "memory_used_mb": None,
+                    "memory_total_mb": None,
+                })
+        except Exception:
+            pass
+
+    # Memory
+    vm = _psutil.virtual_memory()
+    memory = {
+        "total_gb": round(vm.total / 1e9, 1),
+        "used_gb": round(vm.used / 1e9, 1),
+        "percent": round(vm.percent, 1),
+    }
+
+    return {
+        "ok": True,
+        "cpu": {
+            "name": cpu_name,
+            "cores": cpu_cores,
+            "usage_percent": round(cpu_usage, 1),
+            "temp_c": cpu_temp,
+        },
+        "gpus": gpus,
+        "memory": memory,
+    }
+
+
+# Remote hardware collection script (stdlib + optional psutil/nvidia-smi)
+_REMOTE_HW_SCRIPT = r"""
+import json, platform, subprocess, sys
+
+def _parse_num(s):
+    try: return float(s.strip().split()[0])
+    except: return None
+
+# CPU name
+if platform.system() == "Darwin":
+    try:
+        cpu_name = subprocess.check_output(["sysctl", "-n", "machdep.cpu.brand_string"],
+                                           text=True, timeout=3).strip()
+    except:
+        cpu_name = platform.processor() or "Unknown"
+else:
+    cpu_name = platform.processor() or "Unknown"
+
+cpu_cores = None
+cpu_usage = None
+cpu_temp = None
+try:
+    import psutil as _p
+    cpu_cores = _p.cpu_count(logical=True)
+    cpu_usage = round(_p.cpu_percent(interval=0.5), 1)
+    try:
+        temps = _p.sensors_temperatures()
+        if temps:
+            for key in ("coretemp","cpu_thermal","k10temp","zenpower"):
+                entries = temps.get(key, [])
+                if entries: cpu_temp = round(entries[0].current, 1); break
+            if cpu_temp is None:
+                for entries in temps.values():
+                    if entries: cpu_temp = round(entries[0].current, 1); break
+    except: pass
+except: pass
+
+gpus = []
+try:
+    nv = subprocess.check_output(
+        ["nvidia-smi","--query-gpu=name,temperature.gpu,utilization.gpu,memory.used,memory.total",
+         "--format=csv,noheader"], text=True, timeout=5).strip()
+    for line in nv.splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) >= 5:
+            gpus.append({"name": parts[0], "temp_c": _parse_num(parts[1]),
+                         "usage_percent": _parse_num(parts[2]),
+                         "memory_used_mb": _parse_num(parts[3]),
+                         "memory_total_mb": _parse_num(parts[4])})
+except: pass
+
+if not gpus and platform.system() == "Darwin":
+    try:
+        import json as _j
+        sp = subprocess.check_output(["system_profiler","SPDisplaysDataType","-json"],
+                                     text=True, timeout=10)
+        for disp in _j.loads(sp).get("SPDisplaysDataType",[]):
+            name = disp.get("sppci_model") or disp.get("_name") or "Unknown GPU"
+            gpus.append({"name": name, "temp_c": None, "usage_percent": None,
+                         "memory_used_mb": None, "memory_total_mb": None})
+    except: pass
+
+memory = {"total_gb": None, "used_gb": None, "percent": None}
+try:
+    import psutil as _p
+    vm = _p.virtual_memory()
+    memory = {"total_gb": round(vm.total/1e9,1), "used_gb": round(vm.used/1e9,1),
+              "percent": round(vm.percent,1)}
+except: pass
+
+print(json.dumps({"ok": True,
+    "cpu": {"name": cpu_name, "cores": cpu_cores, "usage_percent": cpu_usage, "temp_c": cpu_temp},
+    "gpus": gpus, "memory": memory}))
+"""
+
+
+async def handle_hardware(request: web.Request) -> web.Response:
+    """POST /api/hardware — get CPU/GPU/memory info for a machine.
+
+    Request: {"machine": "mac-mini"}
+    Response: {"ok": true, "cpu": {...}, "gpus": [...], "memory": {...}}
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid JSON body"}, status=400)
+
+    machine = body.get("machine", "")
+    from .config import FLEET_MACHINES
+    local_machine = request.app["local_machine"]
+    is_local = (not machine) or (machine == local_machine)
+
+    cache_key = machine or "__local__"
+    cached = _hw_cache.get(cache_key)
+    if cached and (time.monotonic() - cached["ts"]) < _HW_CACHE_TTL:
+        return web.json_response(cached["data"])
+
+    if is_local:
+        try:
+            loop = asyncio.get_running_loop()
+            data = await loop.run_in_executor(None, _get_local_hardware)
+            _hw_cache[cache_key] = {"data": data, "ts": time.monotonic()}
+            return web.json_response(data)
+        except Exception as exc:
+            log.exception("local hardware query failed")
+            return web.json_response({"ok": False, "error": str(exc)}, status=500)
+
+    info = FLEET_MACHINES.get(machine)
+    if not info:
+        return web.json_response({"ok": False, "error": f"Unknown machine: {machine}"}, status=400)
+    ssh_alias = info.get("ssh_alias", machine)
+
+    script = _REMOTE_HW_SCRIPT.strip()
+    proc = await asyncio.create_subprocess_exec(
+        "ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
+        ssh_alias, "python3", "-",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(input=script.encode()), timeout=20)
+    except asyncio.TimeoutError:
+        proc.kill()
+        return web.json_response({"ok": False, "error": "SSH timeout"}, status=504)
+
+    if proc.returncode != 0:
+        err = stderr.decode().strip()
+        return web.json_response({"ok": False, "error": err or "SSH command failed"}, status=500)
+
+    try:
+        data = json.loads(stdout.decode().strip())
+        _hw_cache[cache_key] = {"data": data, "ts": time.monotonic()}
+        return web.json_response(data)
+    except Exception as exc:
+        return web.json_response({"ok": False, "error": f"Parse error: {exc}"}, status=500)
+
+
+# ---------------------------------------------------------------------------
+# Session rename endpoint
+# ---------------------------------------------------------------------------
+
+async def handle_sessions_rename(request: web.Request) -> web.Response:
+    """POST /api/sessions/rename — rename a Claude Code session.
+
+    Request: {"machine": "mac-mini", "session_id": "uuid", "pid": 24740, "name": "my-new-name"}
+    Response: {"ok": true, "name": "my-new-name"}
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid JSON body"}, status=400)
+
+    machine = body.get("machine", "")
+    session_id = body.get("session_id", "")
+    pid = body.get("pid")
+    name = body.get("name", "")
+
+    if not session_id:
+        return web.json_response({"ok": False, "error": "session_id required"}, status=400)
+    if not name or not name.strip():
+        return web.json_response({"ok": False, "error": "name must be non-empty"}, status=400)
+    name = name.strip()
+
+    from .config import FLEET_MACHINES
+    local_machine = request.app["local_machine"]
+    is_local = (not machine) or (machine == local_machine)
+
+    if is_local:
+        sessions_dir = pathlib.Path.home() / ".claude" / "sessions"
+        # Find the PID file: prefer <pid>.json, else scan for sessionId match
+        pid_file: pathlib.Path | None = None
+        if pid:
+            candidate = sessions_dir / f"{pid}.json"
+            if candidate.exists():
+                pid_file = candidate
+        if pid_file is None:
+            # Scan all *.json files for matching sessionId
+            if sessions_dir.is_dir():
+                for jf in sessions_dir.glob("*.json"):
+                    try:
+                        d = json.loads(jf.read_text(encoding="utf-8"))
+                        if d.get("sessionId") == session_id:
+                            pid_file = jf
+                            break
+                    except Exception:
+                        continue
+        if pid_file is None:
+            return web.json_response({"ok": False, "error": "No active PID file found for this session"}, status=404)
+        try:
+            data = json.loads(pid_file.read_text(encoding="utf-8"))
+        except Exception as exc:
+            return web.json_response({"ok": False, "error": f"Could not read session file: {exc}"}, status=500)
+        if data.get("sessionId") and data["sessionId"] != session_id:
+            return web.json_response(
+                {"ok": False, "error": "sessionId mismatch in PID file"}, status=400
+            )
+        data["name"] = name
+        try:
+            pid_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        except Exception as exc:
+            return web.json_response({"ok": False, "error": f"Could not write session file: {exc}"}, status=500)
+        return web.json_response({"ok": True, "name": name})
+
+    # Remote machine
+    info = FLEET_MACHINES.get(machine)
+    if not info:
+        return web.json_response({"ok": False, "error": f"Unknown machine: {machine}"}, status=400)
+    ssh_alias = info.get("ssh_alias", machine)
+
+    safe_name = name.replace("\\", "\\\\").replace("'", "\\'")
+    safe_sid = session_id.replace("'", "\\'")
+    pid_arg = str(int(pid)) if pid else "None"
+
+    py_script = f"""
+import json, pathlib, sys
+session_id = '{safe_sid}'
+pid = {pid_arg}
+name = '{safe_name}'
+sessions_dir = pathlib.Path.home() / '.claude' / 'sessions'
+pid_file = None
+if pid:
+    candidate = sessions_dir / f'{{pid}}.json'
+    if candidate.exists():
+        pid_file = candidate
+if pid_file is None and sessions_dir.is_dir():
+    for jf in sessions_dir.glob('*.json'):
+        try:
+            d = json.loads(jf.read_text(encoding='utf-8'))
+            if d.get('sessionId') == session_id:
+                pid_file = jf
+                break
+        except Exception:
+            pass
+if pid_file is None:
+    print(json.dumps({{'ok': False, 'error': 'No active PID file found'}}))
+    sys.exit(0)
+try:
+    data = json.loads(pid_file.read_text(encoding='utf-8'))
+except Exception as exc:
+    print(json.dumps({{'ok': False, 'error': str(exc)}}))
+    sys.exit(0)
+if data.get('sessionId') and data['sessionId'] != session_id:
+    print(json.dumps({{'ok': False, 'error': 'sessionId mismatch'}}))
+    sys.exit(0)
+data['name'] = name
+pid_file.write_text(json.dumps(data, indent=2), encoding='utf-8')
+print(json.dumps({{'ok': True, 'name': name}}))
+"""
+
+    proc = await asyncio.create_subprocess_exec(
+        "ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
+        ssh_alias, "python3", "-",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(input=py_script.encode()), timeout=15)
+    except asyncio.TimeoutError:
+        proc.kill()
+        return web.json_response({"ok": False, "error": "SSH timeout"}, status=504)
+
+    if proc.returncode != 0:
+        err = stderr.decode().strip()
+        return web.json_response({"ok": False, "error": err or "SSH command failed"}, status=500)
+
+    try:
+        result = json.loads(stdout.decode().strip())
+        return web.json_response(result)
+    except Exception as exc:
+        return web.json_response({"ok": False, "error": f"Parse error: {exc}"}, status=500)
+
+
+# ---------------------------------------------------------------------------
 # WebSocket handler
 # ---------------------------------------------------------------------------
 
@@ -872,6 +1270,8 @@ def create_app(
     app.router.add_post("/api/sessions/unpin", handle_sessions_unpin)
     app.router.add_post("/api/sessions/archive", handle_sessions_archive)
     app.router.add_post("/api/sessions/unarchive", handle_sessions_unarchive)
+    app.router.add_post("/api/sessions/rename", handle_sessions_rename)
+    app.router.add_post("/api/hardware", handle_hardware)
     app.router.add_get("/api/fleet", handle_fleet)
     app.router.add_get("/api/tmux", handle_tmux)
     app.router.add_get("/api/tmux/{machine}", handle_tmux_machine)
