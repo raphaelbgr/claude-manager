@@ -213,6 +213,79 @@ function clsx(...args) {
   return args.filter(Boolean).join(' ');
 }
 
+// ─── Machine / Design System ──────────────────────────────────────────────────
+
+const MACHINE_INFO = {
+  'mac-mini':        { ip: '192.168.7.102', os: 'macOS',   icon: '🍎' },
+  'ubuntu-desktop':  { ip: '192.168.7.13',  os: 'Linux',   icon: '🐧' },
+  'avell-i7':        { ip: '192.168.7.103', os: 'Windows', icon: '🪟' },
+  'windows-desktop': { ip: '192.168.7.101', os: 'Windows', icon: '🪟' },
+};
+
+// Detect local machine from the page's hostname (API host).
+// If served from one of the known IPs, map it back to a machine name.
+function detectLocalMachine() {
+  const h = location.hostname;
+  for (const [name, info] of Object.entries(MACHINE_INFO)) {
+    if (h === info.ip || h === name || h === 'localhost' || h === '127.0.0.1') {
+      // localhost / 127.0.0.1 → assume mac-mini (the primary orchestrator)
+      if (h === 'localhost' || h === '127.0.0.1') return 'mac-mini';
+      return name;
+    }
+  }
+  return 'mac-mini'; // fallback
+}
+
+const LOCAL_MACHINE = detectLocalMachine();
+
+function isLocalMachine(machine) {
+  return machine === LOCAL_MACHINE;
+}
+
+function getMachineOS(machine) {
+  return MACHINE_INFO[machine]?.os || 'unknown';
+}
+
+function formatFileSize(bytes) {
+  if (!bytes) return '';
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+  if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + ' MB';
+  return (bytes / 1073741824).toFixed(1) + ' GB';
+}
+
+// ─── Badge Component ──────────────────────────────────────────────────────────
+
+function Badge({ text, color = '#8b949e', bg = '#21262d', border = '#30363d', icon }) {
+  return h('span', {
+    style: {
+      display: 'inline-flex', alignItems: 'center', gap: 4,
+      fontSize: '0.65rem', fontWeight: 600,
+      padding: '2px 8px', borderRadius: 12,
+      background: bg, color: color, border: `1px solid ${border}`,
+      whiteSpace: 'nowrap',
+      fontFamily: '"SF Mono", "Fira Code", Consolas, monospace',
+    }
+  }, icon && h('span', { style: { fontSize: '0.7rem' } }, icon), text);
+}
+
+function MachineBadge({ machine }) {
+  const info = MACHINE_INFO[machine] || {};
+  const local = isLocalMachine(machine);
+  if (local) {
+    return h(Badge, { text: 'LOCAL', color: '#3fb950', bg: '#1a3a2a', border: '#2a5a3a' });
+  }
+  const label = info.ip ? `${machine} (${info.ip})` : machine;
+  return h(Badge, { text: label, color: '#8b949e', bg: '#21262d', border: '#30363d' });
+}
+
+function OsBadge({ machine }) {
+  const info = MACHINE_INFO[machine] || {};
+  const icon = info.icon || '💻';
+  const os = info.os || 'unknown';
+  return h(Badge, { text: os, icon, color: '#8b949e', bg: '#21262d', border: '#30363d' });
+}
+
 // ─── Toast system ─────────────────────────────────────────────────────────────
 
 let _addToast = null;
@@ -296,9 +369,10 @@ function StatusDot({ status, pulse = false }) {
 
 // ─── Session Card ─────────────────────────────────────────────────────────────
 
-function SessionCard({ session, onLaunch, launching }) {
+function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching, skipPermissions }) {
   const isActive = session.status === 'active';
-  const projectName = shortenPath(session.project_path || session.project_folder);
+  const projectPath = session.project_path || session.project_folder || '';
+  const projectName = shortenPath(projectPath);
   const summary = session.summary || '(no message preview)';
   const [copied, setCopied] = useState(false);
 
@@ -307,6 +381,11 @@ function SessionCard({ session, onLaunch, launching }) {
     session.cwd &&
     session.project_path &&
     session.cwd !== session.project_path;
+
+  // Display name: custom name > slug > "(unnamed)"
+  const displayName = session.name || session.slug || '(unnamed)';
+  const local = isLocalMachine(session.machine);
+  const os = getMachineOS(session.machine);
 
   const handleCopy = () => {
     const cmd = `claude --resume ${sessionId}`;
@@ -319,97 +398,140 @@ function SessionCard({ session, onLaunch, launching }) {
     });
   };
 
+  const launchLabel = launching ? 'Launching…' : (local ? 'Launch' : 'SSH + Launch');
+  const launchBg    = local ? '#1f3a5f' : '#3a2200';
+  const launchColor = local ? '#58a6ff' : '#e3b341';
+  const launchBorder = local ? '#2d4f7a' : '#5a3a00';
+
+  const tmuxLabel = tmuxLaunching ? 'Launching…' : (os === 'Windows' ? 'psmux Launch' : 'tmux Launch');
+
   return h('div', { className: 'session-card' },
-    h('div', { style: { display: 'flex', alignItems: 'flex-start', gap: 10 } },
-      h('div', { style: { paddingTop: 3 } },
-        h(StatusDot, { status: session.status, pulse: true })
+    h('div', { style: { flex: 1, minWidth: 0 } },
+
+      // Row 1: Display name (bold, primary)
+      h('div', {
+        style: {
+          fontSize: '0.88rem', fontWeight: 700,
+          color: '#58a6ff', overflow: 'hidden',
+          textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          marginBottom: 3,
+        },
+        title: displayName,
+      }, displayName),
+
+      // Row 2: Project path + CWD if different
+      h('div', {
+        style: {
+          fontSize: '0.7rem', color: '#8b949e',
+          fontFamily: '"SF Mono", "Fira Code", Consolas, monospace',
+          overflow: 'hidden', textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap', marginBottom: 4,
+        },
+        title: cwdDiffersFromProject ? `${projectPath} → ${session.cwd}` : projectPath,
+      },
+        projectName,
+        cwdDiffersFromProject && h('span', { style: { color: '#484f58' } }, ` → ${shortenPath(session.cwd)}`),
       ),
-      h('div', { style: { flex: 1, minWidth: 0 } },
-        h('div', {
+
+      // Row 3: Summary
+      h('div', {
+        style: {
+          fontSize: '0.75rem', color: '#6e7681',
+          overflow: 'hidden', textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap', marginBottom: 6,
+          fontStyle: 'italic',
+        },
+        title: summary,
+      }, `"${summary}"`),
+
+      // Row 4: Metadata badges
+      h('div', {
+        style: {
+          display: 'flex', flexWrap: 'wrap', gap: 4,
+          alignItems: 'center', marginBottom: 6,
+        }
+      },
+        h(MachineBadge, { machine: session.machine }),
+        h(OsBadge, { machine: session.machine }),
+        h('span', {
           style: {
-            display: 'flex', justifyContent: 'space-between',
-            alignItems: 'center', marginBottom: 4, gap: 8,
+            display: 'inline-flex', alignItems: 'center', gap: 4,
+            fontSize: '0.65rem', fontWeight: 600,
+            padding: '2px 8px', borderRadius: 12,
+            background: isActive ? '#1a3a2a' : '#21262d',
+            color: isActive ? '#3fb950' : '#6e7681',
+            border: `1px solid ${isActive ? '#2a5a3a' : '#30363d'}`,
+            whiteSpace: 'nowrap',
           }
         },
           h('span', {
             style: {
-              fontSize: '0.85rem', fontWeight: 600,
-              color: '#e6edf3', overflow: 'hidden',
-              textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-              maxWidth: '65%',
-            },
-            title: session.project_path || session.project_folder,
-          }, projectName),
-          isActive && h('span', {
-            className: 'badge',
-            style: { background: '#1a3a2a', color: '#3fb950', flexShrink: 0 }
-          }, 'ACTIVE'),
-        ),
-        cwdDiffersFromProject && h('div', {
-          style: {
-            fontSize: '0.7rem', color: '#484f58', fontFamily: 'monospace',
-            overflow: 'hidden', textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap', marginBottom: 4,
-          },
-          title: session.cwd,
-        }, session.cwd),
-        h('div', {
-          style: {
-            fontSize: '0.78rem', color: '#8b949e',
-            overflow: 'hidden', textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap', marginBottom: 8,
-          },
-          title: summary,
-        }, `"${summary}"`),
-        h('div', {
-          style: {
-            display: 'flex', alignItems: 'center',
-            justifyContent: 'space-between', gap: 8,
-          }
-        },
-          h('span', {
-            style: { fontSize: '0.72rem', color: '#484f58', fontFamily: 'monospace' }
-          }, `${session.messages} msgs · ${relativeTime(session.modified)}`),
-          h('button', {
-            className: 'btn',
-            onClick: () => onLaunch(session),
-            disabled: launching,
-            style: {
-              fontSize: '0.72rem', fontWeight: 600,
-              background: '#1f3a5f', color: '#58a6ff',
-              border: '1px solid #2d4f7a', borderRadius: 6,
-              padding: '3px 10px', cursor: launching ? 'not-allowed' : 'pointer',
-              opacity: launching ? 0.6 : 1,
+              width: 6, height: 6, borderRadius: '50%',
+              background: isActive ? '#3fb950' : '#484f58',
+              display: 'inline-block', flexShrink: 0,
+              animation: isActive ? 'pulse-dot 1.4s ease-in-out infinite' : 'none',
             }
-          }, launching ? 'Launching…' : 'Launch'),
+          }),
+          isActive ? 'ACTIVE' : 'idle',
         ),
-        sessionId && h('div', {
+        session.file_size && h(Badge, { text: formatFileSize(session.file_size) }),
+        h(Badge, { text: `${session.messages || 0} msgs` }),
+        h(Badge, { text: relativeTime(session.modified) }),
+      ),
+
+      // Row 5: Session ID + copy
+      sessionId && h('div', {
+        style: { display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }
+      },
+        h('span', {
           style: {
-            display: 'flex', alignItems: 'center', gap: 6, marginTop: 6,
+            fontSize: '10px', fontFamily: '"SF Mono", "Fira Code", Consolas, monospace',
+            color: '#484f58', opacity: 0.6,
+            overflow: 'hidden', textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap', maxWidth: 200,
+          },
+          title: sessionId,
+        }, sessionId),
+        h('button', {
+          className: 'btn',
+          onClick: handleCopy,
+          title: `Copy: claude --resume ${sessionId}`,
+          style: {
+            background: 'none', border: 'none',
+            color: copied ? '#3fb950' : '#484f58',
+            padding: '0 2px', cursor: 'pointer',
+            fontSize: '0.75rem', lineHeight: 1,
+            flexShrink: 0,
           }
-        },
-          h('span', {
-            style: {
-              fontSize: '10px', fontFamily: 'monospace',
-              color: '#484f58', opacity: 0.6,
-              overflow: 'hidden', textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap', maxWidth: 180,
-            },
-            title: sessionId,
-          }, sessionId),
-          h('button', {
-            className: 'btn',
-            onClick: handleCopy,
-            title: `Copy: claude --resume ${sessionId}`,
-            style: {
-              background: 'none', border: 'none',
-              color: copied ? '#3fb950' : '#484f58',
-              padding: '0 2px', cursor: 'pointer',
-              fontSize: '0.75rem', lineHeight: 1,
-              flexShrink: 0,
-            }
-          }, copied ? '✓' : '📋'),
-        ),
+        }, copied ? '✓' : '📋'),
+      ),
+
+      // Row 6: Action buttons
+      h('div', { style: { display: 'flex', gap: 6 } },
+        h('button', {
+          className: 'btn',
+          onClick: () => onLaunch(session),
+          disabled: launching,
+          style: {
+            fontSize: '0.72rem', fontWeight: 600,
+            background: launchBg, color: launchColor,
+            border: `1px solid ${launchBorder}`, borderRadius: 6,
+            padding: '4px 12px', cursor: launching ? 'not-allowed' : 'pointer',
+            opacity: launching ? 0.6 : 1,
+          }
+        }, launchLabel),
+        h('button', {
+          className: 'btn',
+          onClick: () => onTmuxLaunch(session),
+          disabled: tmuxLaunching,
+          style: {
+            fontSize: '0.72rem', fontWeight: 600,
+            background: '#1a3a2a', color: '#3fb950',
+            border: '1px solid #2a5a3a', borderRadius: 6,
+            padding: '4px 12px', cursor: tmuxLaunching ? 'not-allowed' : 'pointer',
+            opacity: tmuxLaunching ? 0.6 : 1,
+          }
+        }, tmuxLabel),
       ),
     ),
   );
@@ -419,53 +541,46 @@ function SessionCard({ session, onLaunch, launching }) {
 
 function TmuxCard({ session, onConnect, connecting }) {
   const isAttached = session.attached;
+  const local = isLocalMachine(session.machine);
+  const connectLabel = connecting ? 'Connecting…' : (local ? 'Connect' : 'SSH + Connect');
 
   return h('div', { className: 'tmux-card' },
-    h('div', { style: { display: 'flex', alignItems: 'center', gap: 10 } },
-      h('span', {
+    h('div', { style: { flex: 1, minWidth: 0 } },
+      // Session name
+      h('div', {
         style: {
-          color: '#e3b341', fontSize: '0.8rem', flexShrink: 0,
-          fontFamily: 'monospace',
+          fontSize: '0.85rem', fontWeight: 700, color: '#e6edf3',
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          marginBottom: 5,
         }
-      }, '◆'),
-      h('div', { style: { flex: 1, minWidth: 0 } },
-        h('div', {
+      }, session.session_name || session.name || '(unnamed)'),
+
+      // Badge row
+      h('div', {
+        style: { display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center', marginBottom: 8 }
+      },
+        h(MachineBadge, { machine: session.machine }),
+        h(OsBadge, { machine: session.machine }),
+        session.windows != null && h(Badge, { text: `${session.windows} win` }),
+        isAttached && h(Badge, { text: 'attached', color: '#58a6ff', bg: '#1f3a5f', border: '#2d4f7a' }),
+      ),
+
+      // Connect button
+      h('div', { style: { display: 'flex', justifyContent: 'flex-end' } },
+        h('button', {
+          className: 'btn',
+          onClick: () => onConnect(session),
+          disabled: connecting,
           style: {
-            display: 'flex', justifyContent: 'space-between',
-            alignItems: 'center', gap: 8,
+            fontSize: '0.72rem', fontWeight: 600,
+            background: local ? '#1a3a2a' : '#3a2200',
+            color: local ? '#3fb950' : '#e3b341',
+            border: `1px solid ${local ? '#2a5a3a' : '#5a3a00'}`,
+            borderRadius: 6, padding: '4px 12px',
+            cursor: connecting ? 'not-allowed' : 'pointer',
+            opacity: connecting ? 0.6 : 1,
           }
-        },
-          h('span', {
-            style: {
-              fontSize: '0.85rem', fontWeight: 600, color: '#e6edf3',
-              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-            }
-          }, session.session_name || session.name || '(unnamed)'),
-          h('div', { style: { display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 } },
-            session.windows != null && h('span', {
-              style: { fontSize: '0.68rem', color: '#8b949e' }
-            }, `${session.windows} win`),
-            isAttached && h('span', {
-              className: 'badge',
-              style: { background: '#1f3a5f', color: '#58a6ff' }
-            }, 'attached'),
-          ),
-        ),
-        h('div', { style: { marginTop: 8, display: 'flex', justifyContent: 'flex-end' } },
-          h('button', {
-            className: 'btn',
-            onClick: () => onConnect(session),
-            disabled: connecting,
-            style: {
-              fontSize: '0.72rem', fontWeight: 600,
-              background: '#1a3a2a', color: '#3fb950',
-              border: '1px solid #2a5a3a', borderRadius: 6,
-              padding: '3px 10px',
-              cursor: connecting ? 'not-allowed' : 'pointer',
-              opacity: connecting ? 0.6 : 1,
-            }
-          }, connecting ? 'Connecting…' : 'Connect'),
-        ),
+        }, connectLabel),
       ),
     ),
   );
@@ -642,7 +757,7 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
 
 // ─── Sessions Panel ───────────────────────────────────────────────────────────
 
-function SessionsPanel({ sessions, filter, onLaunch, launchingId }) {
+function SessionsPanel({ sessions, filter, onLaunch, onTmuxLaunch, launchingId, tmuxLaunchingId, skipPermissions }) {
   const filtered = useMemo(() => {
     if (!filter.trim()) return sessions;
     const q = filter.toLowerCase();
@@ -700,7 +815,10 @@ function SessionsPanel({ sessions, filter, onLaunch, launchingId }) {
             key: s.session_id,
             session: s,
             onLaunch,
+            onTmuxLaunch,
             launching: launchingId === s.session_id,
+            tmuxLaunching: tmuxLaunchingId === s.session_id,
+            skipPermissions,
           })
         )
       )
@@ -808,23 +926,25 @@ function FleetBar({ fleet, lastScan, wsConnected }) {
       }, `${online}/${total}`),
     ),
 
-    ...entries.map(m =>
-      h('div', {
+    ...entries.map(m => {
+      const info = MACHINE_INFO[m.name] || {};
+      return h('div', {
         key: m.name,
-        style: { display: 'flex', alignItems: 'center', gap: 5 }
+        style: { display: 'flex', alignItems: 'center', gap: 4 }
       },
         h('span', {
           className: clsx('status-dot', m.online ? 'active' : 'idle'),
           style: { width: 6, height: 6 },
         }),
+        info.icon && h('span', { style: { fontSize: '0.7rem' } }, info.icon),
         h('span', {
           style: { color: m.online ? '#e6edf3' : '#484f58' }
         }, m.name),
-        m.method && m.method !== 'unreachable' && h('span', {
-          style: { color: '#30363d' }
-        }, `·${m.method}`),
-      )
-    ),
+        info.ip && h('span', {
+          style: { color: '#484f58', fontSize: '0.65rem' }
+        }, ` ${info.ip}`),
+      );
+    }),
 
     h('div', {
       style: { marginLeft: 'auto', color: '#484f58', display: 'flex', gap: 12, alignItems: 'center' }
@@ -847,7 +967,7 @@ function FleetBar({ fleet, lastScan, wsConnected }) {
 
 // ─── Header ───────────────────────────────────────────────────────────────────
 
-function Header({ health, sessions, tmuxSessions, fleet, filter, onFilterChange, onScan, scanning }) {
+function Header({ health, sessions, tmuxSessions, fleet, filter, onFilterChange, onScan, scanning, skipPermissions, onSkipPermissionsChange }) {
   const online = Object.values(fleet || {}).filter(m => m.online).length;
   const total = Object.keys(fleet || {}).length;
 
@@ -929,23 +1049,43 @@ function Header({ health, sessions, tmuxSessions, fleet, filter, onFilterChange,
       }, '↻'),
       scanning ? 'Scanning…' : 'Scan',
     ),
+
+    // Skip permissions toggle
+    h('label', {
+      style: {
+        display: 'flex', alignItems: 'center', gap: 6,
+        cursor: 'pointer', userSelect: 'none',
+        fontSize: '0.72rem', color: skipPermissions ? '#e3b341' : '#6e7681',
+        whiteSpace: 'nowrap',
+      }
+    },
+      h('input', {
+        type: 'checkbox',
+        checked: skipPermissions,
+        onChange: e => onSkipPermissionsChange(e.target.checked),
+        style: { accentColor: '#e3b341', cursor: 'pointer' },
+      }),
+      '--dangerously-skip-permissions',
+    ),
   );
 }
 
 // ─── Root App ─────────────────────────────────────────────────────────────────
 
 function App() {
-  const [sessions, setSessions]       = useState([]);
-  const [tmuxSessions, setTmuxSessions] = useState([]);
-  const [fleet, setFleet]             = useState({});
-  const [health, setHealth]           = useState(null);
-  const [lastScan, setLastScan]       = useState(null);
-  const [filter, setFilter]           = useState('');
-  const [scanning, setScanning]       = useState(false);
-  const [launchingId, setLaunchingId] = useState(null);
-  const [connectingId, setConnectingId] = useState(null);
-  const [showModal, setShowModal]     = useState(false);
-  const [loading, setLoading]         = useState(true);
+  const [sessions, setSessions]           = useState([]);
+  const [tmuxSessions, setTmuxSessions]   = useState([]);
+  const [fleet, setFleet]                 = useState({});
+  const [health, setHealth]               = useState(null);
+  const [lastScan, setLastScan]           = useState(null);
+  const [filter, setFilter]               = useState('');
+  const [scanning, setScanning]           = useState(false);
+  const [launchingId, setLaunchingId]     = useState(null);
+  const [tmuxLaunchingId, setTmuxLaunchingId] = useState(null);
+  const [connectingId, setConnectingId]   = useState(null);
+  const [showModal, setShowModal]         = useState(false);
+  const [loading, setLoading]             = useState(true);
+  const [skipPermissions, setSkipPermissions] = useState(false);
 
   // ── WS message handler ───────────────────────────────────────────────────
   const handleWsMessage = useCallback((msg) => {
@@ -1012,7 +1152,12 @@ function App() {
       .then(d => { if (Array.isArray(d)) setTmuxSessions(d); })
       .catch(() => {});
 
-    Promise.all([p1, p2, p3, p4]).finally(() => setLoading(false));
+    const p5 = fetch('/api/preferences')
+      .then(r => r.json())
+      .then(d => { if (d && typeof d.skip_permissions === 'boolean') setSkipPermissions(d.skip_permissions); })
+      .catch(() => {});
+
+    Promise.all([p1, p2, p3, p4, p5]).finally(() => setLoading(false));
   }, []);
 
   // ── Scan ─────────────────────────────────────────────────────────────────
@@ -1037,6 +1182,20 @@ function App() {
     }
   }, []);
 
+  // ── Skip permissions ──────────────────────────────────────────────────────
+  const handleSkipPermissionsChange = useCallback(async (val) => {
+    setSkipPermissions(val);
+    try {
+      await fetch('/api/preferences', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ skip_permissions: val }),
+      });
+    } catch {
+      // non-fatal — preference not saved server-side, still works for this session
+    }
+  }, []);
+
   // ── Launch session ────────────────────────────────────────────────────────
   const handleLaunch = useCallback(async (session) => {
     setLaunchingId(session.session_id);
@@ -1048,6 +1207,7 @@ function App() {
           machine: session.machine,
           session_id: session.session_id,
           cwd: session.cwd || session.project_path,
+          skip_permissions: skipPermissions,
         }),
       });
       const data = await res.json();
@@ -1061,7 +1221,35 @@ function App() {
     } finally {
       setLaunchingId(null);
     }
-  }, []);
+  }, [skipPermissions]);
+
+  // ── Tmux launch (create tmux session + launch claude in it) ──────────────
+  const handleTmuxLaunch = useCallback(async (session) => {
+    setTmuxLaunchingId(session.session_id);
+    try {
+      const res = await fetch('/api/sessions/launch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          machine: session.machine,
+          session_id: session.session_id,
+          cwd: session.cwd || session.project_path,
+          skip_permissions: skipPermissions,
+          mode: 'tmux',
+        }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        toast(`Launched in tmux on ${session.machine}`, 'success');
+      } else {
+        toast(data.error || 'Tmux launch not yet implemented', 'info');
+      }
+    } catch {
+      toast('Network error', 'error');
+    } finally {
+      setTmuxLaunchingId(null);
+    }
+  }, [skipPermissions]);
 
   // ── Tmux connect ──────────────────────────────────────────────────────────
   const handleConnectTmux = useCallback(async (session) => {
@@ -1101,6 +1289,8 @@ function App() {
         onFilterChange: setFilter,
         onScan: handleScan,
         scanning,
+        skipPermissions,
+        onSkipPermissionsChange: handleSkipPermissionsChange,
       }),
 
       // Main panels
@@ -1155,7 +1345,10 @@ function App() {
               : h(SessionsPanel, {
                   sessions, filter,
                   onLaunch: handleLaunch,
+                  onTmuxLaunch: handleTmuxLaunch,
                   launchingId,
+                  tmuxLaunchingId,
+                  skipPermissions,
                 }),
           ),
         ),

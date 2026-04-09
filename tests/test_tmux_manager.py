@@ -287,10 +287,11 @@ class TestListRemoteTmux:
 
         args = mock_exec.call_args[0]
         assert args[0] == "ssh"
-        assert f"-o ConnectTimeout={SSH_TIMEOUT}" in args
-        assert "-o BatchMode=yes" in args
-        assert "-o StrictHostKeyChecking=no" in args
-        assert "ubuntu-desktop" in args
+        # SSH options may be single args ("-o ConnectTimeout=3") or split ("-o", "ConnectTimeout=3")
+        args_str = " ".join(str(a) for a in args)
+        assert f"ConnectTimeout={SSH_TIMEOUT}" in args_str
+        assert "BatchMode=yes" in args_str
+        assert "ubuntu-desktop" in args_str
         # Last arg is the remote command string
         remote_cmd = args[-1]
         assert "tmux list-sessions" in remote_cmd

@@ -42,6 +42,8 @@ class ClaudeSession:
     modified: str             # ISO-8601 mtime
     status: str               # "active" | "idle"
     pid: int | None           # PID if active, else None
+    file_size: int = 0        # file size in bytes of the .jsonl file
+    name: str = ""            # session name set by /rename
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -101,6 +103,7 @@ def parse_session(
     session_id = file_path.stem
     stat = file_path.stat()
     modified = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
+    file_size = stat.st_size
 
     slug = ""
     cwd = ""
@@ -153,6 +156,7 @@ def parse_session(
         modified=modified,
         status="idle",  # enriched later by _mark_active_sessions
         pid=None,
+        file_size=file_size,
     )
 
 
@@ -160,21 +164,26 @@ def parse_session(
 # PID / active session detection (local)
 # ---------------------------------------------------------------------------
 
-def _load_active_pids(claude_home: Path) -> dict[str, int]:
+def _load_active_pids(claude_home: Path) -> tuple[dict[str, int], dict[str, str]]:
     """
-    Read ~/.claude/sessions/*.json and return mapping session_id → pid
-    for sessions whose process is still alive.
+    Read ~/.claude/sessions/*.json and return:
+      - mapping session_id → pid for sessions whose process is still alive
+      - mapping session_id → name for sessions that have a /rename name set
     """
     sessions_dir = claude_home / "sessions"
     active: dict[str, int] = {}
+    names: dict[str, str] = {}
     if not sessions_dir.is_dir():
-        return active
+        return active, names
 
     for jf in sessions_dir.glob("*.json"):
         try:
             data = json.loads(jf.read_text(encoding="utf-8"))
             pid = data.get("pid")
             session_id = data.get("sessionId") or jf.stem
+            name = data.get("name", "")
+            if name:
+                names[session_id] = name
             if pid and isinstance(pid, int):
                 try:
                     proc = psutil.Process(pid)
@@ -185,18 +194,24 @@ def _load_active_pids(claude_home: Path) -> dict[str, int]:
         except Exception:
             continue
 
-    return active
+    return active, names
 
 
 def _mark_active_sessions(
-    sessions: list[ClaudeSession], active_pids: dict[str, int]
+    sessions: list[ClaudeSession],
+    active_pids: dict[str, int],
+    names: dict[str, str] | None = None,
 ) -> None:
-    """Mutate sessions in-place: set status='active' and pid for live sessions."""
+    """Mutate sessions in-place: set status='active', pid, and name for live sessions."""
     for sess in sessions:
         pid = active_pids.get(sess.session_id)
         if pid:
             sess.status = "active"
             sess.pid = pid
+        if names:
+            n = names.get(sess.session_id, "")
+            if n:
+                sess.name = n
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +238,7 @@ def scan_local(
     if not projects_dir.is_dir():
         return []
 
-    active_pids = _load_active_pids(claude_home)
+    active_pids, session_names = _load_active_pids(claude_home)
     all_sessions: list[ClaudeSession] = []
 
     for entry in projects_dir.iterdir():
@@ -261,7 +276,7 @@ def scan_local(
             except Exception:
                 continue
 
-    _mark_active_sessions(all_sessions, active_pids)
+    _mark_active_sessions(all_sessions, active_pids, session_names)
     all_sessions.sort(key=lambda s: s.modified, reverse=True)
     return all_sessions
 
@@ -297,12 +312,16 @@ projects_dir = claude_home / 'projects'
 sessions_dir = claude_home / 'sessions'
 
 active_pids = {}
+session_names = {}
 if sessions_dir.is_dir():
     for jf in sessions_dir.glob('*.json'):
         try:
             d = json.loads(jf.read_text())
             pid = d.get('pid')
             sid = d.get('sessionId') or jf.stem
+            name = d.get('name', '')
+            if name:
+                session_names[sid] = name
             if pid and pid_alive(int(pid)):
                 active_pids[sid] = int(pid)
         except Exception:
@@ -362,6 +381,8 @@ if projects_dir.is_dir():
                     'modified': mod,
                     'status': 'active' if pid else 'idle',
                     'pid': pid,
+                    'file_size': stat.st_size,
+                    'name': session_names.get(sid, ''),
                 })
             except Exception:
                 pass
@@ -429,6 +450,8 @@ async def scan_remote(
                 modified=item.get("modified", ""),
                 status=item.get("status", "idle"),
                 pid=item.get("pid"),
+                file_size=item.get("file_size", 0),
+                name=item.get("name", ""),
             )
             sessions.append(sess)
         except (KeyError, TypeError):

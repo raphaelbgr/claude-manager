@@ -10,8 +10,22 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import pathlib
 from datetime import datetime, timezone
 from typing import Any
+
+PREFS_FILE = pathlib.Path(__file__).parent.parent / ".claude-manager-prefs.json"
+
+
+def _load_prefs() -> dict:
+    try:
+        return json.loads(PREFS_FILE.read_text())
+    except Exception:
+        return {"skip_permissions": False}
+
+
+def _save_prefs(prefs: dict) -> None:
+    PREFS_FILE.write_text(json.dumps(prefs, indent=2))
 
 from aiohttp import web
 
@@ -185,15 +199,19 @@ async def handle_sessions_scan(request: web.Request) -> web.Response:
     try:
         fleet = await discover_fleet()
         sessions = await scan_all(local_machine, fleet)
+        tmux = await list_all_tmux(local_machine, fleet)
         app["state"]["fleet"] = fleet
         app["state"]["sessions"] = sessions
+        app["state"]["tmux"] = tmux
         app["state"]["last_scan"] = _now_iso()
         await _push_to_ws(app, "sessions", [s.to_dict() for s in sessions])
         await _push_to_ws(app, "fleet", fleet)
+        await _push_to_ws(app, "tmux", [t.to_dict() for t in tmux])
         return web.json_response(
             {
                 "ok": True,
                 "sessions": [s.to_dict() for s in sessions],
+                "tmux": [t.to_dict() for t in tmux],
                 "last_scan": app["state"]["last_scan"],
             }
         )
@@ -280,6 +298,25 @@ async def handle_tmux_kill(request: web.Request) -> web.Response:
     result = await kill_tmux_session(machine, name)
     status = 200 if result.get("ok") else 500
     return web.json_response(result, status=status)
+
+
+# ---------------------------------------------------------------------------
+# Preferences handlers
+# ---------------------------------------------------------------------------
+
+async def handle_preferences_get(request: web.Request) -> web.Response:
+    return web.json_response(_load_prefs())
+
+
+async def handle_preferences_post(request: web.Request) -> web.Response:
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid JSON body"}, status=400)
+    prefs = _load_prefs()
+    prefs.update(body)
+    _save_prefs(prefs)
+    return web.json_response(prefs)
 
 
 # ---------------------------------------------------------------------------
@@ -377,6 +414,8 @@ def create_app(
     app.router.add_post("/api/tmux/create", handle_tmux_create)
     app.router.add_post("/api/tmux/connect", handle_tmux_connect)
     app.router.add_post("/api/tmux/kill", handle_tmux_kill)
+    app.router.add_get("/api/preferences", handle_preferences_get)
+    app.router.add_post("/api/preferences", handle_preferences_post)
 
     # WebSocket
     app.router.add_get("/ws", handle_ws)

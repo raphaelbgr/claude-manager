@@ -79,9 +79,9 @@ async def list_remote_tmux(machine_name: str, ssh_alias: str, mux: str) -> list[
     fmt = "#{session_name}|#{session_created}|#{session_windows}|#{session_attached}"
     ssh_base = [
         "ssh",
-        f"-o ConnectTimeout={SSH_TIMEOUT}",
-        "-o BatchMode=yes",
-        "-o StrictHostKeyChecking=no",
+        "-o", f"ConnectTimeout={SSH_TIMEOUT}",
+        "-o", "BatchMode=yes",
+        "-o", "StrictHostKeyChecking=no",
         ssh_alias,
     ]
 
@@ -102,7 +102,7 @@ async def list_remote_tmux(machine_name: str, ssh_alias: str, mux: str) -> list[
         rc, out = await _run_remote(f"psmux list-sessions -F '{fmt}'")
         if rc != 0 or not out.strip():
             rc, out = await _run_remote("psmux list-sessions")
-            if rc != 0:
+            if rc != 0 or not out.strip():
                 return []
             # Plain psmux output: just session names, one per line
             sessions = []
@@ -120,7 +120,7 @@ async def list_remote_tmux(machine_name: str, ssh_alias: str, mux: str) -> list[
             return sessions
     else:
         rc, out = await _run_remote(f"tmux list-sessions -F '{fmt}'")
-        if rc != 0:
+        if rc != 0 or not out.strip():
             return []
 
     return _parse_tmux_lines(out, machine_name, is_local=False)

@@ -302,6 +302,7 @@ class TestClaudeSessionToDict:
         expected_keys = {
             "session_id", "machine", "project_folder", "project_path",
             "cwd", "slug", "summary", "messages", "modified", "status", "pid",
+            "file_size", "name",
         }
         assert set(d.keys()) == expected_keys
 
@@ -686,20 +687,22 @@ class TestLoadActivePids:
     def test_returns_empty_when_sessions_dir_missing(self, tmp_path):
         claude_home = tmp_path / ".claude"
         claude_home.mkdir()
-        result = _load_active_pids(claude_home)
-        assert result == {}
+        pids, names = _load_active_pids(claude_home)
+        assert pids == {}
+        assert names == {}
 
     def test_current_pid_is_alive(self, tmp_path):
         claude_home = tmp_path / ".claude"
         sessions_dir = claude_home / "sessions"
         sessions_dir.mkdir(parents=True)
         (sessions_dir / "s1.json").write_text(
-            json.dumps({"sessionId": "s1", "pid": os.getpid()}),
+            json.dumps({"sessionId": "s1", "pid": os.getpid(), "name": "my-session"}),
             encoding="utf-8",
         )
-        result = _load_active_pids(claude_home)
-        assert "s1" in result
-        assert result["s1"] == os.getpid()
+        pids, names = _load_active_pids(claude_home)
+        assert "s1" in pids
+        assert pids["s1"] == os.getpid()
+        assert names["s1"] == "my-session"
 
     def test_dead_pid_excluded(self, tmp_path):
         # PID 1 exists on macOS/Linux but almost certainly doesn't own our session.
@@ -711,16 +714,17 @@ class TestLoadActivePids:
             json.dumps({"sessionId": "s2", "pid": 99999999}),
             encoding="utf-8",
         )
-        result = _load_active_pids(claude_home)
-        assert "s2" not in result
+        pids, names = _load_active_pids(claude_home)
+        assert "s2" not in pids
 
     def test_malformed_json_skipped(self, tmp_path):
         claude_home = tmp_path / ".claude"
         sessions_dir = claude_home / "sessions"
         sessions_dir.mkdir(parents=True)
         (sessions_dir / "bad.json").write_text("}{bad json", encoding="utf-8")
-        result = _load_active_pids(claude_home)
-        assert result == {}
+        pids, names = _load_active_pids(claude_home)
+        assert pids == {}
+        assert names == {}
 
 
 class TestMarkActiveSessions:
