@@ -661,8 +661,8 @@ class TestLaunchTmuxAttach:
         assert "attach" in cmd
 
     @pytest.mark.asyncio
-    async def test_remote_psmux_uses_psmux_attach(self):
-        """Windows machines use psmux instead of tmux."""
+    async def test_remote_psmux_ssh_only(self):
+        """psmux attach over SSH fails — just SSH into the machine."""
         from src.launcher import launch_tmux_attach
 
         with patch("src.launcher.detect_local_machine", return_value="mac-mini"), \
@@ -670,13 +670,12 @@ class TestLaunchTmuxAttach:
             await launch_tmux_attach("win-sess", "avell-i7")
 
         cmd = mock_lt.call_args[0][0]
-        assert "psmux" in cmd
-        assert "attach" in cmd
-        assert "win-sess" in cmd
+        assert "ssh" in cmd
+        assert "avell-i7" in cmd
 
     @pytest.mark.asyncio
     async def test_remote_psmux_windows_desktop(self):
-        """windows-desktop also uses psmux."""
+        """windows-desktop psmux — same plain SSH fallback."""
         from src.launcher import launch_tmux_attach
 
         with patch("src.launcher.detect_local_machine", return_value="mac-mini"), \
@@ -684,7 +683,7 @@ class TestLaunchTmuxAttach:
             await launch_tmux_attach("wdesk-sess", "windows-desktop")
 
         cmd = mock_lt.call_args[0][0]
-        assert "psmux" in cmd
+        assert "ssh" in cmd
 
     @pytest.mark.asyncio
     async def test_unknown_machine_defaults_to_tmux(self):

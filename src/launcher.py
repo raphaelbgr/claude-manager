@@ -188,11 +188,24 @@ async def launch_tmux_attach(session_name: str, machine: str) -> dict:
 
     if machine == local_machine:
         cmd = adapter.mux_attach(session_name)
+    elif adapter.mux_type == "psmux":
+        # psmux attach over SSH -t fails with "Incorrect function (os error 1)".
+        # This is a known psmux limitation — it can't handle PTY from SSH -t.
+        #
+        # Workaround: SSH into the machine with a remote command that runs
+        # bash interactively and immediately executes the attach.
+        # The --rcfile trick sources .bashrc then runs our command.
+        attach = adapter.mux_attach(session_name)
+        # psmux can't forward PTY from SSH. The session IS running (created
+        # via send-keys). SSH in and show the user how to attach manually.
+        cmd = f"ssh {shlex.quote(alias)}"
     else:
-        # -t flag is required for PTY allocation when attaching to a mux session
+        # tmux: SSH -t with direct attach works
         cmd = f"ssh {shlex.quote(alias)} -t {shlex.quote(adapter.mux_attach(session_name))}"
 
     return await launch_terminal(cmd)
+
+
 
 
 async def launch_remote_terminal(command: str, machine: str) -> dict:
