@@ -32,6 +32,7 @@ def _save_prefs(prefs: dict) -> None:
 
 from aiohttp import web
 
+from .command_adapter import get_adapter
 from .config import DEFAULT_BIND, DEFAULT_PORT, SCAN_INTERVAL, detect_local_machine
 from .fleet import discover_fleet
 from .launcher import launch_claude_session, launch_tmux_attach, launch_tmux_attach_remote, launch_new_tmux_and_attach
@@ -238,13 +239,13 @@ async def handle_sessions_launch(request: web.Request) -> web.Response:
     mode = body.get("mode", "terminal")
     if mode == "tmux":
         # Launch claude inside a new tmux session, then attach to it
-        import re, shlex as _shlex
+        import re
         # Use project folder name for a readable tmux session name
         project = cwd.replace("\\", "/").rstrip("/").split("/")[-1] if cwd else "claude"
         safe_name = re.sub(r"[^a-zA-Z0-9_-]", "-", project) or "claude"
-        # Build the full command including cd to correct directory
-        skip_flag = " --dangerously-skip-permissions" if skip else ""
-        claude_cmd = f"cd {_shlex.quote(cwd)} && claude --resume {session_id}{skip_flag}"
+        # Build the cd + claude command using the OS-aware adapter for the target machine
+        adapter = get_adapter(machine)
+        claude_cmd = adapter.build_session_command(cwd, session_id, skip)
         result = await launch_new_tmux_and_attach(safe_name, machine, cwd=cwd, command=claude_cmd)
     else:
         result = await launch_claude_session(cwd, session_id, machine, skip_permissions=skip)

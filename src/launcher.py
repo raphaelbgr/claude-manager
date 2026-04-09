@@ -3,6 +3,7 @@ import asyncio
 import shlex
 import shutil
 import sys
+from .command_adapter import get_adapter
 from .config import FLEET_MACHINES, detect_local_machine
 
 
@@ -155,16 +156,16 @@ async def launch_claude_session(cwd: str, session_id: str, machine: str, skip_pe
         {"ok": True} or {"ok": False, "error": str}.
     """
     local_machine = detect_local_machine()
-    quoted_cwd = shlex.quote(cwd)
-    quoted_sid = shlex.quote(session_id)
-    skip_flag = " --dangerously-skip-permissions" if skip_permissions else ""
+    adapter = get_adapter(machine)
 
     if machine == local_machine:
-        cmd = f"cd {quoted_cwd} && claude --resume {quoted_sid}{skip_flag}"
+        cmd = adapter.build_session_command(cwd, session_id, skip_permissions)
     else:
         info = FLEET_MACHINES.get(machine, {})
         alias = info.get("ssh_alias", machine)
-        cmd = f"ssh {shlex.quote(alias)} -t 'cd {quoted_cwd} && claude --resume {quoted_sid}{skip_flag}; exec bash'"
+        session_cmd = adapter.build_session_command(cwd, session_id, skip_permissions)
+        terminal_cmd = adapter.for_terminal(session_cmd, keep_open=True)
+        cmd = f"ssh {shlex.quote(alias)} -t {shlex.quote(terminal_cmd)}"
 
     return await launch_terminal(cmd)
 
@@ -182,15 +183,14 @@ async def launch_tmux_attach(session_name: str, machine: str) -> dict:
     """
     local_machine = detect_local_machine()
     info = FLEET_MACHINES.get(machine, {})
-    mux = info.get("mux", "tmux")
-    quoted_name = shlex.quote(session_name)
+    alias = info.get("ssh_alias", machine)
+    adapter = get_adapter(machine)
 
     if machine == local_machine:
-        cmd = f"tmux attach -t {quoted_name}"
+        cmd = adapter.mux_attach(session_name)
     else:
-        alias = info.get("ssh_alias", machine)
         # -t flag is required for PTY allocation when attaching to a mux session
-        cmd = f"ssh {shlex.quote(alias)} -t '{mux} attach -t {quoted_name}'"
+        cmd = f"ssh {shlex.quote(alias)} -t {shlex.quote(adapter.mux_attach(session_name))}"
 
     return await launch_terminal(cmd)
 
@@ -256,9 +256,8 @@ async def launch_remote_terminal(command: str, machine: str) -> dict:
 
 async def launch_tmux_attach_remote(session_name: str, machine: str) -> dict:
     """Open a terminal ON THE REMOTE MACHINE attached to the tmux session."""
-    info = FLEET_MACHINES.get(machine, {})
-    mux = info.get("mux", "tmux")
-    return await launch_remote_terminal(f"{mux} attach -t {shlex.quote(session_name)}", machine)
+    adapter = get_adapter(machine)
+    return await launch_remote_terminal(adapter.mux_attach(session_name), machine)
 
 
 async def launch_new_tmux_and_attach(

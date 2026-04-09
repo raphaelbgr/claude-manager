@@ -1,0 +1,141 @@
+"""
+OS-aware command builder for cross-platform session management.
+
+Handles command generation for any source→target OS combination:
+- Local commands (same OS)
+- SSH commands (macOS→Linux, macOS→Windows, etc.)
+- tmux/psmux send-keys commands (bash vs cmd.exe shells)
+"""
+import shlex
+from .config import FLEET_MACHINES
+
+
+class CommandAdapter:
+    """Build shell commands adapted to the target OS."""
+
+    def __init__(self, target_os: str, mux_type: str = "tmux"):
+        """
+        Args:
+            target_os: "darwin", "linux", or "win32"
+            mux_type:  "tmux" or "psmux"
+        """
+        self.target_os = target_os
+        self.mux_type = mux_type
+        self.is_windows = target_os == "win32"
+        # psmux sessions run cmd.exe; tmux sessions run bash
+        self.target_shell = "cmd" if mux_type == "psmux" else "bash"
+
+    def quote_path(self, path: str) -> str:
+        """Quote a filesystem path for the target shell."""
+        if self.target_shell == "cmd":
+            # cmd.exe: use double quotes when the path contains spaces or ampersands
+            if " " in path or "&" in path:
+                return f'"{path}"'
+            return path
+        else:
+            return shlex.quote(path)
+
+    def cd_command(self, path: str) -> str:
+        """Generate a cd command for the target shell."""
+        if self.target_shell == "cmd":
+            # /d switch changes the drive letter as well as the directory
+            quoted = self.quote_path(path)
+            return f"cd /d {quoted}"
+        else:
+            return f"cd {shlex.quote(path)}"
+
+    def chain_commands(self, *commands: str) -> str:
+        """Chain multiple commands with && (works in both bash and cmd.exe)."""
+        return " && ".join(commands)
+
+    def quote_arg(self, arg: str) -> str:
+        """Quote a shell argument for the target shell."""
+        if self.target_shell == "cmd":
+            # cmd.exe: double-quote if it has special chars
+            if any(c in arg for c in ' &|<>^;"'):
+                return f'"{arg}"'
+            return arg
+        else:
+            return shlex.quote(arg)
+
+    def claude_resume_command(self, session_id: str, skip_permissions: bool = False) -> str:
+        """Build the claude --resume command with safe quoting."""
+        quoted_id = self.quote_arg(session_id)
+        cmd = f"claude --resume {quoted_id}"
+        if skip_permissions:
+            cmd += " --dangerously-skip-permissions"
+        return cmd
+
+    def build_session_command(
+        self,
+        cwd: str,
+        session_id: str,
+        skip_permissions: bool = False,
+    ) -> str:
+        """Build the full cd + claude resume command for the target shell.
+
+        Returns:
+            bash:   cd '/path/to/project' && claude --resume <uuid>
+            cmd.exe: cd /d C:\\path\\to\\project && claude --resume <uuid>
+        """
+        cd = self.cd_command(cwd)
+        resume = self.claude_resume_command(session_id, skip_permissions)
+        return self.chain_commands(cd, resume)
+
+    def mux_create_session(self, name: str) -> str:
+        """Build mux new-session command (creates a detached session)."""
+        return f"{self.mux_type} new-session -d -s {shlex.quote(name)}"
+
+    def mux_send_keys(self, session_name: str, command: str) -> str:
+        """Build mux send-keys command.
+
+        The send-keys wrapper is always executed by the SSH shell (bash/Git Bash),
+        so the session name and command are quoted with POSIX shlex.  The text
+        that gets typed into the mux pane must already be in the target shell's
+        syntax (cmd.exe for psmux, bash for tmux) — callers must pass a command
+        already built by build_session_command().
+        """
+        quoted_name = shlex.quote(session_name)
+        quoted_cmd = shlex.quote(command)
+        return f"{self.mux_type} send-keys -t {quoted_name} {quoted_cmd} Enter"
+
+    def mux_attach(self, session_name: str) -> str:
+        """Build mux attach command."""
+        return f"{self.mux_type} attach -t {shlex.quote(session_name)}"
+
+    def mux_kill_session(self, session_name: str) -> str:
+        """Build mux kill-session command."""
+        return f"{self.mux_type} kill-session -t {shlex.quote(session_name)}"
+
+    def ssh_wrap(
+        self,
+        ssh_alias: str,
+        remote_command: str,
+        allocate_tty: bool = False,
+    ) -> str:
+        """Wrap a command for SSH execution (returns a shell string)."""
+        tty = "-t " if allocate_tty else ""
+        return f"ssh {tty}{shlex.quote(ssh_alias)} {shlex.quote(remote_command)}"
+
+    def for_terminal(self, command: str, keep_open: bool = True) -> str:
+        """Wrap command to keep the terminal open after execution.
+
+        cmd.exe interactive sessions do not need this; bash does.
+        """
+        if self.target_shell == "cmd":
+            return command
+        else:
+            if keep_open:
+                return f"{command}; exec bash"
+            return command
+
+
+def get_adapter(machine_name: str) -> CommandAdapter:
+    """Get the appropriate CommandAdapter for a fleet machine.
+
+    Falls back to darwin/tmux defaults for unknown machines.
+    """
+    info = FLEET_MACHINES.get(machine_name, {})
+    target_os = info.get("os", "darwin")
+    mux_type = info.get("mux", "tmux")
+    return CommandAdapter(target_os=target_os, mux_type=mux_type)

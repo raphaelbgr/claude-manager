@@ -2,6 +2,7 @@
 import asyncio
 import shlex
 from dataclasses import dataclass, asdict
+from .command_adapter import get_adapter
 from .config import FLEET_MACHINES, detect_local_machine, SSH_TIMEOUT
 from .mux_parser import parse_mux_output
 
@@ -201,7 +202,7 @@ async def create_tmux_session(
             return {"ok": True}
         else:
             # Remote: use create + send-keys approach (avoids quoting hell over SSH).
-            # Step 1: Create empty detached session
+            adapter = get_adapter(machine)
             ssh_base = [
                 "ssh",
                 "-o", f"ConnectTimeout={SSH_TIMEOUT}",
@@ -209,7 +210,9 @@ async def create_tmux_session(
                 "-o", "StrictHostKeyChecking=no",
                 ssh_alias,
             ]
-            create_cmd = f"{mux} new-session -d -s {shlex.quote(name)}"
+
+            # Step 1: Create empty detached session
+            create_cmd = adapter.mux_create_session(name)
             proc = await asyncio.create_subprocess_exec(
                 *ssh_base, create_cmd,
                 stdout=asyncio.subprocess.PIPE,
@@ -221,20 +224,12 @@ async def create_tmux_session(
                 if err:
                     return {"ok": False, "error": err}
 
-            # Step 2: Send the command via send-keys (reliable, no quoting issues)
+            # Step 2: Send the command via send-keys (reliable, no quoting issues).
+            # The command must already be in the target shell's syntax — callers
+            # are expected to use adapter.build_session_command() before passing it
+            # here.  If a raw command string arrives we send it as-is.
             if command:
-                remote_os = info.get("os", "")
-                cmd_to_send = command
-
-                if remote_os == "win32":
-                    # psmux on Windows runs cmd.exe inside sessions.
-                    # - Don't convert paths (cmd uses C:\path, not /c/path)
-                    # - Remove POSIX single quotes around paths (cmd doesn't use them)
-                    # - Replace 'path' quoting with "path" for cmd.exe
-                    import re
-                    cmd_to_send = re.sub(r"'([^']*)'", r'"\1"', cmd_to_send)
-
-                keys_cmd = f"{mux} send-keys -t {shlex.quote(name)} {shlex.quote(cmd_to_send)} Enter"
+                keys_cmd = adapter.mux_send_keys(name, command)
                 proc = await asyncio.create_subprocess_exec(
                     *ssh_base, keys_cmd,
                     stdout=asyncio.subprocess.PIPE,
@@ -276,12 +271,13 @@ async def kill_tmux_session(machine: str, name: str) -> dict:
                 return {"ok": False, "error": stderr.decode().strip()}
             return {"ok": True}
         else:
-            remote_cmd = f"{mux} kill-session -t '{name}'"
+            adapter = get_adapter(machine)
+            remote_cmd = adapter.mux_kill_session(name)
             ssh_cmd = [
                 "ssh",
-                f"-o ConnectTimeout={SSH_TIMEOUT}",
-                "-o BatchMode=yes",
-                "-o StrictHostKeyChecking=no",
+                "-o", f"ConnectTimeout={SSH_TIMEOUT}",
+                "-o", "BatchMode=yes",
+                "-o", "StrictHostKeyChecking=no",
                 ssh_alias,
                 remote_cmd,
             ]
