@@ -205,10 +205,30 @@
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
     .filter-pill:hover { border-color: #444c56; color: #8b949e; }
-    .filter-pill.active-machine { background: #1f3a5f; color: #58a6ff; border-color: #2d4f7a; }
-    .filter-pill.active-working { background: #3a2a0a; color: #e3b341; border-color: #5a4a1a; }
-    .filter-pill.active-active  { background: #1a3a2a; color: #3fb950; border-color: #2a5a3a; }
-    .filter-pill.active-idle    { background: #21262d; color: #8b949e; border-color: #444c56; }
+    .filter-pill.active-machine  { background: #1f3a5f; color: #58a6ff; border-color: #2d4f7a; }
+    .filter-pill.active-working  { background: #3a2a0a; color: #e3b341; border-color: #5a4a1a; }
+    .filter-pill.active-active   { background: #1a3a2a; color: #3fb950; border-color: #2a5a3a; }
+    .filter-pill.active-idle     { background: #21262d; color: #8b949e; border-color: #444c56; }
+    .filter-pill.active-archived { background: #2a1a3a; color: #a371f7; border-color: #4a2a6a; }
+
+    /* Compact collapsible session cards */
+    .session-card-compact {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 10px; border-radius: 6px; cursor: pointer;
+      transition: background 0.1s; min-width: 0;
+    }
+    .session-card-compact:hover { background: #1c2128; }
+    .session-card-expanded {
+      padding: 10px 10px 12px; border-top: 1px solid #21262d;
+      animation: fade-in 0.15s ease-out;
+    }
+    .session-card-archived { opacity: 0.6; }
+    .compact-btn {
+      background: none; border: none; cursor: pointer;
+      padding: 2px 4px; border-radius: 4px; line-height: 1;
+      flex-shrink: 0; transition: opacity 0.15s;
+    }
+    .compact-btn:hover { opacity: 1 !important; }
     .filter-select {
       font-size: 0.72rem;
       background: #21262d;
@@ -446,200 +466,217 @@ function StatusDot({ status, pulse = false }) {
 
 // ─── Session Card ─────────────────────────────────────────────────────────────
 
-function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching, skipPermissions, onPin, onUnpin, isPinned }) {
+function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching, skipPermissions, onPin, onUnpin, isPinned, onArchive, onUnarchive, isArchived, expanded, onToggleExpand, inMachineSection }) {
   const isWorking = session.status === 'working';
   const isActive = session.status === 'active' || isWorking;
-  // Always prefer cwd over project_path (project_path has a dash→slash bug)
   const effectivePath = session.cwd || session.project_path || session.project_folder || '';
   const projectName = shortenPath(effectivePath);
   const summary = session.summary || '(no message preview)';
   const [copied, setCopied] = useState(false);
 
   const sessionId = session.session_id || '';
-
-  // Display name: custom name (from /rename) > project folder name > "(unnamed)"
-  // Show slug below only when it's meaningfully different from the project name
-  const hasCustomName = Boolean(session.name);
-  const displayName = session.name || projectName || '(unnamed)';
-  // Show slug as secondary hint only when there's no custom name and slug differs from folder
-  const showSlug = !hasCustomName && session.slug && session.slug !== projectName;
-
   const local = isLocalMachine(session.machine);
   const os = getMachineOS(session.machine);
 
-  const handleCopy = () => {
+  const handleCopy = (e) => {
+    e.stopPropagation();
     const cmd = `claude --resume ${sessionId}`;
     navigator.clipboard.writeText(cmd).then(() => {
       setCopied(true);
       toast('Copied resume command', 'info');
       setTimeout(() => setCopied(false), 2000);
-    }).catch(() => {
-      toast('Failed to copy', 'error');
-    });
+    }).catch(() => { toast('Failed to copy', 'error'); });
   };
 
-  const launchLabel = launching ? 'Launching…' : (local ? 'Launch' : 'SSH + Launch');
   const launchBg    = local ? '#1f3a5f' : '#3a2200';
   const launchColor = local ? '#58a6ff' : '#e3b341';
   const launchBorder = local ? '#2d4f7a' : '#5a3a00';
+  const tmuxLabel = os === 'Windows' ? 'psmux Launch' : 'tmux Launch';
 
-  const tmuxLabel = tmuxLaunching ? 'Launching…' : (os === 'Windows' ? 'psmux Launch' : 'tmux Launch');
+  // ── Collapsed compact row ────────────────────────────────────────────────
+  const compactRow = h('div', {
+    className: 'session-card-compact',
+    onClick: onToggleExpand,
+    title: 'Click to expand',
+  },
+    // Status dot
+    h(StatusDot, { status: session.status, pulse: true }),
 
-  return h('div', { className: 'session-card' },
-    h('div', { style: { flex: 1, minWidth: 0 } },
+    // Project name (bold)
+    h('span', {
+      style: {
+        fontWeight: 600, fontSize: '0.82rem', color: '#e6edf3',
+        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        maxWidth: '28%', flexShrink: 0,
+      },
+      title: effectivePath,
+    }, projectName),
 
-      // Row 1: Display name (bold, primary) — custom name or project folder
-      h('div', {
-        style: {
-          fontSize: '0.88rem', fontWeight: 700,
-          color: '#58a6ff', overflow: 'hidden',
-          textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-          marginBottom: 2,
-        },
-        title: displayName,
-      }, displayName),
+    // Custom session name in parentheses (muted)
+    session.name && h('span', {
+      style: { fontSize: '0.72rem', color: '#8b949e', whiteSpace: 'nowrap', flexShrink: 0 }
+    }, `(${session.name})`),
 
-      // Row 1b: Slug in muted text (only when no custom name and slug differs from folder)
-      showSlug && h('div', {
-        style: {
-          fontSize: '0.65rem', color: '#484f58',
-          fontFamily: '"SF Mono", "Fira Code", Consolas, monospace',
-          overflow: 'hidden', textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap', marginBottom: 2,
-        },
-        title: session.slug,
-      }, session.slug),
+    // Status badge (only working/active)
+    isWorking && h('span', {
+      style: { fontSize: '0.6rem', fontWeight: 700, color: '#e3b341', flexShrink: 0, letterSpacing: '0.04em' }
+    }, 'WORKING'),
+    !isWorking && isActive && h('span', {
+      style: { fontSize: '0.6rem', fontWeight: 700, color: '#3fb950', flexShrink: 0, letterSpacing: '0.04em' }
+    }, 'ACTIVE'),
 
-      // Row 2: Full CWD path (always uses cwd which is correct)
-      h('div', {
-        style: {
-          fontSize: '0.7rem', color: '#8b949e',
-          fontFamily: '"SF Mono", "Fira Code", Consolas, monospace',
-          overflow: 'hidden', textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap', marginBottom: 4,
-        },
-        title: effectivePath,
-      }, projectName),
+    // Archived badge
+    isArchived && h('span', {
+      style: {
+        fontSize: '0.6rem', fontWeight: 700, color: '#a371f7', flexShrink: 0,
+        letterSpacing: '0.04em',
+        background: '#2a1a3a', borderRadius: 4, padding: '1px 5px',
+      }
+    }, 'ARCHIVED'),
 
-      // Row 3: Summary
-      h('div', {
-        style: {
-          fontSize: '0.75rem', color: '#6e7681',
-          overflow: 'hidden', textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap', marginBottom: 6,
-          fontStyle: 'italic',
-        },
-        title: summary,
-      }, `"${summary}"`),
+    // Stats — message count, size, time
+    h('span', {
+      style: { fontSize: '0.65rem', color: '#8b949e', fontFamily: 'monospace', whiteSpace: 'nowrap', flexShrink: 0 }
+    }, `${session.messages || 0}msg`),
 
-      // Row 4: Metadata badges
-      h('div', {
-        style: {
-          display: 'flex', flexWrap: 'wrap', gap: 4,
-          alignItems: 'center', marginBottom: 6,
+    session.file_size && h('span', {
+      style: { fontSize: '0.65rem', color: '#8b949e', fontFamily: 'monospace', whiteSpace: 'nowrap', flexShrink: 0 }
+    }, formatFileSize(session.file_size)),
+
+    h('span', {
+      style: { fontSize: '0.65rem', color: '#484f58', fontFamily: 'monospace', whiteSpace: 'nowrap', flexShrink: 0 }
+    }, relativeTime(session.modified)),
+
+    // Machine badge — only when NOT already inside a MachineSection
+    !inMachineSection && h(MachineBadge, { machine: session.machine }),
+
+    // Spacer
+    h('div', { style: { flex: 1 } }),
+
+    // Action buttons (small, icon-style, stop propagation)
+    h('button', {
+      className: 'compact-btn btn',
+      onClick: e => { e.stopPropagation(); onLaunch(session); },
+      disabled: launching,
+      title: local ? 'Launch' : 'SSH + Launch',
+      style: { color: launching ? '#484f58' : launchColor, fontSize: '0.75rem', opacity: launching ? 0.5 : 0.85 },
+    }, '▶'),
+
+    h('button', {
+      className: 'compact-btn btn',
+      onClick: e => { e.stopPropagation(); isPinned ? onUnpin(sessionId) : onPin(sessionId); },
+      title: isPinned ? 'Unpin' : 'Pin',
+      style: { color: isPinned ? '#e3b341' : '#484f58', fontSize: '0.8rem', opacity: isPinned ? 1 : 0.5 },
+    }, '📌'),
+
+    h('button', {
+      className: 'compact-btn btn',
+      onClick: e => {
+        e.stopPropagation();
+        if (isArchived) {
+          onUnarchive(sessionId);
+        } else {
+          if (confirm('Archive this session?')) onArchive(sessionId);
         }
       },
-        h(MachineBadge, { machine: session.machine }),
-        h(OsBadge, { machine: session.machine }),
-        h('span', {
-          style: {
-            display: 'inline-flex', alignItems: 'center', gap: 4,
-            fontSize: '0.65rem', fontWeight: 600,
-            padding: '2px 8px', borderRadius: 12,
-            background: isWorking ? '#3a2a0a' : isActive ? '#1a3a2a' : '#21262d',
-            color: isWorking ? '#e3b341' : isActive ? '#3fb950' : '#6e7681',
-            border: `1px solid ${isWorking ? '#5a4a1a' : isActive ? '#2a5a3a' : '#30363d'}`,
-            whiteSpace: 'nowrap',
-          }
-        },
-          h('span', {
-            style: {
-              width: 6, height: 6, borderRadius: '50%',
-              background: isWorking ? '#e3b341' : isActive ? '#3fb950' : '#484f58',
-              display: 'inline-block', flexShrink: 0,
-              animation: (isWorking || isActive) ? 'pulse-dot 1.4s ease-in-out infinite' : 'none',
-            }
-          }),
-          isWorking ? 'WORKING' : isActive ? 'ACTIVE' : 'idle',
-        ),
-        session.cpu_percent > 0 && h(Badge, {
-          text: `${session.cpu_percent}% CPU`,
-          color: session.cpu_percent > 30 ? '#e3b341' : '#8b949e',
-        }),
-        session.file_size && h(Badge, { text: formatFileSize(session.file_size) }),
-        h(Badge, { text: `${session.messages || 0} msgs` }),
-        h(Badge, { text: relativeTime(session.modified) }),
-      ),
+      title: isArchived ? 'Unarchive' : 'Archive',
+      style: { color: isArchived ? '#a371f7' : '#484f58', fontSize: '0.8rem', opacity: isArchived ? 1 : 0.5 },
+    }, '📦'),
 
-      // Row 5: Session ID + copy + pin
-      sessionId && h('div', {
-        style: { display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }
+    // Expand toggle
+    h('span', {
+      style: { color: '#484f58', fontSize: '0.65rem', flexShrink: 0, userSelect: 'none' }
+    }, expanded ? '▲' : '▼'),
+  );
+
+  // ── Expanded details section ─────────────────────────────────────────────
+  const expandedSection = expanded && h('div', { className: 'session-card-expanded' },
+    // Summary
+    h('div', {
+      style: {
+        fontSize: '0.75rem', color: '#6e7681', fontStyle: 'italic',
+        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        marginBottom: 6,
       },
-        h('span', {
-          style: {
-            fontSize: '10px', fontFamily: '"SF Mono", "Fira Code", Consolas, monospace',
-            color: '#484f58', opacity: 0.6,
-            overflow: 'hidden', textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap', maxWidth: 200,
-          },
-          title: sessionId,
-        }, sessionId),
-        h('button', {
-          className: 'btn',
-          onClick: handleCopy,
-          title: `Copy: claude --resume ${sessionId}`,
-          style: {
-            background: 'none', border: 'none',
-            color: copied ? '#3fb950' : '#484f58',
-            padding: '0 2px', cursor: 'pointer',
-            fontSize: '0.75rem', lineHeight: 1,
-            flexShrink: 0,
-          }
-        }, copied ? '✓' : '📋'),
-        h('button', {
-          className: 'btn',
-          onClick: () => isPinned ? onUnpin(sessionId) : onPin(sessionId),
-          title: isPinned ? 'Unpin session' : 'Pin session',
-          style: {
-            background: 'none', border: 'none',
-            color: isPinned ? '#e3b341' : '#484f58',
-            padding: '0 2px', cursor: 'pointer',
-            fontSize: '0.75rem', lineHeight: 1,
-            flexShrink: 0,
-            opacity: isPinned ? 1 : 0.5,
-            transition: 'color 0.15s, opacity 0.15s',
-          }
-        }, '📌'),
-      ),
+      title: summary,
+    }, `"${summary}"`),
 
-      // Row 6: Action buttons
-      h('div', { style: { display: 'flex', gap: 6 } },
-        h('button', {
-          className: 'btn',
-          onClick: () => onLaunch(session),
-          disabled: launching,
-          style: {
-            fontSize: '0.72rem', fontWeight: 600,
-            background: launchBg, color: launchColor,
-            border: `1px solid ${launchBorder}`, borderRadius: 6,
-            padding: '4px 12px', cursor: launching ? 'not-allowed' : 'pointer',
-            opacity: launching ? 0.6 : 1,
-          }
-        }, launchLabel),
-        h('button', {
-          className: 'btn',
-          onClick: () => onTmuxLaunch(session),
-          disabled: tmuxLaunching,
-          style: {
-            fontSize: '0.72rem', fontWeight: 600,
-            background: '#1a3a2a', color: '#3fb950',
-            border: '1px solid #2a5a3a', borderRadius: 6,
-            padding: '4px 12px', cursor: tmuxLaunching ? 'not-allowed' : 'pointer',
-            opacity: tmuxLaunching ? 0.6 : 1,
-          }
-        }, tmuxLabel),
-      ),
+    // CWD (full path, monospace)
+    effectivePath && h('div', {
+      style: {
+        fontSize: '0.68rem', color: '#8b949e',
+        fontFamily: '"SF Mono", "Fira Code", Consolas, monospace',
+        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        marginBottom: 6,
+      },
+      title: effectivePath,
+    }, effectivePath),
+
+    // Session ID + copy
+    sessionId && h('div', { style: { display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 } },
+      h('span', {
+        style: {
+          fontSize: '10px', fontFamily: '"SF Mono", "Fira Code", Consolas, monospace',
+          color: '#484f58', opacity: 0.7,
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 220,
+        },
+        title: sessionId,
+      }, sessionId),
+      h('button', {
+        className: 'btn',
+        onClick: handleCopy,
+        title: `Copy: claude --resume ${sessionId}`,
+        style: {
+          background: 'none', border: 'none',
+          color: copied ? '#3fb950' : '#484f58',
+          padding: '0 2px', cursor: 'pointer', fontSize: '0.75rem', lineHeight: 1,
+        }
+      }, copied ? '✓' : '📋'),
     ),
+
+    // Machine + OS badges (full)
+    h('div', { style: { display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center', marginBottom: 8 } },
+      h(MachineBadge, { machine: session.machine }),
+      h(OsBadge, { machine: session.machine }),
+      session.cpu_percent > 0 && h(Badge, {
+        text: `${session.cpu_percent}% CPU`,
+        color: session.cpu_percent > 30 ? '#e3b341' : '#8b949e',
+      }),
+    ),
+
+    // Full action buttons row
+    h('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap' } },
+      h('button', {
+        className: 'btn',
+        onClick: () => onLaunch(session),
+        disabled: launching,
+        style: {
+          fontSize: '0.72rem', fontWeight: 600,
+          background: launchBg, color: launchColor,
+          border: `1px solid ${launchBorder}`, borderRadius: 6,
+          padding: '4px 12px', cursor: launching ? 'not-allowed' : 'pointer',
+          opacity: launching ? 0.6 : 1,
+        }
+      }, launching ? 'Launching…' : (local ? 'Launch' : 'SSH + Launch')),
+
+      h('button', {
+        className: 'btn',
+        onClick: () => onTmuxLaunch(session),
+        disabled: tmuxLaunching,
+        style: {
+          fontSize: '0.72rem', fontWeight: 600,
+          background: '#1a3a2a', color: '#3fb950',
+          border: '1px solid #2a5a3a', borderRadius: 6,
+          padding: '4px 12px', cursor: tmuxLaunching ? 'not-allowed' : 'pointer',
+          opacity: tmuxLaunching ? 0.6 : 1,
+        }
+      }, tmuxLaunching ? 'Launching…' : tmuxLabel),
+    ),
+  );
+
+  return h('div', { className: clsx('session-card', isArchived && 'session-card-archived') },
+    compactRow,
+    expandedSection,
   );
 }
 
@@ -1105,7 +1142,7 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
 
 // ─── Pinned Section ───────────────────────────────────────────────────────────
 
-function PinnedSection({ sessions, pinnedIds, onLaunch, launchingId, onTmuxLaunch, tmuxLaunchingId, skipPermissions, onPin, onUnpin }) {
+function PinnedSection({ sessions, pinnedIds, onLaunch, launchingId, onTmuxLaunch, tmuxLaunchingId, skipPermissions, onPin, onUnpin, onArchive, onUnarchive, archivedIds, expandedCards, onToggleExpand }) {
   const pinned = sessions.filter(s => pinnedIds.includes(s.session_id));
   if (!pinned.length) return null;
 
@@ -1141,6 +1178,12 @@ function PinnedSection({ sessions, pinnedIds, onLaunch, launchingId, onTmuxLaunc
         onPin,
         onUnpin,
         isPinned: true,
+        onArchive,
+        onUnarchive,
+        isArchived: (archivedIds || []).includes(s.session_id),
+        expanded: expandedCards.has(s.session_id),
+        onToggleExpand: () => onToggleExpand(s.session_id),
+        inMachineSection: false,
       })
     ),
   );
@@ -1148,7 +1191,7 @@ function PinnedSection({ sessions, pinnedIds, onLaunch, launchingId, onTmuxLaunc
 
 // ─── Sessions Panel ───────────────────────────────────────────────────────────
 
-function SessionsPanel({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaunchingId, skipPermissions, scanning, collapseState, setCollapseState, pinnedIds, onPin, onUnpin }) {
+function SessionsPanel({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaunchingId, skipPermissions, scanning, collapseState, setCollapseState, pinnedIds, onPin, onUnpin, onArchive, onUnarchive, archivedIds, expandedCards, onToggleExpand }) {
   // sessions is already filtered/sorted by App; just group by machine
   const byMachine = useMemo(() => groupBy(sessions, 'machine'), [sessions]);
 
@@ -1197,6 +1240,11 @@ function SessionsPanel({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaun
       skipPermissions,
       onPin,
       onUnpin,
+      onArchive,
+      onUnarchive,
+      archivedIds,
+      expandedCards: expandedCards || new Set(),
+      onToggleExpand,
     }),
     // Scan progress indicator
     scanning && h('div', {
@@ -1250,6 +1298,12 @@ function SessionsPanel({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaun
                 onPin,
                 onUnpin,
                 isPinned: (pinnedIds || []).includes(s.session_id),
+                onArchive,
+                onUnarchive,
+                isArchived: (archivedIds || []).includes(s.session_id),
+                expanded: (expandedCards || new Set()).has(s.session_id),
+                onToggleExpand: () => onToggleExpand(s.session_id),
+                inMachineSection: true,
               })
             )
           );
@@ -1512,7 +1566,7 @@ function Header({ health, sessions, tmuxSessions, fleet, onScan, scanning, skipP
 
 // ─── Filter Bar ───────────────────────────────────────────────────────────────
 
-function FilterBar({ sessions, tmuxSessions, fleet, filters, setFilters }) {
+function FilterBar({ sessions, tmuxSessions, fleet, filters, setFilters, archivedIds }) {
   // Derive unique machines from sessions + tmux + fleet
   const allMachines = useMemo(() => {
     const s = new Set();
@@ -1529,7 +1583,7 @@ function FilterBar({ sessions, tmuxSessions, fleet, filters, setFilters }) {
     return c;
   }, [sessions]);
 
-  const isFiltersActive = filters.machines.size > 0 || filters.statuses.size > 0 || filters.timeRange !== 'all' || filters.sortBy !== 'recent' || filters.text.trim();
+  const isFiltersActive = filters.machines.size > 0 || filters.statuses.size > 0 || filters.timeRange !== 'all' || filters.sortBy !== 'recent' || filters.text.trim() || filters.showArchived;
 
   const toggleMachine = (m) => {
     setFilters(prev => {
@@ -1547,12 +1601,19 @@ function FilterBar({ sessions, tmuxSessions, fleet, filters, setFilters }) {
     });
   };
 
-  const resetFilters = () => setFilters({ machines: new Set(), statuses: new Set(), timeRange: 'all', sortBy: 'recent', text: '' });
+  const resetFilters = () => setFilters({ machines: new Set(), statuses: new Set(), timeRange: 'all', sortBy: 'recent', text: '', showArchived: false });
 
-  // Compute result count for sessions
+  // Count hidden archived sessions (archived but showArchived is off)
+  const hiddenArchivedCount = useMemo(() => {
+    if (filters.showArchived) return 0;
+    return sessions.filter(s => (archivedIds || []).includes(s.session_id)).length;
+  }, [sessions, archivedIds, filters.showArchived]);
+
+  // Compute result count for sessions (mirrors App filteredSessions logic)
   const totalSessions = sessions.length;
   const visibleCount = useMemo(() => {
     let r = sessions;
+    if (!filters.showArchived) r = r.filter(s => !(archivedIds || []).includes(s.session_id));
     if (filters.machines.size > 0) r = r.filter(s => filters.machines.has(s.machine));
     if (filters.statuses.size > 0) r = r.filter(s => filters.statuses.has(s.status));
     if (filters.timeRange !== 'all') {
@@ -1572,12 +1633,12 @@ function FilterBar({ sessions, tmuxSessions, fleet, filters, setFilters }) {
       );
     }
     return r.length;
-  }, [sessions, filters]);
+  }, [sessions, filters, archivedIds]);
 
   const statusDefs = [
-    { key: 'working', label: 'WORKING', pillClass: 'active-working' },
-    { key: 'active',  label: 'ACTIVE',  pillClass: 'active-active'  },
-    { key: 'idle',    label: 'IDLE',    pillClass: 'active-idle'    },
+    { key: 'working',  label: 'WORKING',  pillClass: 'active-working'  },
+    { key: 'active',   label: 'ACTIVE',   pillClass: 'active-active'   },
+    { key: 'idle',     label: 'IDLE',     pillClass: 'active-idle'     },
   ];
 
   const timeRangeOptions = [
@@ -1618,6 +1679,11 @@ function FilterBar({ sessions, tmuxSessions, fleet, filters, setFilters }) {
           onClick: () => toggleStatus(key),
         }, label)
       ),
+      h('button', {
+        className: `filter-pill${filters.showArchived ? ' active-archived' : ''}`,
+        onClick: () => setFilters(prev => ({ ...prev, showArchived: !prev.showArchived })),
+        title: filters.showArchived ? 'Hide archived sessions' : 'Show archived sessions',
+      }, filters.showArchived ? '📦 ARCHIVED' : '○ ARCHIVED'),
     ),
 
     // Row 2: Time range + Sort + Search + Reset + Count
@@ -1656,6 +1722,9 @@ function FilterBar({ sessions, tmuxSessions, fleet, filters, setFilters }) {
           ? `${totalSessions} sessions`
           : `Showing ${visibleCount} of ${totalSessions} sessions`
       ),
+      hiddenArchivedCount > 0 && h('span', {
+        style: { fontSize: '0.65rem', color: '#6e4fa0', marginLeft: 4, whiteSpace: 'nowrap' },
+      }, `· ${hiddenArchivedCount} archived hidden`),
     ),
   );
 }
@@ -1676,6 +1745,7 @@ function App() {
     timeRange: 'all',
     sortBy: 'recent',
     text: '',
+    showArchived: false,
   });
   const [scanning, setScanning]           = useState(false);
   const [launchingId, setLaunchingId]     = useState(null);
@@ -1685,6 +1755,24 @@ function App() {
   const [loading, setLoading]             = useState(true);
   const [skipPermissions, setSkipPermissions] = useState(false);
   const [pinnedIds, setPinnedIds]         = useState([]);
+  const [archivedIds, setArchivedIds]     = useState([]);
+
+  // Expanded card state: Set of session_ids, persisted to localStorage
+  const [expandedCards, setExpandedCards] = useState(() => {
+    try {
+      const saved = localStorage.getItem('claude-manager-expanded-cards');
+      return saved ? new Set(JSON.parse(saved)) : new Set();
+    } catch { return new Set(); }
+  });
+
+  const handleToggleExpand = useCallback((sessionId) => {
+    setExpandedCards(prev => {
+      const next = new Set(prev);
+      if (next.has(sessionId)) next.delete(sessionId); else next.add(sessionId);
+      try { localStorage.setItem('claude-manager-expanded-cards', JSON.stringify([...next])); } catch {}
+      return next;
+    });
+  }, []);
 
   // Collapse state: persisted to localStorage
   const [collapseState, setCollapseState] = useState(() => {
@@ -1701,6 +1789,11 @@ function App() {
   // ── Filtered sessions ────────────────────────────────────────────────────
   const filteredSessions = useMemo(() => {
     let result = sessions;
+
+    // Hide archived unless showArchived is on
+    if (!filters.showArchived) {
+      result = result.filter(s => !archivedIds.includes(s.session_id));
+    }
 
     if (filters.machines.size > 0) {
       result = result.filter(s => filters.machines.has(s.machine));
@@ -1738,7 +1831,7 @@ function App() {
     result = [...result].sort(sorters[filters.sortBy] || sorters.recent);
 
     return result;
-  }, [sessions, filters]);
+  }, [sessions, filters, archivedIds]);
 
   // ── Filtered tmux sessions (machine filter only) ─────────────────────────
   const filteredTmux = useMemo(() => {
@@ -1816,6 +1909,7 @@ function App() {
       .then(d => {
         if (d && typeof d.skip_permissions === 'boolean') setSkipPermissions(d.skip_permissions);
         if (d && Array.isArray(d.pinned_sessions)) setPinnedIds(d.pinned_sessions);
+        if (d && Array.isArray(d.archived_sessions)) setArchivedIds(d.archived_sessions);
       })
       .catch(() => {});
 
@@ -1880,6 +1974,35 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: sessionId }),
       });
+    } catch {
+      // non-fatal
+    }
+  }, []);
+
+  // ── Archive / Unarchive session ───────────────────────────────────────────
+  const handleArchive = useCallback(async (sessionId) => {
+    setArchivedIds(prev => prev.includes(sessionId) ? prev : [...prev, sessionId]);
+    try {
+      await fetch('/api/sessions/archive', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId }),
+      });
+      toast('Session archived', 'info');
+    } catch {
+      // non-fatal
+    }
+  }, []);
+
+  const handleUnarchive = useCallback(async (sessionId) => {
+    setArchivedIds(prev => prev.filter(id => id !== sessionId));
+    try {
+      await fetch('/api/sessions/unarchive', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId }),
+      });
+      toast('Session unarchived', 'info');
     } catch {
       // non-fatal
     }
@@ -2067,6 +2190,7 @@ function App() {
       h(FilterBar, {
         sessions, tmuxSessions, fleet,
         filters, setFilters,
+        archivedIds,
       }),
 
       // Main panels
@@ -2152,6 +2276,11 @@ function App() {
                   pinnedIds,
                   onPin: handlePin,
                   onUnpin: handleUnpin,
+                  onArchive: handleArchive,
+                  onUnarchive: handleUnarchive,
+                  archivedIds,
+                  expandedCards,
+                  onToggleExpand: handleToggleExpand,
                 }),
           ),
         ),

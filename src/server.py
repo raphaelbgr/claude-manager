@@ -468,6 +468,41 @@ async def handle_sessions_unpin(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "pinned_sessions": pinned})
 
 
+async def handle_sessions_archive(request: web.Request) -> web.Response:
+    """Add a session ID to the archived list."""
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid JSON body"}, status=400)
+    session_id = body.get("session_id", "")
+    if not session_id:
+        return web.json_response({"ok": False, "error": "session_id required"}, status=400)
+    prefs = _load_prefs()
+    archived = prefs.get("archived_sessions", [])
+    if session_id not in archived:
+        archived.append(session_id)
+    prefs["archived_sessions"] = archived
+    _save_prefs(prefs)
+    return web.json_response({"ok": True, "archived_sessions": archived})
+
+
+async def handle_sessions_unarchive(request: web.Request) -> web.Response:
+    """Remove a session ID from the archived list."""
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid JSON body"}, status=400)
+    session_id = body.get("session_id", "")
+    if not session_id:
+        return web.json_response({"ok": False, "error": "session_id required"}, status=400)
+    prefs = _load_prefs()
+    archived = prefs.get("archived_sessions", [])
+    archived = [a for a in archived if a != session_id]
+    prefs["archived_sessions"] = archived
+    _save_prefs(prefs)
+    return web.json_response({"ok": True, "archived_sessions": archived})
+
+
 # ---------------------------------------------------------------------------
 # WebSocket handler
 # ---------------------------------------------------------------------------
@@ -559,6 +594,8 @@ def create_app(
     app.router.add_post("/api/sessions/launch", handle_sessions_launch)
     app.router.add_post("/api/sessions/pin", handle_sessions_pin)
     app.router.add_post("/api/sessions/unpin", handle_sessions_unpin)
+    app.router.add_post("/api/sessions/archive", handle_sessions_archive)
+    app.router.add_post("/api/sessions/unarchive", handle_sessions_unarchive)
     app.router.add_get("/api/fleet", handle_fleet)
     app.router.add_get("/api/tmux", handle_tmux)
     app.router.add_get("/api/tmux/{machine}", handle_tmux_machine)
