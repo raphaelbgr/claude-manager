@@ -492,26 +492,51 @@ try:
     drives.sort(key=lambda d: (not d["is_system"], d["path"]))
     print(json.dumps({"drives": drives}))
 except ImportError:
-    # fallback: df -h
-    import subprocess, re
-    lines = subprocess.check_output(["df","-Pl"], text=True).splitlines()[1:]
+    import subprocess
     drives = []
-    for ln in lines:
-        parts = ln.split()
-        if len(parts) < 6:
-            continue
-        mp = parts[5]
-        if any(mp.startswith(pf) for pf in ("/proc","/sys","/dev","/run")):
-            continue
+    if sys.platform == "win32":
+        # Windows: use wmic to get drive info
         try:
-            total = int(parts[1]) * 1024
-            avail = int(parts[3]) * 1024
+            out = subprocess.check_output(
+                ["wmic", "logicaldisk", "get", "caption,freespace,size,volumename", "/format:csv"],
+                text=True, timeout=10)
+            for ln in out.strip().splitlines()[1:]:
+                parts = [p.strip() for p in ln.split(",")]
+                if len(parts) < 5 or not parts[1]:
+                    continue
+                caption = parts[1]  # C:
+                free = int(parts[2]) if parts[2] else 0
+                total = int(parts[3]) if parts[3] else 0
+                vol = parts[4] or caption
+                path = caption + "\\\\"
+                is_sys = caption.upper() == "C:"
+                drives.append({"path": path, "name": f"{caption} ({vol})", "label": vol,
+                               "total_gb": round(total/1e9, 1), "free_gb": round(free/1e9, 1),
+                               "is_system": is_sys})
         except Exception:
-            continue
-        name = "Root" if mp == "/" else mp.rstrip("/").split("/")[-1] or mp
-        drives.append({"path": mp, "name": name, "label": name,
-                       "total_gb": round(total/1e9, 1), "free_gb": round(avail/1e9, 1),
-                       "is_system": mp == "/"})
+            pass
+    else:
+        # Unix fallback: df -Pl
+        try:
+            lines = subprocess.check_output(["df","-Pl"], text=True).splitlines()[1:]
+            for ln in lines:
+                parts = ln.split()
+                if len(parts) < 6:
+                    continue
+                mp = parts[5]
+                if any(mp.startswith(pf) for pf in ("/proc","/sys","/dev","/run")):
+                    continue
+                try:
+                    total = int(parts[1]) * 1024
+                    avail = int(parts[3]) * 1024
+                except Exception:
+                    continue
+                name = "Root" if mp == "/" else mp.rstrip("/").split("/")[-1] or mp
+                drives.append({"path": mp, "name": name, "label": name,
+                               "total_gb": round(total/1e9, 1), "free_gb": round(avail/1e9, 1),
+                               "is_system": mp == "/"})
+        except Exception:
+            pass
     drives.sort(key=lambda d: (not d["is_system"], d["path"]))
     print(json.dumps({"drives": drives}))
 """

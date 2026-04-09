@@ -1019,18 +1019,20 @@ function HardwareInfo({ machine, hwCache, fetchHardware }) {
 // ─── Machine Section ──────────────────────────────────────────────────────────
 
 function MachineSection({ machine, children, count, collapseKey, collapseState, setCollapseState }) {
-  const defaultOpen = true;
-  const isOpen = (collapseState && collapseKey !== undefined && collapseState[collapseKey] !== undefined)
-    ? collapseState[collapseKey]
-    : defaultOpen;
+  // Use local state for instant toggle — sync to parent for persistence
+  const defaultVal = collapseState && collapseKey && collapseState[collapseKey] !== undefined
+    ? collapseState[collapseKey] : true;
+  const [isOpen, setIsOpen] = useState(defaultVal);
 
-  const toggle = useCallback(() => {
-    if (setCollapseState && collapseKey !== undefined) {
-      setCollapseState(prev => {
-        const current = prev[collapseKey] !== undefined ? prev[collapseKey] : defaultOpen;
-        return { ...prev, [collapseKey]: !current };
-      });
-    }
+  const toggle = useCallback((e) => {
+    e.stopPropagation();
+    setIsOpen(prev => {
+      const next = !prev;
+      if (setCollapseState && collapseKey) {
+        setCollapseState(p => ({ ...p, [collapseKey]: next }));
+      }
+      return next;
+    });
   }, [collapseKey, setCollapseState]);
 
   return h('div', { className: 'machine-section' },
@@ -1063,18 +1065,20 @@ function ProjectSection({ projectPath, children, count, defaultOpen: defOpen = t
   const shortPath = shortenPath(projectPath) || projectPath || '(unknown)';
   const [showAll, setShowAll] = useState(false);
 
-  const isOpen = (collapseState && collapseKey !== undefined && collapseState[collapseKey] !== undefined)
-    ? collapseState[collapseKey]
-    : defOpen;
+  const defaultVal = collapseState && collapseKey && collapseState[collapseKey] !== undefined
+    ? collapseState[collapseKey] : defOpen;
+  const [isOpen, setIsOpen] = useState(defaultVal);
 
-  const toggle = useCallback(() => {
-    if (setCollapseState && collapseKey !== undefined) {
-      setCollapseState(prev => {
-        const current = prev[collapseKey] !== undefined ? prev[collapseKey] : defOpen;
-        return { ...prev, [collapseKey]: !current };
-      });
-    }
-  }, [collapseKey, setCollapseState, defOpen]);
+  const toggle = useCallback((e) => {
+    e.stopPropagation();
+    setIsOpen(prev => {
+      const next = !prev;
+      if (setCollapseState && collapseKey) {
+        setCollapseState(p => ({ ...p, [collapseKey]: next }));
+      }
+      return next;
+    });
+  }, [collapseKey, setCollapseState]);
 
   // Slice children array when over the limit (avoids rendering 100+ cards at once)
   const childArray = Array.isArray(children) ? children : (children ? [children] : []);
@@ -1303,7 +1307,7 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
             value: machine,
             onChange: e => setMachine(e.target.value),
           },
-            machines.map(m => h('option', { key: m, value: m }, m))
+            machines.map(m => h('option', { key: m, value: m }, m + (isLocalMachine(m) ? ' (local)' : '')))
           ),
         ),
         h('div', null,
