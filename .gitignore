@@ -9,3 +9,4 @@ venv/
 .eggs/
 *.egg
 .remember/
+.claude-manager-prefs.json

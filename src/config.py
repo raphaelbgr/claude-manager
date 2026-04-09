@@ -6,6 +6,8 @@ from __future__ import annotations
 import socket
 import os
 
+# Configure your fleet machines below.
+# These are example LAN IPs — update to match your network.
 FLEET_MACHINES: dict[str, dict] = {
     "mac-mini": {
         "ip": "192.168.7.102",

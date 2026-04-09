@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Claude Manager
+Comment=Manage Claude Code sessions across fleet
+Exec=/path/to/claude-manager/shortcuts/launch.sh
+Icon=utilities-terminal
+Terminal=false
+Type=Application
+Categories=Development;
