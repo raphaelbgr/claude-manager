@@ -1,5 +1,6 @@
 """Tmux/psmux session management across fleet machines."""
 import asyncio
+import shlex
 from dataclasses import dataclass, asdict
 from .config import FLEET_MACHINES, detect_local_machine, SSH_TIMEOUT
 from .mux_parser import parse_mux_output
@@ -13,6 +14,7 @@ class TmuxSession:
     windows: int
     attached: bool
     is_local: bool
+    cwd: str = ""  # pane current directory (empty if unavailable)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -29,6 +31,7 @@ def _dicts_to_sessions(parsed: list[dict], machine: str, is_local: bool) -> list
             windows=d.get("windows", 0),
             attached=d.get("attached", False),
             is_local=is_local,
+            cwd=d.get("cwd") or "",
         ))
     return sessions
 
@@ -36,7 +39,7 @@ def _dicts_to_sessions(parsed: list[dict], machine: str, is_local: bool) -> list
 async def list_local_tmux() -> list[TmuxSession]:
     """List all tmux sessions on the local machine."""
     machine = detect_local_machine()
-    fmt = "#{session_name}|#{session_created}|#{session_windows}|#{session_attached}"
+    fmt = "#{session_name}|#{session_created}|#{session_windows}|#{session_attached}|#{pane_current_path}"
     try:
         proc = await asyncio.create_subprocess_exec(
             "tmux", "list-sessions", "-F", fmt,
@@ -78,7 +81,7 @@ async def list_remote_tmux_via_api(machine_name: str, ip: str, dispatch_port: in
 
 async def list_remote_tmux(machine_name: str, ssh_alias: str, mux: str) -> list[TmuxSession]:
     """List tmux/psmux sessions on a remote machine via SSH."""
-    fmt = "#{session_name}|#{session_created}|#{session_windows}|#{session_attached}"
+    fmt = "#{session_name}|#{session_created}|#{session_windows}|#{session_attached}|#{pane_current_path}"
     ssh_base = [
         "ssh",
         "-o", f"ConnectTimeout={SSH_TIMEOUT}",
@@ -189,14 +192,15 @@ async def create_tmux_session(
                 return {"ok": False, "error": stderr.decode().strip()}
             return {"ok": True}
         else:
-            remote_cmd = " ".join(
-                f"'{p}'" if " " in p else p for p in cmd_parts
-            )
+            # Build a properly shell-quoted command string for the remote side.
+            # shlex.join produces POSIX-correct quoting so spaces in cwd/command
+            # are preserved when SSH passes the string to the remote shell.
+            remote_cmd = " ".join(shlex.quote(p) for p in cmd_parts)
             ssh_cmd = [
                 "ssh",
-                f"-o ConnectTimeout={SSH_TIMEOUT}",
-                "-o BatchMode=yes",
-                "-o StrictHostKeyChecking=no",
+                "-o", f"ConnectTimeout={SSH_TIMEOUT}",
+                "-o", "BatchMode=yes",
+                "-o", "StrictHostKeyChecking=no",
                 ssh_alias,
                 remote_cmd,
             ]

@@ -665,7 +665,7 @@ class TestCreateTmuxSession:
         assert result == {"ok": True}
         args = mock_exec.call_args[0]
         assert args[0] == "ssh"
-        assert f"-o ConnectTimeout={SSH_TIMEOUT}" in args
+        assert f"ConnectTimeout={SSH_TIMEOUT}" in " ".join(str(a) for a in args)
         assert "ubuntu-desktop" in args
 
     @pytest.mark.asyncio
@@ -769,7 +769,7 @@ class TestKillTmuxSession:
         assert result == {"ok": True}
         args = mock_exec.call_args[0]
         assert args[0] == "ssh"
-        assert f"-o ConnectTimeout={SSH_TIMEOUT}" in args
+        assert f"ConnectTimeout={SSH_TIMEOUT}" in " ".join(str(a) for a in args)
         assert "ubuntu-desktop" in args
         remote_cmd = args[-1]
         assert "kill-session" in remote_cmd

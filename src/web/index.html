@@ -840,9 +840,20 @@ function TmuxCard({ session, onConnect, connecting, onKill, killing, onRemoteAtt
         style: {
           fontSize: '0.85rem', fontWeight: 700, color: '#e6edf3',
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-          marginBottom: 5,
+          marginBottom: session.cwd ? 2 : 5,
         }
       }, sessionName),
+
+      // Working directory (when available)
+      session.cwd && h('div', {
+        style: {
+          fontSize: '0.68rem', color: '#8b949e',
+          fontFamily: '"SF Mono", "Fira Code", Consolas, monospace',
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          marginBottom: 5,
+        },
+        title: session.cwd,
+      }, session.cwd),
 
       // Badge row
       h('div', {
@@ -947,8 +958,11 @@ function MachineSection({ machine, children, count, collapseKey, collapseState, 
 
 // ─── Project Section ──────────────────────────────────────────────────────────
 
+const PROJECT_SECTION_MAX = 20; // max cards before showing "Show all N" button
+
 function ProjectSection({ projectPath, children, count, defaultOpen = true, collapseKey, collapseState, setCollapseState }) {
   const shortPath = shortenPath(projectPath) || projectPath || '(unknown)';
+  const [showAll, setShowAll] = useState(false);
 
   const isOpen = (collapseState && collapseKey !== undefined && collapseState[collapseKey] !== undefined)
     ? collapseState[collapseKey]
@@ -959,6 +973,13 @@ function ProjectSection({ projectPath, children, count, defaultOpen = true, coll
       setCollapseState(prev => ({ ...prev, [collapseKey]: !isOpen }));
     }
   };
+
+  // Slice children array when over the limit (avoids rendering 100+ cards at once)
+  const childArray = Array.isArray(children) ? children : (children ? [children] : []);
+  const totalChildren = childArray.length;
+  const needsTruncation = totalChildren > PROJECT_SECTION_MAX && !showAll;
+  const visibleChildren = needsTruncation ? childArray.slice(0, PROJECT_SECTION_MAX) : childArray;
+  const hiddenCount = totalChildren - PROJECT_SECTION_MAX;
 
   return h('div', { style: { marginLeft: 8, marginBottom: 4 } },
     h('div', {
@@ -988,7 +1009,17 @@ function ProjectSection({ projectPath, children, count, defaultOpen = true, coll
         }
       }, count),
     ),
-    isOpen && h('div', { style: { paddingLeft: 4 } }, children),
+    isOpen && h('div', { style: { paddingLeft: 4 } },
+      visibleChildren,
+      needsTruncation && h('button', {
+        onClick: () => setShowAll(true),
+        style: {
+          background: 'none', border: 'none', color: '#58a6ff',
+          fontSize: '0.72rem', cursor: 'pointer', padding: '4px 8px',
+          textDecoration: 'underline', display: 'block',
+        },
+      }, `Show ${hiddenCount} more…`),
+    ),
   );
 }
 

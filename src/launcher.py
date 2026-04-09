@@ -164,7 +164,7 @@ async def launch_claude_session(cwd: str, session_id: str, machine: str, skip_pe
     else:
         info = FLEET_MACHINES.get(machine, {})
         alias = info.get("ssh_alias", machine)
-        cmd = f"ssh {shlex.quote(alias)} -t 'cd {quoted_cwd} && claude --resume {quoted_sid}{skip_flag}'"
+        cmd = f"ssh {shlex.quote(alias)} -t 'cd {quoted_cwd} && claude --resume {quoted_sid}{skip_flag}; exec bash'"
 
     return await launch_terminal(cmd)
 

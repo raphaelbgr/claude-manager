@@ -43,7 +43,11 @@ def parse_mux_output(output: str) -> list[dict]:
 
 
 def _parse_pipe_format(lines: list[str]) -> list[dict]:
-    """Parse pipe-delimited tmux -F output."""
+    """Parse pipe-delimited tmux -F output.
+
+    Expected fields: name|created_ts|windows|attached[|pane_current_path]
+    The 5th field (cwd) is optional — older format strings omit it.
+    """
     sessions = []
     for line in lines:
         parts = line.split("|")
@@ -59,7 +63,8 @@ def _parse_pipe_format(lines: list[str]) -> list[dict]:
         except ValueError:
             windows = 0
         attached = parts[3].strip() not in ("0", "")
-        sessions.append({"name": name, "created": created, "windows": windows, "attached": attached})
+        cwd = parts[4].strip() if len(parts) >= 5 else ""
+        sessions.append({"name": name, "created": created, "windows": windows, "attached": attached, "cwd": cwd})
     return sessions
 
 
