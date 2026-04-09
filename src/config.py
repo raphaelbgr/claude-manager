@@ -38,7 +38,7 @@ FLEET_MACHINES: dict[str, dict] = {
 }
 
 DEFAULT_PORT: int = 44740
-DEFAULT_BIND: str = "localhost"
+DEFAULT_BIND: str = "0.0.0.0"
 SCAN_INTERVAL: int = 30
 SSH_TIMEOUT: int = 3
 

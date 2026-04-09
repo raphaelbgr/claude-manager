@@ -123,8 +123,8 @@ class TestConfigConstants:
     def test_default_bind_is_string(self):
         assert isinstance(DEFAULT_BIND, str)
 
-    def test_default_bind_is_localhost(self):
-        assert DEFAULT_BIND == "localhost"
+    def test_default_bind_is_lan_accessible(self):
+        assert DEFAULT_BIND == "0.0.0.0"
 
     def test_scan_interval_is_int(self):
         assert isinstance(SCAN_INTERVAL, int)
