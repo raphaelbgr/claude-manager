@@ -558,7 +558,7 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
 function TmuxCard({ session, onConnect, connecting, onKill, killing }) {
   const isAttached = session.attached;
   const local = isLocalMachine(session.machine);
-  const connectLabel = connecting ? 'Connecting…' : (local ? 'Connect' : 'SSH + Connect');
+  const connectLabel = connecting ? 'Attaching…' : (local ? '▶ Attach' : '▶ SSH + Attach');
   const sessionName = session.session_name || session.name || '(unnamed)';
 
   return h('div', { className: 'tmux-card' },
