@@ -331,7 +331,7 @@
 </script>
 
 <script type="module">
-import { createElement as h, useState, useEffect, useRef, useCallback, useMemo, Fragment } from 'react';
+import { createElement as h, useState, useEffect, useRef, useCallback, useMemo, Fragment, memo } from 'react';
 import { createRoot } from 'react-dom/client';
 
 // ─── Utility functions ────────────────────────────────────────────────────────
@@ -704,7 +704,7 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
         if (isArchived) {
           onUnarchive(sessionId);
         } else {
-          if (confirm('Archive this session?')) onArchive(sessionId);
+          onArchive(sessionId);
         }
       },
       title: isArchived ? 'Unarchive' : 'Archive',
@@ -863,9 +863,11 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
   );
 }
 
+const SessionCardMemo = memo(SessionCard);
+
 // ─── Tmux Card ────────────────────────────────────────────────────────────────
 
-function TmuxCard({ session, onConnect, connecting, onKill, killing, onRemoteAttach, remoteAttaching }) {
+function TmuxCard({ session, onConnect, connecting, onKill, killing, onRemoteAttach, remoteAttaching, confirmKill }) {
   const isAttached = session.attached;
   const local = isLocalMachine(session.machine);
   const muxOS = (MACHINE_INFO[session.machine] || {}).os || 'macOS';
@@ -911,17 +913,17 @@ function TmuxCard({ session, onConnect, connecting, onKill, killing, onRemoteAtt
           className: 'btn',
           onClick: () => onKill(session),
           disabled: killing,
-          title: `Kill tmux session "${sessionName}" on ${session.machine}`,
+          title: confirmKill ? `Click again to confirm kill "${sessionName}"` : `Kill tmux session "${sessionName}" on ${session.machine}`,
           style: {
             fontSize: '0.72rem', fontWeight: 600,
-            background: killing ? '#3a1a1a' : '#21262d',
+            background: killing ? '#3a1a1a' : confirmKill ? '#5a2a2a' : '#21262d',
             color: '#f85149',
             border: '1px solid #5a2a2a',
             borderRadius: 6, padding: '4px 10px',
             cursor: killing ? 'not-allowed' : 'pointer',
             opacity: killing ? 0.6 : 1,
           }
-        }, killing ? 'Killing…' : (local ? 'Kill' : 'SSH + Kill')),
+        }, killing ? 'Killing…' : confirmKill ? 'Confirm?' : (local ? 'Kill' : 'SSH + Kill')),
         !local && h('button', {
           className: 'btn',
           onClick: () => onRemoteAttach(session),
@@ -960,6 +962,8 @@ function TmuxCard({ session, onConnect, connecting, onKill, killing, onRemoteAtt
     ),
   );
 }
+
+const TmuxCardMemo = memo(TmuxCard);
 
 // ─── Hardware Info Component ──────────────────────────────────────────────────
 
@@ -1650,7 +1654,7 @@ function PinnedSection({ sessions, pinnedIds, onLaunch, launchingId, onTmuxLaunc
       }, pinned.length),
     ),
     pinned.map(s =>
-      h(SessionCard, {
+      h(SessionCardMemo, {
         key: s.session_id,
         session: s,
         onLaunch,
@@ -1663,7 +1667,7 @@ function PinnedSection({ sessions, pinnedIds, onLaunch, launchingId, onTmuxLaunc
         isPinned: true,
         onArchive,
         onUnarchive,
-        isArchived: (archivedIds || []).includes(s.session_id),
+        isArchived: (archivedIds || new Set()).has(s.session_id),
         expanded: expandedCards.has(s.session_id),
         onToggleExpand: () => onToggleExpand(s.session_id),
         inMachineSection: false,
@@ -1677,8 +1681,22 @@ function PinnedSection({ sessions, pinnedIds, onLaunch, launchingId, onTmuxLaunc
 // ─── Sessions Panel ───────────────────────────────────────────────────────────
 
 function SessionsPanel({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaunchingId, skipPermissions, scanning, collapseState, setCollapseState, pinnedIds, onPin, onUnpin, onArchive, onUnarchive, archivedIds, expandedCards, onToggleExpand, hwCache, fetchHardware }) {
-  // sessions is already filtered/sorted by App; just group by machine
+  // sessions is already filtered/sorted by App; just group by machine then by project
   const byMachine = useMemo(() => groupBy(sessions, 'machine'), [sessions]);
+
+  const machineProjectTree = useMemo(() => {
+    const tree = {};
+    for (const [machine, machineSessions] of Object.entries(byMachine)) {
+      const byProject = groupBy(machineSessions, s => s.cwd || s.project_path || '');
+      const entries = Object.entries(byProject).sort(([, a], [, b]) => {
+        const aMax = a.reduce((m, s) => s.modified > m ? s.modified : m, '');
+        const bMax = b.reduce((m, s) => s.modified > m ? s.modified : m, '');
+        return bMax > aMax ? 1 : bMax < aMax ? -1 : 0;
+      });
+      tree[machine] = entries;
+    }
+    return tree;
+  }, [byMachine]);
 
   if (!sessions.length) {
     return h('div', {
@@ -1743,15 +1761,8 @@ function SessionsPanel({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaun
       h('span', { style: { display: 'inline-block', animation: 'spin 0.8s linear infinite' } }, '↻'),
       h('span', null, `Scanning ${machineCount} machine${machineCount !== 1 ? 's' : ''}…`),
     ),
-    Object.entries(byMachine).map(([machine, machineSessions]) => {
-      // Group by effective path (cwd preferred) within the machine, sorted by most recent modified
-      const byProject = groupBy(machineSessions, s => s.cwd || s.project_path || '');
-      const projectEntries = Object.entries(byProject).sort(([, a], [, b]) => {
-        const aMax = a.reduce((m, s) => s.modified > m ? s.modified : m, '');
-        const bMax = b.reduce((m, s) => s.modified > m ? s.modified : m, '');
-        return bMax > aMax ? 1 : bMax < aMax ? -1 : 0;
-      });
-
+    Object.entries(machineProjectTree).map(([machine, projectEntries]) => {
+      const machineSessions = byMachine[machine] || [];
       const machineKey = machine;
 
       return h(MachineSection, {
@@ -1774,7 +1785,7 @@ function SessionsPanel({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaun
             setCollapseState,
           },
             projectSessions.map(s =>
-              h(SessionCard, {
+              h(SessionCardMemo, {
                 key: s.session_id,
                 session: s,
                 onLaunch,
@@ -1787,7 +1798,7 @@ function SessionsPanel({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaun
                 isPinned: (pinnedIds || []).includes(s.session_id),
                 onArchive,
                 onUnarchive,
-                isArchived: (archivedIds || []).includes(s.session_id),
+                isArchived: (archivedIds || new Set()).has(s.session_id),
                 expanded: (expandedCards || new Set()).has(s.session_id),
                 onToggleExpand: () => onToggleExpand(s.session_id),
                 inMachineSection: true,
@@ -1804,7 +1815,7 @@ function SessionsPanel({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaun
 
 // ─── Tmux Panel ───────────────────────────────────────────────────────────────
 
-function TmuxPanel({ tmuxSessions, fleet, onConnectTmux, connectingId, onKillTmux, killingId, onRemoteAttach, remoteAttachingId, onNewSession, scanning, collapseState, setCollapseState }) {
+function TmuxPanel({ tmuxSessions, fleet, onConnectTmux, connectingId, onKillTmux, killingId, killConfirm, onRemoteAttach, remoteAttachingId, onNewSession, scanning, collapseState, setCollapseState }) {
   // tmuxSessions is already machine-filtered by App
   const byMachine = useMemo(() => groupBy(tmuxSessions, s => s.machine || 'unknown'), [tmuxSessions]);
 
@@ -1842,13 +1853,14 @@ function TmuxPanel({ tmuxSessions, fleet, onConnectTmux, connectingId, onKillTmu
               setCollapseState,
             },
               sessions.map(s =>
-                h(TmuxCard, {
+                h(TmuxCardMemo, {
                   key: `${s.machine}-${s.session_name || s.name}`,
                   session: s,
                   onConnect: onConnectTmux,
                   connecting: connectingId === `${s.machine}-${s.session_name || s.name}`,
                   onKill: onKillTmux,
                   killing: killingId === `${s.machine}-${s.session_name || s.name}`,
+                  confirmKill: !!(killConfirm && killConfirm[`${s.machine}-${s.session_name || s.name}`]),
                   onRemoteAttach: onRemoteAttach,
                   remoteAttaching: remoteAttachingId === `${s.machine}-${s.session_name || s.name}`,
                 })
@@ -1967,6 +1979,8 @@ function FleetBar({ fleet, lastScan, wsConnected }) {
 function Header({ health, sessions, tmuxSessions, fleet, onScan, scanning, skipPermissions, onSkipPermissionsChange }) {
   const online = Object.values(fleet || {}).filter(m => m.online).length;
   const total = Object.keys(fleet || {}).length;
+  const [restartConfirm, setRestartConfirm] = useState(false);
+  const restartTimerRef = useRef(null);
 
   return h('header', {
     style: {
@@ -2062,27 +2076,34 @@ function Header({ health, sessions, tmuxSessions, fleet, onScan, scanning, skipP
       '--dangerously-skip-permissions',
     ),
 
-    // Restart server button
+    // Restart server button (double-click to confirm)
     h('button', {
       className: 'btn',
       onClick: async () => {
-        if (!confirm('Restart the API server? The page will reload in a few seconds.')) return;
+        if (!restartConfirm) {
+          setRestartConfirm(true);
+          restartTimerRef.current = setTimeout(() => setRestartConfirm(false), 3000);
+          return;
+        }
+        clearTimeout(restartTimerRef.current);
+        setRestartConfirm(false);
         try {
           await fetch('/api/restart', { method: 'POST' });
           toast('Server restarting...', 'info');
           setTimeout(() => { window.location.reload(); }, 3000);
         } catch { toast('Restart failed', 'error'); }
       },
-      title: 'Restart API server',
+      title: restartConfirm ? 'Click again to confirm restart' : 'Restart API server',
       style: {
-        background: '#21262d', border: '1px solid #30363d', borderRadius: 8,
-        color: '#8b949e', padding: '6px 10px', fontSize: '0.75rem', fontWeight: 600,
+        background: restartConfirm ? '#5a3a00' : '#21262d',
+        border: `1px solid ${restartConfirm ? '#7a5a00' : '#30363d'}`, borderRadius: 8,
+        color: restartConfirm ? '#e3b341' : '#8b949e', padding: '6px 10px', fontSize: '0.75rem', fontWeight: 600,
         display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer',
         transition: 'all 0.15s', whiteSpace: 'nowrap',
       },
     },
       h('span', { className: 'material-icons-round', style: { fontSize: '14px' } }, 'restart_alt'),
-      'Restart',
+      restartConfirm ? 'Confirm?' : 'Restart',
     ),
   );
 }
@@ -2129,14 +2150,14 @@ function FilterBar({ sessions, tmuxSessions, fleet, filters, setFilters, archive
   // Count hidden archived sessions (archived but showArchived is off)
   const hiddenArchivedCount = useMemo(() => {
     if (filters.showArchived) return 0;
-    return sessions.filter(s => (archivedIds || []).includes(s.session_id)).length;
+    return sessions.filter(s => (archivedIds || new Set()).has(s.session_id)).length;
   }, [sessions, archivedIds, filters.showArchived]);
 
   // Compute result count for sessions (mirrors App filteredSessions logic)
   const totalSessions = sessions.length;
   const visibleCount = useMemo(() => {
     let r = sessions;
-    if (!filters.showArchived) r = r.filter(s => !(archivedIds || []).includes(s.session_id));
+    if (!filters.showArchived) r = r.filter(s => !(archivedIds || new Set()).has(s.session_id));
     if (filters.machines.size > 0) r = r.filter(s => filters.machines.has(s.machine));
     if (filters.statuses.size > 0) r = r.filter(s => filters.statuses.has(s.status));
     if (filters.timeRange !== 'all') {
@@ -2282,7 +2303,7 @@ function App() {
   const [loading, setLoading]             = useState(true);
   const [skipPermissions, setSkipPermissions] = useState(false);
   const [pinnedIds, setPinnedIds]         = useState([]);
-  const [archivedIds, setArchivedIds]     = useState([]);
+  const [archivedIds, setArchivedIds]     = useState(new Set());
 
   // Hardware cache: maps machine name → { data, timestamp } or { error, timestamp }
   const [hwCache, setHwCache] = useState({});
@@ -2313,11 +2334,19 @@ function App() {
     } catch { return new Set(); }
   });
 
+  const expandedCardsRef = useRef(expandedCards);
+  expandedCardsRef.current = expandedCards;
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      try { localStorage.setItem('claude-manager-expanded-cards', JSON.stringify([...expandedCardsRef.current])); } catch {}
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [expandedCards]);
+
   const handleToggleExpand = useCallback((sessionId) => {
     setExpandedCards(prev => {
       const next = new Set(prev);
       if (next.has(sessionId)) next.delete(sessionId); else next.add(sessionId);
-      try { localStorage.setItem('claude-manager-expanded-cards', JSON.stringify([...next])); } catch {}
       return next;
     });
   }, []);
@@ -2330,8 +2359,13 @@ function App() {
     } catch { return {}; }
   });
 
+  const collapseStateRef = useRef(collapseState);
+  collapseStateRef.current = collapseState;
   useEffect(() => {
-    try { localStorage.setItem(COLLAPSE_KEY, JSON.stringify(collapseState)); } catch {}
+    const timer = setTimeout(() => {
+      try { localStorage.setItem(COLLAPSE_KEY, JSON.stringify(collapseStateRef.current)); } catch {}
+    }, 500);
+    return () => clearTimeout(timer);
   }, [collapseState]);
 
   // ── Filtered sessions ────────────────────────────────────────────────────
@@ -2340,7 +2374,7 @@ function App() {
 
     // Hide archived unless showArchived is on
     if (!filters.showArchived) {
-      result = result.filter(s => !archivedIds.includes(s.session_id));
+      result = result.filter(s => !archivedIds.has(s.session_id));
     }
 
     if (filters.machines.size > 0) {
@@ -2391,20 +2425,33 @@ function App() {
   const handleWsMessage = useCallback((msg) => {
     if (msg.channel === 'sessions') {
       const data = msg.data;
+      let newSessions;
       // data can be a flat list (update) or grouped dict (snapshot)
       if (Array.isArray(data)) {
-        setSessions(data);
+        newSessions = data;
       } else if (data && typeof data === 'object') {
         // grouped: { machine: [{project_folder, sessions:[]}] }
-        const flat = [];
+        newSessions = [];
         for (const [machine, projects] of Object.entries(data)) {
           for (const proj of projects) {
             for (const s of proj.sessions) {
-              flat.push({ ...s, machine });
+              newSessions.push({ ...s, machine });
             }
           }
         }
-        setSessions(flat);
+      }
+      if (newSessions) {
+        setSessions(prev => {
+          // Skip re-render if count unchanged and first item unchanged
+          if (
+            prev.length === newSessions.length &&
+            prev[0]?.session_id === newSessions[0]?.session_id &&
+            prev[0]?.modified === newSessions[0]?.modified
+          ) {
+            return prev;
+          }
+          return newSessions;
+        });
       }
     } else if (msg.channel === 'fleet') {
       const data = msg.data;
@@ -2457,7 +2504,7 @@ function App() {
       .then(d => {
         if (d && typeof d.skip_permissions === 'boolean') setSkipPermissions(d.skip_permissions);
         if (d && Array.isArray(d.pinned_sessions)) setPinnedIds(d.pinned_sessions);
-        if (d && Array.isArray(d.archived_sessions)) setArchivedIds(d.archived_sessions);
+        if (d && Array.isArray(d.archived_sessions)) setArchivedIds(new Set(d.archived_sessions));
       })
       .catch(() => {});
 
@@ -2529,7 +2576,7 @@ function App() {
 
   // ── Archive / Unarchive session ───────────────────────────────────────────
   const handleArchive = useCallback(async (sessionId) => {
-    setArchivedIds(prev => prev.includes(sessionId) ? prev : [...prev, sessionId]);
+    setArchivedIds(prev => { if (prev.has(sessionId)) return prev; const next = new Set(prev); next.add(sessionId); return next; });
     try {
       await fetch('/api/sessions/archive', {
         method: 'POST',
@@ -2543,7 +2590,7 @@ function App() {
   }, []);
 
   const handleUnarchive = useCallback(async (sessionId) => {
-    setArchivedIds(prev => prev.filter(id => id !== sessionId));
+    setArchivedIds(prev => { const next = new Set(prev); next.delete(sessionId); return next; });
     try {
       await fetch('/api/sessions/unarchive', {
         method: 'POST',
@@ -2665,10 +2712,19 @@ function App() {
 
   // ── Kill tmux session ────────────────────────────────────────────────────
   const [killingId, setKillingId] = useState(null);
+  const [killConfirm, setKillConfirm] = useState(null); // key → timeout id
   const handleKillTmux = useCallback(async (session) => {
     const name = session.session_name || session.name;
     const key = `${session.machine}-${name}`;
-    if (!confirm(`Kill tmux session "${name}" on ${session.machine}?`)) return;
+    if (!killConfirm || !killConfirm[key]) {
+      // First click: show confirm state, auto-reset after 3s
+      const tid = setTimeout(() => setKillConfirm(prev => { const n = { ...prev }; delete n[key]; return n; }), 3000);
+      setKillConfirm(prev => ({ ...(prev || {}), [key]: tid }));
+      return;
+    }
+    // Second click: execute
+    clearTimeout(killConfirm[key]);
+    setKillConfirm(prev => { const n = { ...prev }; delete n[key]; return n; });
     setKillingId(key);
     try {
       const res = await fetch('/api/tmux/kill', {
@@ -2880,6 +2936,7 @@ function App() {
                   connectingId,
                   onKillTmux: handleKillTmux,
                   killingId,
+                  killConfirm,
                   onRemoteAttach: handleRemoteAttach,
                   remoteAttachingId,
                   onNewSession: () => setShowModal(true),
