@@ -167,10 +167,14 @@ async def launch_claude_session(cwd: str, session_id: str, machine: str, skip_pe
         session_cmd = adapter.build_session_command_ssh(cwd, session_id, skip_permissions)
         terminal_cmd = adapter.for_terminal(session_cmd, keep_open=True)
         if adapter.is_windows:
-            # Windows: the SSH arg must be in single quotes (bash literal)
-            # to preserve backslashes in C:\paths and double quotes in
-            # powershell -Command "...". No single quotes inside the command.
-            cmd = f"ssh {alias} -t '{terminal_cmd}'"
+            # Windows OpenSSH uses Git Bash as DefaultShell (DefaultShellCommandOption=-c).
+            # With SSH -t (PTY): OpenSSH wraps the command in ConPTY/conhost and the
+            # -Command "..." argument is NOT passed to PowerShell — it starts interactive.
+            # Without -t: Git Bash runs `bash -c "user_cmd"` normally and PowerShell
+            # receives the full -Command "..." argument correctly.
+            # Fix: omit -t for Windows. PowerShell -NoExit keeps the session open.
+            # Single quotes preserve backslashes in C:\paths across the bash→SSH chain.
+            cmd = f"ssh {alias} '{terminal_cmd}'"
         else:
             cmd = f"ssh {shlex.quote(alias)} -t {shlex.quote(terminal_cmd)}"
 
