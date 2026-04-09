@@ -814,6 +814,41 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
   const [cwd, setCwd] = useState('');
   const [command, setCommand] = useState('');
   const [creating, setCreating] = useState(false);
+  const [browseOpen, setBrowseOpen] = useState(false);
+  const [browsePath, setBrowsePath] = useState('');
+  const [browseDirs, setBrowseDirs] = useState([]);
+  const [browseLoading, setBrowseLoading] = useState(false);
+
+  const fetchDirs = async (path) => {
+    setBrowseLoading(true);
+    try {
+      const res = await fetch('/api/browse', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ machine, path: path || '' }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setBrowsePath(data.path);
+        setBrowseDirs(data.dirs);
+      } else {
+        toast(data.error || 'Browse failed', 'error');
+      }
+    } catch (e) {
+      toast('Network error browsing directory', 'error');
+    } finally {
+      setBrowseLoading(false);
+    }
+  };
+
+  const handleBrowseToggle = async () => {
+    if (browseOpen) {
+      setBrowseOpen(false);
+    } else {
+      setBrowseOpen(true);
+      await fetchDirs(cwd || '');
+    }
+  };
 
   const handleCreate = async () => {
     if (!machine || !name.trim()) {
@@ -897,13 +932,134 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
           h('label', {
             style: { display: 'block', fontSize: '0.78rem', color: '#8b949e', marginBottom: 6 }
           }, 'Working Directory (optional)'),
-          h('input', {
-            className: 'form-input',
-            type: 'text',
-            placeholder: '/Users/rbgnr/git/project',
-            value: cwd,
-            onChange: e => setCwd(e.target.value),
-          }),
+          h('div', { style: { display: 'flex', gap: 8, alignItems: 'center' } },
+            h('input', {
+              className: 'form-input',
+              type: 'text',
+              placeholder: '/Users/rbgnr/git/project',
+              value: cwd,
+              onChange: e => setCwd(e.target.value),
+              style: { flex: 1 },
+            }),
+            h('button', {
+              type: 'button',
+              onClick: handleBrowseToggle,
+              style: {
+                background: browseOpen ? '#1f6feb' : '#21262d',
+                color: browseOpen ? '#e6edf3' : '#8b949e',
+                border: '1px solid #30363d',
+                borderRadius: 6,
+                padding: '6px 12px',
+                fontSize: '0.8rem',
+                cursor: 'pointer',
+                whiteSpace: 'nowrap',
+                flexShrink: 0,
+              }
+            }, '\uD83D\uDCC1 Browse'),
+          ),
+          browseOpen && h('div', {
+            style: {
+              marginTop: 8,
+              background: '#161b22',
+              border: '1px solid #30363d',
+              borderRadius: 8,
+              overflow: 'hidden',
+            }
+          },
+            h('div', {
+              style: {
+                padding: '8px 12px',
+                background: '#0d1117',
+                borderBottom: '1px solid #30363d',
+                fontFamily: 'monospace',
+                fontSize: '0.78rem',
+                color: '#58a6ff',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+              }
+            },
+              '\uD83D\uDCC1 ',
+              browseLoading
+                ? h('span', { style: { color: '#8b949e' } }, 'Loading…')
+                : h('span', null, browsePath || '~'),
+            ),
+            h('div', {
+              style: {
+                maxHeight: 240,
+                overflowY: 'auto',
+                padding: '4px 0',
+              }
+            },
+              !browseLoading && browsePath && h('div', {
+                onClick: async () => {
+                  const parent = browsePath.split('/').slice(0, -1).join('/') || '/';
+                  await fetchDirs(parent);
+                },
+                style: {
+                  padding: '6px 14px',
+                  fontSize: '0.82rem',
+                  color: '#8b949e',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                },
+                onMouseEnter: e => e.currentTarget.style.background = '#21262d',
+                onMouseLeave: e => e.currentTarget.style.background = 'transparent',
+              },
+                '\uD83D\uDCC1 .. (go up)'
+              ),
+              !browseLoading && browseDirs.map(dir =>
+                h('div', {
+                  key: dir.path,
+                  onClick: () => fetchDirs(dir.path),
+                  style: {
+                    padding: '6px 14px',
+                    fontSize: '0.82rem',
+                    color: '#e6edf3',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                  },
+                  onMouseEnter: e => e.currentTarget.style.background = '#21262d',
+                  onMouseLeave: e => e.currentTarget.style.background = 'transparent',
+                },
+                  '\uD83D\uDCC1 ', dir.name
+                )
+              ),
+              browseLoading && h('div', {
+                style: { padding: '12px 14px', color: '#8b949e', fontSize: '0.82rem' }
+              }, 'Loading…'),
+            ),
+            h('div', {
+              style: {
+                padding: '8px 12px',
+                borderTop: '1px solid #30363d',
+                display: 'flex',
+                justifyContent: 'flex-end',
+              }
+            },
+              h('button', {
+                type: 'button',
+                onClick: () => {
+                  if (browsePath) setCwd(browsePath);
+                  setBrowseOpen(false);
+                },
+                style: {
+                  background: '#1f6feb',
+                  color: '#e6edf3',
+                  border: 'none',
+                  borderRadius: 6,
+                  padding: '6px 14px',
+                  fontSize: '0.8rem',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }
+              }, 'Select This Folder'),
+            ),
+          ),
         ),
         h('div', null,
           h('label', {

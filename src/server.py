@@ -331,6 +331,93 @@ async def handle_tmux_kill(request: web.Request) -> web.Response:
 # Preferences handlers
 # ---------------------------------------------------------------------------
 
+async def handle_browse(request: web.Request) -> web.Response:
+    """Browse directories on a given machine."""
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid JSON body"}, status=400)
+
+    machine = body.get("machine", "")
+    path = body.get("path", "")
+
+    from .config import FLEET_MACHINES
+    local_machine = request.app["local_machine"]
+
+    is_local = (not machine) or (machine == local_machine)
+
+    if is_local:
+        try:
+            import pathlib as _pathlib
+            p = _pathlib.Path(path).expanduser() if path else _pathlib.Path.home()
+            p = p.resolve()
+            if not p.exists() or not p.is_dir():
+                return web.json_response({"ok": False, "error": f"Path does not exist: {p}"}, status=404)
+            dirs = []
+            try:
+                entries = sorted(
+                    (d for d in p.iterdir() if d.is_dir() and not d.name.startswith(".")),
+                    key=lambda d: d.name.lower(),
+                )
+                dirs = [{"name": d.name, "path": str(d)} for d in entries[:200]]
+            except PermissionError as pe:
+                return web.json_response({"ok": False, "error": f"Permission denied: {pe}"}, status=403)
+            return web.json_response({
+                "ok": True,
+                "path": str(p),
+                "parent": str(p.parent),
+                "dirs": dirs,
+            })
+        except Exception as exc:
+            log.exception("local browse failed")
+            return web.json_response({"ok": False, "error": str(exc)}, status=500)
+
+    # Remote machine
+    info = FLEET_MACHINES.get(machine)
+    if not info:
+        return web.json_response({"ok": False, "error": f"Unknown machine: {machine}"}, status=400)
+    ssh_alias = info.get("ssh_alias", machine)
+
+    # Build the python one-liner
+    if path:
+        escaped = path.replace("'", "\\'")
+        py_expr = f"pathlib.Path('{escaped}')"
+    else:
+        py_expr = "pathlib.Path.home()"
+
+    py_script = (
+        "import json,pathlib,sys;"
+        f"p={py_expr}.expanduser().resolve();"
+        "assert p.exists() and p.is_dir();"
+        "dirs=sorted([{'name':d.name,'path':str(d)} for d in p.iterdir() if d.is_dir() and not d.name.startswith('.')],key=lambda x:x['name'])[:200];"
+        "print(json.dumps({'path':str(p),'parent':str(p.parent),'dirs':dirs}))"
+    )
+
+    proc = await asyncio.create_subprocess_exec(
+        "ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", ssh_alias,
+        "python3", "-",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(input=py_script.encode()), timeout=10)
+    except asyncio.TimeoutError:
+        proc.kill()
+        return web.json_response({"ok": False, "error": "SSH timeout"}, status=504)
+
+    if proc.returncode != 0:
+        err = stderr.decode().strip()
+        return web.json_response({"ok": False, "error": err or "SSH command failed"}, status=500)
+
+    try:
+        result = json.loads(stdout.decode().strip())
+        result["ok"] = True
+        return web.json_response(result)
+    except Exception as exc:
+        return web.json_response({"ok": False, "error": f"Parse error: {exc}"}, status=500)
+
+
 async def handle_preferences_get(request: web.Request) -> web.Response:
     return web.json_response(_load_prefs())
 
@@ -479,6 +566,7 @@ def create_app(
     app.router.add_post("/api/tmux/connect", handle_tmux_connect)
     app.router.add_post("/api/tmux/connect-remote", handle_tmux_connect_remote)
     app.router.add_post("/api/tmux/kill", handle_tmux_kill)
+    app.router.add_post("/api/browse", handle_browse)
     app.router.add_get("/api/preferences", handle_preferences_get)
     app.router.add_post("/api/preferences", handle_preferences_post)
 
