@@ -47,14 +47,41 @@ def run_desktop(bind: str = "localhost", port: int = 44740):
     # --- Open native window (this is the main event loop) ---
     print(f"claude-manager native window — API at {base_url}")
 
+    # Dark loading page shown instantly while React loads from CDN
+    loading_html = f"""
+    <html style="background:#0d1117;color:#e6edf3;font-family:-apple-system,system-ui,sans-serif">
+    <body style="display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
+    <div style="text-align:center">
+        <div style="font-size:2rem;margin-bottom:16px;animation:spin 1s linear infinite;display:inline-block">↻</div>
+        <div style="font-size:1.1rem;font-weight:600">claude-manager</div>
+        <div style="font-size:0.8rem;color:#8b949e;margin-top:8px">Loading...</div>
+    </div>
+    <style>@keyframes spin{{from{{transform:rotate(0)}}to{{transform:rotate(360deg)}}}}</style>
+    <script>
+        // Redirect to the real app once server is ready
+        (async function() {{
+            for (let i = 0; i < 30; i++) {{
+                try {{
+                    const r = await fetch('{base_url}/health');
+                    if (r.ok) {{ window.location = '{base_url}'; return; }}
+                }} catch(e) {{}}
+                await new Promise(r => setTimeout(r, 500));
+            }}
+            document.body.innerHTML = '<div style="text-align:center;margin-top:40vh;color:#f85149">Server failed to start on port {port}</div>';
+        }})();
+    </script>
+    </body></html>
+    """
+
     window = webview.create_window(
         title="claude-manager",
-        url=base_url,
+        html=loading_html,
         width=1320,
         height=880,
         min_size=(900, 600),
         text_select=True,
         zoomable=True,
+        background_color="#0d1117",
     )
 
     # When the window closes, exit the app
