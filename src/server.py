@@ -267,6 +267,12 @@ async def handle_tmux_create(request: web.Request) -> web.Response:
         return web.json_response({"ok": False, "error": "machine and name required"}, status=400)
     result = await create_tmux_session(machine, name, body.get("cwd"), body.get("command"))
     status = 200 if result.get("ok") else 500
+    if result.get("ok"):
+        local_machine = request.app["local_machine"]
+        fleet = request.app["state"]["fleet"]
+        tmux = await list_all_tmux(local_machine, fleet)
+        request.app["state"]["tmux"] = tmux
+        await _push_to_ws(request.app, "tmux", [t.to_dict() for t in tmux])
     return web.json_response(result, status=status)
 
 
@@ -312,6 +318,12 @@ async def handle_tmux_kill(request: web.Request) -> web.Response:
         return web.json_response({"ok": False, "error": "machine and name required"}, status=400)
     result = await kill_tmux_session(machine, name)
     status = 200 if result.get("ok") else 500
+    if result.get("ok"):
+        local_machine = request.app["local_machine"]
+        fleet = request.app["state"]["fleet"]
+        tmux = await list_all_tmux(local_machine, fleet)
+        request.app["state"]["tmux"] = tmux
+        await _push_to_ws(request.app, "tmux", [t.to_dict() for t in tmux])
     return web.json_response(result, status=status)
 
 
@@ -332,6 +344,41 @@ async def handle_preferences_post(request: web.Request) -> web.Response:
     prefs.update(body)
     _save_prefs(prefs)
     return web.json_response(prefs)
+
+
+async def handle_sessions_pin(request: web.Request) -> web.Response:
+    """Add a session ID to the pinned list."""
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid JSON body"}, status=400)
+    session_id = body.get("session_id", "")
+    if not session_id:
+        return web.json_response({"ok": False, "error": "session_id required"}, status=400)
+    prefs = _load_prefs()
+    pinned = prefs.get("pinned_sessions", [])
+    if session_id not in pinned:
+        pinned.append(session_id)
+    prefs["pinned_sessions"] = pinned
+    _save_prefs(prefs)
+    return web.json_response({"ok": True, "pinned_sessions": pinned})
+
+
+async def handle_sessions_unpin(request: web.Request) -> web.Response:
+    """Remove a session ID from the pinned list."""
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid JSON body"}, status=400)
+    session_id = body.get("session_id", "")
+    if not session_id:
+        return web.json_response({"ok": False, "error": "session_id required"}, status=400)
+    prefs = _load_prefs()
+    pinned = prefs.get("pinned_sessions", [])
+    pinned = [p for p in pinned if p != session_id]
+    prefs["pinned_sessions"] = pinned
+    _save_prefs(prefs)
+    return web.json_response({"ok": True, "pinned_sessions": pinned})
 
 
 # ---------------------------------------------------------------------------
@@ -423,6 +470,8 @@ def create_app(
     app.router.add_get("/api/sessions/{machine}", handle_sessions_machine)
     app.router.add_post("/api/sessions/scan", handle_sessions_scan)
     app.router.add_post("/api/sessions/launch", handle_sessions_launch)
+    app.router.add_post("/api/sessions/pin", handle_sessions_pin)
+    app.router.add_post("/api/sessions/unpin", handle_sessions_unpin)
     app.router.add_get("/api/fleet", handle_fleet)
     app.router.add_get("/api/tmux", handle_tmux)
     app.router.add_get("/api/tmux/{machine}", handle_tmux_machine)

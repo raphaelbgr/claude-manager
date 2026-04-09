@@ -370,7 +370,7 @@ function StatusDot({ status, pulse = false }) {
 
 // ─── Session Card ─────────────────────────────────────────────────────────────
 
-function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching, skipPermissions }) {
+function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching, skipPermissions, onPin, onUnpin, isPinned }) {
   const isWorking = session.status === 'working';
   const isActive = session.status === 'active' || isWorking;
   // Always prefer cwd over project_path (project_path has a dash→slash bug)
@@ -495,7 +495,7 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
         h(Badge, { text: relativeTime(session.modified) }),
       ),
 
-      // Row 5: Session ID + copy
+      // Row 5: Session ID + copy + pin
       sessionId && h('div', {
         style: { display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }
       },
@@ -520,6 +520,20 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
             flexShrink: 0,
           }
         }, copied ? '✓' : '📋'),
+        h('button', {
+          className: 'btn',
+          onClick: () => isPinned ? onUnpin(sessionId) : onPin(sessionId),
+          title: isPinned ? 'Unpin session' : 'Pin session',
+          style: {
+            background: 'none', border: 'none',
+            color: isPinned ? '#e3b341' : '#484f58',
+            padding: '0 2px', cursor: 'pointer',
+            fontSize: '0.75rem', lineHeight: 1,
+            flexShrink: 0,
+            opacity: isPinned ? 1 : 0.5,
+            transition: 'color 0.15s, opacity 0.15s',
+          }
+        }, '📌'),
       ),
 
       // Row 6: Action buttons
@@ -857,9 +871,52 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
   );
 }
 
+// ─── Pinned Section ───────────────────────────────────────────────────────────
+
+function PinnedSection({ sessions, pinnedIds, onLaunch, launchingId, onTmuxLaunch, tmuxLaunchingId, skipPermissions, onPin, onUnpin }) {
+  const pinned = sessions.filter(s => pinnedIds.includes(s.session_id));
+  if (!pinned.length) return null;
+
+  return h('div', {
+    style: { marginBottom: 16, borderBottom: '1px solid #30363d', paddingBottom: 12 }
+  },
+    h('div', {
+      style: { display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8, padding: '0 2px' }
+    },
+      h('span', {
+        style: {
+          fontSize: '0.7rem', fontWeight: 700, letterSpacing: '0.08em',
+          textTransform: 'uppercase', color: '#e3b341',
+        }
+      }, '📌 PINNED'),
+      h('span', {
+        style: {
+          background: '#3a2a0a', color: '#e3b341', fontSize: '0.65rem',
+          borderRadius: 20, padding: '1px 7px', marginLeft: 4,
+          border: '1px solid #5a4a1a',
+        }
+      }, pinned.length),
+    ),
+    pinned.map(s =>
+      h(SessionCard, {
+        key: s.session_id,
+        session: s,
+        onLaunch,
+        onTmuxLaunch,
+        launching: launchingId === s.session_id,
+        tmuxLaunching: tmuxLaunchingId === s.session_id,
+        skipPermissions,
+        onPin,
+        onUnpin,
+        isPinned: true,
+      })
+    ),
+  );
+}
+
 // ─── Sessions Panel ───────────────────────────────────────────────────────────
 
-function SessionsPanel({ sessions, filter, onLaunch, onTmuxLaunch, launchingId, tmuxLaunchingId, skipPermissions, scanning, collapseState, setCollapseState }) {
+function SessionsPanel({ sessions, filter, onLaunch, onTmuxLaunch, launchingId, tmuxLaunchingId, skipPermissions, scanning, collapseState, setCollapseState, pinnedIds, onPin, onUnpin }) {
   const filtered = useMemo(() => {
     if (!filter.trim()) return sessions;
     const q = filter.toLowerCase();
@@ -908,6 +965,18 @@ function SessionsPanel({ sessions, filter, onLaunch, onTmuxLaunch, launchingId, 
   const machineCount = Object.keys(byMachine).length;
 
   return h('div', null,
+    // Pinned section (always above machine sections)
+    h(PinnedSection, {
+      sessions: filtered,
+      pinnedIds: pinnedIds || [],
+      onLaunch,
+      launchingId,
+      onTmuxLaunch,
+      tmuxLaunchingId,
+      skipPermissions,
+      onPin,
+      onUnpin,
+    }),
     // Scan progress indicator
     scanning && h('div', {
       style: {
@@ -957,6 +1026,9 @@ function SessionsPanel({ sessions, filter, onLaunch, onTmuxLaunch, launchingId, 
                 launching: launchingId === s.session_id,
                 tmuxLaunching: tmuxLaunchingId === s.session_id,
                 skipPermissions,
+                onPin,
+                onUnpin,
+                isPinned: (pinnedIds || []).includes(s.session_id),
               })
             )
           );
@@ -1254,6 +1326,7 @@ function App() {
   const [showModal, setShowModal]         = useState(false);
   const [loading, setLoading]             = useState(true);
   const [skipPermissions, setSkipPermissions] = useState(false);
+  const [pinnedIds, setPinnedIds]         = useState([]);
 
   // Collapse state: persisted to localStorage
   const [collapseState, setCollapseState] = useState(() => {
@@ -1334,7 +1407,10 @@ function App() {
 
     const p5 = fetch('/api/preferences')
       .then(r => r.json())
-      .then(d => { if (d && typeof d.skip_permissions === 'boolean') setSkipPermissions(d.skip_permissions); })
+      .then(d => {
+        if (d && typeof d.skip_permissions === 'boolean') setSkipPermissions(d.skip_permissions);
+        if (d && Array.isArray(d.pinned_sessions)) setPinnedIds(d.pinned_sessions);
+      })
       .catch(() => {});
 
     Promise.all([p1, p2, p3, p4, p5]).finally(() => setLoading(false));
@@ -1373,6 +1449,33 @@ function App() {
       });
     } catch {
       // non-fatal — preference not saved server-side, still works for this session
+    }
+  }, []);
+
+  // ── Pin / Unpin session ───────────────────────────────────────────────────
+  const handlePin = useCallback(async (sessionId) => {
+    setPinnedIds(prev => prev.includes(sessionId) ? prev : [...prev, sessionId]);
+    try {
+      await fetch('/api/sessions/pin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId }),
+      });
+    } catch {
+      // non-fatal
+    }
+  }, []);
+
+  const handleUnpin = useCallback(async (sessionId) => {
+    setPinnedIds(prev => prev.filter(id => id !== sessionId));
+    try {
+      await fetch('/api/sessions/unpin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId }),
+      });
+    } catch {
+      // non-fatal
     }
   }, []);
 
@@ -1635,6 +1738,9 @@ function App() {
                   scanning,
                   collapseState,
                   setCollapseState,
+                  pinnedIds,
+                  onPin: handlePin,
+                  onUnpin: handleUnpin,
                 }),
           ),
         ),
