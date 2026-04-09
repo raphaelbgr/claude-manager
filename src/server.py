@@ -35,7 +35,7 @@ from aiohttp import web
 from .command_adapter import get_adapter
 from .config import DEFAULT_BIND, DEFAULT_PORT, SCAN_INTERVAL, detect_local_machine
 from .fleet import discover_fleet
-from .launcher import launch_claude_session, launch_tmux_attach, launch_tmux_attach_remote, launch_new_tmux_and_attach
+from .launcher import launch_claude_session, launch_tmux_attach, launch_tmux_attach_remote, launch_new_tmux_and_attach, launch_terminal
 from .scanner import ClaudeSession, scan_all
 from .tmux_manager import TmuxSession, list_all_tmux, create_tmux_session, kill_tmux_session
 
@@ -244,10 +244,22 @@ async def handle_sessions_launch(request: web.Request) -> web.Response:
         is_remote_windows = (machine != local_machine and adapter.mux_type == "psmux")
 
         if is_remote_windows:
-            # psmux can't attach over SSH (Windows limitation).
-            # For remote Windows: run claude directly via SSH -t (no psmux).
-            # This gives the user an interactive claude session in the terminal.
-            result = await launch_claude_session(cwd, session_id, machine, skip_permissions=skip)
+            # Windows: server creates psmux session + sends cd+claude via send-keys.
+            # Client just opens a terminal that SSHes into the machine.
+            # The psmux session runs claude in the background.
+            project = cwd.replace("\\", "/").rstrip("/").split("/")[-1] if cwd else "claude"
+            safe_name = re.sub(r"[^a-zA-Z0-9_-]", "-", project) or "claude"
+            claude_cmd = adapter.build_session_command(cwd, session_id, skip)
+            from .tmux_manager import create_tmux_session
+            create_result = await create_tmux_session(machine, safe_name, cwd=cwd, command=claude_cmd)
+            if not create_result.get("ok"):
+                result = create_result
+            else:
+                # Open a local terminal that just SSHes in — user can manually
+                # psmux attach -t <name> to see the running session
+                info = FLEET_MACHINES.get(machine, {})
+                alias = info.get("ssh_alias", machine)
+                result = await launch_terminal(f"ssh {alias}")
         else:
             # tmux on macOS/Linux: create session + attach works perfectly
             project = cwd.replace("\\", "/").rstrip("/").split("/")[-1] if cwd else "claude"
