@@ -381,11 +381,17 @@ def create_app(
     # WebSocket
     app.router.add_get("/ws", handle_ws)
 
-    # Static web UI
+    # Static web UI — serve index.html at / and static assets
     import pathlib
     web_dir = pathlib.Path(__file__).parent / "web"
     if web_dir.is_dir():
-        app.router.add_static("/", web_dir, show_index=True)
+        index_html = web_dir / "index.html"
+
+        async def handle_index(request: web.Request) -> web.Response:
+            return web.FileResponse(index_html)
+
+        app.router.add_get("/", handle_index)
+        app.router.add_static("/static/", web_dir)
 
     return app
 
