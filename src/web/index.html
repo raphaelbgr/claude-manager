@@ -152,6 +152,11 @@
     .toast.error   { border-left: 3px solid #f85149; }
     .toast.info    { border-left: 3px solid #58a6ff; }
 
+    @keyframes spin {
+      from { transform: rotate(0deg); }
+      to   { transform: rotate(360deg); }
+    }
+
     @media (max-width: 768px) {
       .main-panels { flex-direction: column !important; }
       .panel-sessions, .panel-tmux { width: 100% !important; min-width: 0 !important; }
@@ -295,6 +300,24 @@ function SessionCard({ session, onLaunch, launching }) {
   const isActive = session.status === 'active';
   const projectName = shortenPath(session.project_path || session.project_folder);
   const summary = session.summary || '(no message preview)';
+  const [copied, setCopied] = useState(false);
+
+  const sessionId = session.session_id || '';
+  const cwdDiffersFromProject =
+    session.cwd &&
+    session.project_path &&
+    session.cwd !== session.project_path;
+
+  const handleCopy = () => {
+    const cmd = `claude --resume ${sessionId}`;
+    navigator.clipboard.writeText(cmd).then(() => {
+      setCopied(true);
+      toast('Copied resume command', 'info');
+      setTimeout(() => setCopied(false), 2000);
+    }).catch(() => {
+      toast('Failed to copy', 'error');
+    });
+  };
 
   return h('div', { className: 'session-card' },
     h('div', { style: { display: 'flex', alignItems: 'flex-start', gap: 10 } },
@@ -322,6 +345,14 @@ function SessionCard({ session, onLaunch, launching }) {
             style: { background: '#1a3a2a', color: '#3fb950', flexShrink: 0 }
           }, 'ACTIVE'),
         ),
+        cwdDiffersFromProject && h('div', {
+          style: {
+            fontSize: '0.7rem', color: '#484f58', fontFamily: 'monospace',
+            overflow: 'hidden', textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap', marginBottom: 4,
+          },
+          title: session.cwd,
+        }, session.cwd),
         h('div', {
           style: {
             fontSize: '0.78rem', color: '#8b949e',
@@ -351,6 +382,33 @@ function SessionCard({ session, onLaunch, launching }) {
               opacity: launching ? 0.6 : 1,
             }
           }, launching ? 'Launching…' : 'Launch'),
+        ),
+        sessionId && h('div', {
+          style: {
+            display: 'flex', alignItems: 'center', gap: 6, marginTop: 6,
+          }
+        },
+          h('span', {
+            style: {
+              fontSize: '10px', fontFamily: 'monospace',
+              color: '#484f58', opacity: 0.6,
+              overflow: 'hidden', textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap', maxWidth: 180,
+            },
+            title: sessionId,
+          }, sessionId),
+          h('button', {
+            className: 'btn',
+            onClick: handleCopy,
+            title: `Copy: claude --resume ${sessionId}`,
+            style: {
+              background: 'none', border: 'none',
+              color: copied ? '#3fb950' : '#484f58',
+              padding: '0 2px', cursor: 'pointer',
+              fontSize: '0.75rem', lineHeight: 1,
+              flexShrink: 0,
+            }
+          }, copied ? '✓' : '📋'),
         ),
       ),
     ),
@@ -608,7 +666,12 @@ function SessionsPanel({ sessions, filter, onLaunch, launchingId }) {
     },
       h('span', { style: { fontSize: '2rem' } }, '🔍'),
       h('span', { style: { fontSize: '0.875rem' } }, 'No sessions found'),
-      h('span', { style: { fontSize: '0.78rem' } }, 'Scanning fleet…'),
+      h('div', { style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.78rem' } },
+        h('span', {
+          style: { display: 'inline-block', animation: 'spin 0.8s linear infinite', fontSize: '1rem' }
+        }, '↻'),
+        h('span', null, 'Scanning fleet…'),
+      ),
     );
   }
 
@@ -882,6 +945,7 @@ function App() {
   const [launchingId, setLaunchingId] = useState(null);
   const [connectingId, setConnectingId] = useState(null);
   const [showModal, setShowModal]     = useState(false);
+  const [loading, setLoading]         = useState(true);
 
   // ── WS message handler ───────────────────────────────────────────────────
   const handleWsMessage = useCallback((msg) => {
@@ -916,15 +980,12 @@ function App() {
 
   // ── Initial data load ────────────────────────────────────────────────────
   useEffect(() => {
-    fetch('/health')
+    const p1 = fetch('/health')
       .then(r => r.json())
-      .then(d => {
-        setHealth(d);
-        setLastScan(d.last_scan);
-      })
+      .then(d => { setHealth(d); setLastScan(d.last_scan); })
       .catch(() => {});
 
-    fetch('/api/sessions')
+    const p2 = fetch('/api/sessions')
       .then(r => r.json())
       .then(data => {
         if (data && typeof data === 'object' && !Array.isArray(data)) {
@@ -941,15 +1002,17 @@ function App() {
       })
       .catch(() => {});
 
-    fetch('/api/fleet')
+    const p3 = fetch('/api/fleet')
       .then(r => r.json())
       .then(d => { if (d && typeof d === 'object') setFleet(d); })
       .catch(() => {});
 
-    fetch('/api/tmux')
+    const p4 = fetch('/api/tmux')
       .then(r => r.json())
       .then(d => { if (Array.isArray(d)) setTmuxSessions(d); })
       .catch(() => {});
+
+    Promise.all([p1, p2, p3, p4]).finally(() => setLoading(false));
   }, []);
 
   // ── Scan ─────────────────────────────────────────────────────────────────
@@ -1076,11 +1139,24 @@ function App() {
           h('div', {
             style: { flex: 1, overflowY: 'auto', padding: '12px 16px' }
           },
-            h(SessionsPanel, {
-              sessions, filter,
-              onLaunch: handleLaunch,
-              launchingId,
-            }),
+            loading
+              ? h('div', {
+                  style: {
+                    display: 'flex', flexDirection: 'column', alignItems: 'center',
+                    justifyContent: 'center', height: '200px', gap: 12, color: '#484f58',
+                  }
+                },
+                  h('span', {
+                    style: { display: 'inline-block', animation: 'spin 0.8s linear infinite', fontSize: '2rem' }
+                  }, '↻'),
+                  h('span', { style: { fontSize: '0.875rem' } }, 'Scanning fleet...'),
+                  h('span', { style: { fontSize: '0.78rem', textAlign: 'center' } }, 'Discovering machines\nand sessions'),
+                )
+              : h(SessionsPanel, {
+                  sessions, filter,
+                  onLaunch: handleLaunch,
+                  launchingId,
+                }),
           ),
         ),
 
@@ -1110,12 +1186,24 @@ function App() {
           h('div', {
             style: { flex: 1, overflowY: 'auto', padding: '12px 16px', display: 'flex', flexDirection: 'column' }
           },
-            h(TmuxPanel, {
-              tmuxSessions, fleet,
-              onConnectTmux: handleConnectTmux,
-              connectingId,
-              onNewSession: () => setShowModal(true),
-            }),
+            loading
+              ? h('div', {
+                  style: {
+                    display: 'flex', flexDirection: 'column', alignItems: 'center',
+                    justifyContent: 'center', height: '160px', gap: 12, color: '#484f58',
+                  }
+                },
+                  h('span', {
+                    style: { display: 'inline-block', animation: 'spin 0.8s linear infinite', fontSize: '2rem' }
+                  }, '↻'),
+                  h('span', { style: { fontSize: '0.875rem' } }, 'Scanning fleet...'),
+                )
+              : h(TmuxPanel, {
+                  tmuxSessions, fleet,
+                  onConnectTmux: handleConnectTmux,
+                  connectingId,
+                  onNewSession: () => setShowModal(true),
+                }),
           ),
         ),
       ),
