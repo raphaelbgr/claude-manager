@@ -662,11 +662,11 @@ class TestCreateTmuxSession:
              patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"):
             result = await create_tmux_session("ubuntu-desktop", "remote-sess")
 
-        assert result == {"ok": True}
-        args = mock_exec.call_args[0]
-        assert args[0] == "ssh"
-        assert f"ConnectTimeout={SSH_TIMEOUT}" in " ".join(str(a) for a in args)
-        assert "ubuntu-desktop" in args
+        assert result.get("ok") is True
+        first_call = mock_exec.call_args_list[0][0]
+        assert first_call[0] == "ssh"
+        assert f"ConnectTimeout={SSH_TIMEOUT}" in " ".join(str(a) for a in first_call)
+        assert "ubuntu-desktop" in first_call
 
     @pytest.mark.asyncio
     async def test_remote_create_uses_psmux_for_windows(self):
@@ -677,24 +677,26 @@ class TestCreateTmuxSession:
              patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"):
             result = await create_tmux_session("avell-i7", "win-sess")
 
-        assert result == {"ok": True}
-        args = mock_exec.call_args[0]
-        # The last arg is the remote command string — should use psmux
-        remote_cmd = args[-1]
+        assert result.get("ok") is True
+        # New flow uses 2 SSH calls: create + send-keys. First call should use psmux.
+        first_call_args = mock_exec.call_args_list[0][0]
+        remote_cmd = first_call_args[-1]
         assert "psmux" in remote_cmd
 
     @pytest.mark.asyncio
-    async def test_remote_create_with_cwd_in_remote_cmd(self):
+    async def test_remote_create_with_command_uses_send_keys(self):
         from src.tmux_manager import create_tmux_session
 
         proc = _make_proc(0)
         with patch("src.tmux_manager.asyncio.create_subprocess_exec", return_value=proc) as mock_exec, \
              patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"):
-            result = await create_tmux_session("ubuntu-desktop", "sess", cwd="/remote/path")
+            result = await create_tmux_session("ubuntu-desktop", "sess", cwd="/remote/path", command="echo hello")
 
-        args = mock_exec.call_args[0]
-        remote_cmd = args[-1]
-        assert "/remote/path" in remote_cmd
+        # Should make 2 SSH calls: create session + send-keys with command
+        assert mock_exec.call_count == 2
+        second_call_args = mock_exec.call_args_list[1][0]
+        remote_cmd = second_call_args[-1]
+        assert "send-keys" in remote_cmd
 
     @pytest.mark.asyncio
     async def test_timeout_returns_error(self):

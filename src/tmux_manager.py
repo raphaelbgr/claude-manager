@@ -180,17 +180,16 @@ async def create_tmux_session(
     mux = info.get("mux", "tmux")
     ssh_alias = info.get("ssh_alias", machine)
     local_machine = detect_local_machine()
-
-    cmd_parts = [mux, "new-session", "-d", "-s", name]
-    if cwd:
-        cmd_parts += ["-c", cwd]
-    if command:
-        cmd_parts.append(command)
-
     is_local = (machine == local_machine)
 
     try:
         if is_local:
+            # Local: create session with -c and command as exec args
+            cmd_parts = [mux, "new-session", "-d", "-s", name]
+            if cwd:
+                cmd_parts += ["-c", cwd]
+            if command:
+                cmd_parts.append(command)
             proc = await asyncio.create_subprocess_exec(
                 *cmd_parts,
                 stdout=asyncio.subprocess.PIPE,
@@ -201,27 +200,51 @@ async def create_tmux_session(
                 return {"ok": False, "error": stderr.decode().strip()}
             return {"ok": True}
         else:
-            # Build a properly shell-quoted command string for the remote side.
-            # shlex.join produces POSIX-correct quoting so spaces in cwd/command
-            # are preserved when SSH passes the string to the remote shell.
-            remote_cmd = " ".join(shlex.quote(p) for p in cmd_parts)
-            ssh_cmd = [
+            # Remote: use create + send-keys approach (avoids quoting hell over SSH).
+            # Step 1: Create empty detached session
+            ssh_base = [
                 "ssh",
                 "-o", f"ConnectTimeout={SSH_TIMEOUT}",
                 "-o", "BatchMode=yes",
                 "-o", "StrictHostKeyChecking=no",
                 ssh_alias,
-                remote_cmd,
             ]
+            create_cmd = f"{mux} new-session -d -s {shlex.quote(name)}"
             proc = await asyncio.create_subprocess_exec(
-                *ssh_cmd,
+                *ssh_base, create_cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=20)
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
             if proc.returncode != 0:
-                return {"ok": False, "error": stderr.decode().strip()}
-            return {"ok": True}
+                err = stderr.decode().strip()
+                if err:
+                    return {"ok": False, "error": err}
+
+            # Step 2: Send the command via send-keys (reliable, no quoting issues)
+            if command:
+                # Convert Windows paths (C:\foo\bar) to Git Bash paths (/c/foo/bar)
+                # so the command works in psmux's Git Bash shell
+                remote_os = info.get("os", "")
+                cmd_to_send = command
+                if remote_os == "win32":
+                    import re
+                    # Replace C:\path or 'C:\path' with /c/path for Git Bash
+                    def _win_to_bash(m):
+                        drive = m.group(1).lower()
+                        rest = m.group(2).replace("\\", "/")
+                        return f"/{drive}/{rest}" if rest else f"/{drive}/"
+                    cmd_to_send = re.sub(r"'?([A-Za-z]):\\([^']*)'?", _win_to_bash, cmd_to_send)
+
+                keys_cmd = f"{mux} send-keys -t {shlex.quote(name)} {shlex.quote(cmd_to_send)} Enter"
+                proc = await asyncio.create_subprocess_exec(
+                    *ssh_base, keys_cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await asyncio.wait_for(proc.communicate(), timeout=15)
+
+            return {"ok": True, "machine": machine, "session": name}
     except asyncio.TimeoutError:
         return {"ok": False, "error": "Timed out"}
     except OSError as exc:
