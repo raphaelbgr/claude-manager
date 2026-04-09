@@ -31,7 +31,7 @@ from aiohttp import web
 
 from .config import DEFAULT_BIND, DEFAULT_PORT, SCAN_INTERVAL, detect_local_machine
 from .fleet import discover_fleet
-from .launcher import launch_claude_session, launch_tmux_attach, launch_tmux_attach_remote
+from .launcher import launch_claude_session, launch_tmux_attach, launch_tmux_attach_remote, launch_new_tmux_and_attach
 from .scanner import ClaudeSession, scan_all
 from .tmux_manager import TmuxSession, list_all_tmux, create_tmux_session, kill_tmux_session
 
@@ -231,7 +231,18 @@ async def handle_sessions_launch(request: web.Request) -> web.Response:
     cwd = body.get("cwd", "")
     if not session_id or not cwd:
         return web.json_response({"ok": False, "error": "session_id and cwd required"}, status=400)
-    result = await launch_claude_session(cwd, session_id, machine)
+    skip = body.get("skip_permissions", False)
+    mode = body.get("mode", "terminal")
+    if mode == "tmux":
+        # Launch claude inside a new tmux session, then attach to it
+        import re
+        safe_name = re.sub(r"[^a-zA-Z0-9_-]", "-", session_id[:20]) or "claude"
+        claude_cmd = f"claude --resume {session_id}"
+        if skip:
+            claude_cmd += " --dangerously-skip-permissions"
+        result = await launch_new_tmux_and_attach(safe_name, machine, cwd=cwd, command=claude_cmd)
+    else:
+        result = await launch_claude_session(cwd, session_id, machine, skip_permissions=skip)
     status = 200 if result.get("ok") else 500
     return web.json_response(result, status=status)
 

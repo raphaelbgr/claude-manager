@@ -574,9 +574,9 @@ class TestSessionsLaunchEndpoint:
         with patch("src.server.launch_claude_session", mock_launcher):
             await cli.post(
                 "/api/sessions/launch",
-                json={"machine": "mac-mini", "session_id": "my-session", "cwd": "/my/path"},
+                json={"machine": "mac-mini", "session_id": "my-session", "cwd": "/my/path", "skip_permissions": True},
             )
-            mock_launcher.assert_awaited_once_with("/my/path", "my-session", "mac-mini")
+            mock_launcher.assert_awaited_once_with("/my/path", "my-session", "mac-mini", skip_permissions=True)
 
 
 # ---------------------------------------------------------------------------

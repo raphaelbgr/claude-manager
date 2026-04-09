@@ -141,14 +141,15 @@ async def _launch_windows(command: str) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
-async def launch_claude_session(cwd: str, session_id: str, machine: str) -> dict:
+async def launch_claude_session(cwd: str, session_id: str, machine: str, skip_permissions: bool = False) -> dict:
     """
     Open a terminal and resume a Claude session (local or remote).
 
     Args:
-        cwd:        Working directory for the session.
-        session_id: Claude session ID to resume.
-        machine:    Machine name (key in FLEET_MACHINES).
+        cwd:              Working directory for the session.
+        session_id:       Claude session ID to resume.
+        machine:          Machine name (key in FLEET_MACHINES).
+        skip_permissions: When True, appends --dangerously-skip-permissions to the command.
 
     Returns:
         {"ok": True} or {"ok": False, "error": str}.
@@ -156,13 +157,14 @@ async def launch_claude_session(cwd: str, session_id: str, machine: str) -> dict
     local_machine = detect_local_machine()
     quoted_cwd = shlex.quote(cwd)
     quoted_sid = shlex.quote(session_id)
+    skip_flag = " --dangerously-skip-permissions" if skip_permissions else ""
 
     if machine == local_machine:
-        cmd = f"cd {quoted_cwd} && claude --resume {quoted_sid}"
+        cmd = f"cd {quoted_cwd} && claude --resume {quoted_sid}{skip_flag}"
     else:
         info = FLEET_MACHINES.get(machine, {})
         alias = info.get("ssh_alias", machine)
-        cmd = f"ssh {shlex.quote(alias)} -t 'cd {quoted_cwd} && claude --resume {quoted_sid}'"
+        cmd = f"ssh {shlex.quote(alias)} -t 'cd {quoted_cwd} && claude --resume {quoted_sid}{skip_flag}'"
 
     return await launch_terminal(cmd)
 

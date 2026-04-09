@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>claude-manager</title>
+  <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Round" rel="stylesheet">
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
@@ -258,6 +259,62 @@
       margin-left: auto;
       white-space: nowrap;
     }
+
+    /* Compact action buttons on collapsed cards */
+    .compact-action-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      border: 1px solid #30363d;
+      background: #21262d;
+      color: #8b949e;
+      font-size: 0.68rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.1s;
+      white-space: nowrap;
+      flex-shrink: 0;
+      line-height: 1;
+    }
+    .compact-action-btn:hover {
+      background: #30363d;
+      color: #e6edf3;
+    }
+    .compact-action-btn.btn-launch {
+      border-color: #1f3a5f;
+      color: #58a6ff;
+    }
+    .compact-action-btn.btn-launch:hover {
+      background: #1f3a5f;
+      color: #93c5fd;
+    }
+    .compact-action-btn.btn-tmux {
+      border-color: #2a5a3a;
+      color: #3fb950;
+    }
+    .compact-action-btn.btn-tmux:hover {
+      background: #1a3a2a;
+      color: #6ee7a0;
+    }
+    .compact-action-btn.btn-pin-active {
+      border-color: #5a4a1a;
+      color: #e3b341;
+      background: #3a2a0a;
+    }
+    .compact-action-btn.btn-archive-active {
+      border-color: #4a2a6a;
+      color: #a371f7;
+      background: #2a1a3a;
+    }
+    .compact-action-btn.btn-icon-only {
+      padding: 2px 5px;
+    }
+    .compact-action-btn:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
   </style>
 </head>
 <body>
@@ -310,13 +367,29 @@ function clsx(...args) {
   return args.filter(Boolean).join(' ');
 }
 
+// ─── Icon helper (Material Icons Round) ──────────────────────────────────────
+
+function Icon({ name, size = 16, style: extraStyle = {}, title }) {
+  return h('span', {
+    className: 'material-icons-round',
+    title,
+    style: {
+      fontSize: `${size}px`,
+      verticalAlign: 'middle',
+      lineHeight: 1,
+      userSelect: 'none',
+      ...extraStyle,
+    },
+  }, name);
+}
+
 // ─── Machine / Design System ──────────────────────────────────────────────────
 
 const MACHINE_INFO = {
-  'mac-mini':        { ip: '192.168.7.102', os: 'macOS',   icon: '🍎' },
-  'ubuntu-desktop':  { ip: '192.168.7.13',  os: 'Linux',   icon: '🐧' },
-  'avell-i7':        { ip: '192.168.7.103', os: 'Windows', icon: '🪟' },
-  'windows-desktop': { ip: '192.168.7.101', os: 'Windows', icon: '🪟' },
+  'mac-mini':        { ip: '192.168.7.102', os: 'macOS',   osIcon: 'laptop_mac' },
+  'ubuntu-desktop':  { ip: '192.168.7.13',  os: 'Linux',   osIcon: 'computer' },
+  'avell-i7':        { ip: '192.168.7.103', os: 'Windows', osIcon: 'desktop_windows' },
+  'windows-desktop': { ip: '192.168.7.101', os: 'Windows', osIcon: 'desktop_windows' },
 };
 
 // Detect local machine from the page's hostname (API host).
@@ -378,9 +451,24 @@ function MachineBadge({ machine }) {
 
 function OsBadge({ machine }) {
   const info = MACHINE_INFO[machine] || {};
-  const icon = info.icon || '💻';
   const os = info.os || 'unknown';
-  return h(Badge, { text: os, icon, color: '#8b949e', bg: '#21262d', border: '#30363d' });
+  const iconName = info.osIcon || 'computer';
+  return h('span', {
+    style: {
+      display: 'inline-flex', alignItems: 'center', gap: 4,
+      fontSize: '0.65rem', fontWeight: 600,
+      padding: '2px 8px', borderRadius: 12,
+      background: '#21262d', color: '#8b949e', border: '1px solid #30363d',
+      whiteSpace: 'nowrap',
+      fontFamily: '"SF Mono", "Fira Code", Consolas, monospace',
+    }
+  },
+    h('span', {
+      className: 'material-icons-round',
+      style: { fontSize: '10px', verticalAlign: 'middle', lineHeight: 1 },
+    }, iconName),
+    os,
+  );
 }
 
 // ─── Toast system ─────────────────────────────────────────────────────────────
@@ -498,6 +586,7 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
     className: 'session-card-compact',
     onClick: onToggleExpand,
     title: 'Click to expand',
+    style: { cursor: 'pointer' },
   },
     // Status dot
     h(StatusDot, { status: session.status, pulse: true }),
@@ -553,24 +642,40 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
     // Spacer
     h('div', { style: { flex: 1 } }),
 
-    // Action buttons (small, icon-style, stop propagation)
+    // Launch button
     h('button', {
-      className: 'compact-btn btn',
+      className: `compact-action-btn btn btn-launch${launching ? '' : ''}`,
       onClick: e => { e.stopPropagation(); onLaunch(session); },
       disabled: launching,
-      title: local ? 'Launch' : 'SSH + Launch',
-      style: { color: launching ? '#484f58' : launchColor, fontSize: '0.75rem', opacity: launching ? 0.5 : 0.85 },
-    }, '▶'),
+      title: local ? 'Launch in terminal' : 'SSH + Launch in terminal',
+    },
+      h('span', { className: 'material-icons-round', style: { fontSize: '12px' } }, 'play_arrow'),
+      launching ? '…' : 'Launch',
+    ),
 
+    // tmux launch button
     h('button', {
-      className: 'compact-btn btn',
+      className: `compact-action-btn btn btn-tmux${tmuxLaunching ? '' : ''}`,
+      onClick: e => { e.stopPropagation(); onTmuxLaunch(session); },
+      disabled: tmuxLaunching,
+      title: os === 'Windows' ? 'Launch in psmux' : 'Launch in tmux',
+    },
+      h('span', { className: 'material-icons-round', style: { fontSize: '12px' } }, 'terminal'),
+      tmuxLaunching ? '…' : 'tmux',
+    ),
+
+    // Pin button
+    h('button', {
+      className: `compact-action-btn btn btn-icon-only${isPinned ? ' btn-pin-active' : ''}`,
       onClick: e => { e.stopPropagation(); isPinned ? onUnpin(sessionId) : onPin(sessionId); },
       title: isPinned ? 'Unpin' : 'Pin',
-      style: { color: isPinned ? '#e3b341' : '#484f58', fontSize: '0.8rem', opacity: isPinned ? 1 : 0.5 },
-    }, '📌'),
+    },
+      h('span', { className: 'material-icons-round', style: { fontSize: '12px' } }, 'push_pin'),
+    ),
 
+    // Archive button
     h('button', {
-      className: 'compact-btn btn',
+      className: `compact-action-btn btn btn-icon-only${isArchived ? ' btn-archive-active' : ''}`,
       onClick: e => {
         e.stopPropagation();
         if (isArchived) {
@@ -580,13 +685,15 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
         }
       },
       title: isArchived ? 'Unarchive' : 'Archive',
-      style: { color: isArchived ? '#a371f7' : '#484f58', fontSize: '0.8rem', opacity: isArchived ? 1 : 0.5 },
-    }, '📦'),
+    },
+      h('span', { className: 'material-icons-round', style: { fontSize: '12px' } }, 'archive'),
+    ),
 
-    // Expand toggle
+    // Expand toggle icon
     h('span', {
-      style: { color: '#484f58', fontSize: '0.65rem', flexShrink: 0, userSelect: 'none' }
-    }, expanded ? '▲' : '▼'),
+      className: 'material-icons-round',
+      style: { color: '#484f58', fontSize: '16px', flexShrink: 0, userSelect: 'none', verticalAlign: 'middle' },
+    }, expanded ? 'expand_less' : 'expand_more'),
   );
 
   // ── Expanded details section ─────────────────────────────────────────────
@@ -630,8 +737,14 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
           background: 'none', border: 'none',
           color: copied ? '#3fb950' : '#484f58',
           padding: '0 2px', cursor: 'pointer', fontSize: '0.75rem', lineHeight: 1,
+          display: 'inline-flex', alignItems: 'center',
         }
-      }, copied ? '✓' : '📋'),
+      },
+        h('span', {
+          className: 'material-icons-round',
+          style: { fontSize: '14px', verticalAlign: 'middle' },
+        }, copied ? 'check' : 'content_copy'),
+      ),
     ),
 
     // Machine + OS badges (full)
@@ -740,7 +853,12 @@ function TmuxCard({ session, onConnect, connecting, onKill, killing, onRemoteAtt
             cursor: remoteAttaching ? 'not-allowed' : 'pointer',
             opacity: remoteAttaching ? 0.6 : 1,
           }
-        }, remoteAttaching ? 'Opening…' : '🖥 Remote'),
+        },
+          remoteAttaching ? 'Opening…' : h(Fragment, null,
+            h('span', { className: 'material-icons-round', style: { fontSize: '12px', verticalAlign: 'middle', marginRight: 3 } }, 'desktop_windows'),
+            'Remote',
+          ),
+        ),
         h('button', {
           className: 'btn',
           onClick: () => onConnect(session),
@@ -1063,7 +1181,10 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
                 whiteSpace: 'nowrap',
                 flexShrink: 0,
               }
-            }, '\uD83D\uDCC1 Browse'),
+            },
+              h('span', { className: 'material-icons-round', style: { fontSize: '14px', verticalAlign: 'middle', marginRight: 3 } }, 'folder_open'),
+              'Browse',
+            ),
           ),
           browseOpen && h('div', {
             style: {
@@ -1101,7 +1222,7 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
                 },
               },
                 drives.map(d => h('option', { key: d.path, value: d.path },
-                  `\uD83D\uDCBF ${d.is_system ? '\u2605 ' : ''}${d.label} (${d.path}) \u2014 ${d.free_gb} GB free`
+                  `${d.is_system ? '* ' : ''}${d.label} (${d.path}) \u2014 ${d.free_gb} GB free`
                 ))
               ),
             ),
@@ -1119,7 +1240,7 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
                 gap: 6,
               }
             },
-              '\uD83D\uDCC1 ',
+              h('span', { className: 'material-icons-round', style: { fontSize: '14px', verticalAlign: 'middle', flexShrink: 0 } }, 'folder'),
               browseLoading
                 ? h('span', { style: { color: '#8b949e' } }, 'Loading\u2026')
                 : h('span', { style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, browsePath || '~'),
@@ -1150,7 +1271,7 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
                 gap: 6,
               }
             },
-              h('span', { style: { fontSize: '0.82rem' } }, '\uD83D\uDCC1'),
+              h('span', { className: 'material-icons-round', style: { fontSize: '14px', verticalAlign: 'middle', flexShrink: 0 } }, 'create_new_folder'),
               h('input', {
                 type: 'text',
                 autoFocus: true,
@@ -1230,7 +1351,8 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
                 onMouseEnter: e => e.currentTarget.style.background = '#21262d',
                 onMouseLeave: e => e.currentTarget.style.background = 'transparent',
               },
-                '\uD83D\uDCC1 .. (go up)'
+                h('span', { className: 'material-icons-round', style: { fontSize: '14px', verticalAlign: 'middle' } }, 'folder'),
+              '.. (go up)'
               ),
               !browseLoading && browseDirs.map(dir =>
                 h('div', {
@@ -1248,7 +1370,8 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
                   onMouseEnter: e => e.currentTarget.style.background = '#21262d',
                   onMouseLeave: e => e.currentTarget.style.background = 'transparent',
                 },
-                  '\uD83D\uDCC1 ', dir.name
+                  h('span', { className: 'material-icons-round', style: { fontSize: '14px', verticalAlign: 'middle' } }, 'folder'),
+                  dir.name
                 )
               ),
               browseLoading && h('div', {
@@ -1343,8 +1466,12 @@ function PinnedSection({ sessions, pinnedIds, onLaunch, launchingId, onTmuxLaunc
         style: {
           fontSize: '0.7rem', fontWeight: 700, letterSpacing: '0.08em',
           textTransform: 'uppercase', color: '#e3b341',
+          display: 'inline-flex', alignItems: 'center', gap: 4,
         }
-      }, '📌 PINNED'),
+      },
+        h('span', { className: 'material-icons-round', style: { fontSize: '12px', verticalAlign: 'middle' } }, 'push_pin'),
+        'PINNED',
+      ),
       h('span', {
         style: {
           background: '#3a2a0a', color: '#e3b341', fontSize: '0.65rem',
@@ -1390,7 +1517,7 @@ function SessionsPanel({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaun
         color: '#484f58',
       }
     },
-      h('span', { style: { fontSize: '2rem' } }, '🔍'),
+      h('span', { className: 'material-icons-round', style: { fontSize: '2rem', color: '#484f58' } }, 'search'),
       h('span', { style: { fontSize: '0.875rem' } }, 'No sessions found'),
       h('div', { style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.78rem' } },
         h('span', {
@@ -1628,7 +1755,10 @@ function FleetBar({ fleet, lastScan, wsConnected }) {
           className: clsx('status-dot', m.online ? 'active' : 'idle'),
           style: { width: 6, height: 6 },
         }),
-        info.icon && h('span', { style: { fontSize: '0.7rem' } }, info.icon),
+        info.osIcon && h('span', {
+          className: 'material-icons-round',
+          style: { fontSize: '10px', color: m.online ? '#8b949e' : '#484f58', verticalAlign: 'middle' },
+        }, info.osIcon),
         h('span', {
           style: { color: m.online ? '#e6edf3' : '#484f58' }
         }, m.name),
@@ -1870,7 +2000,11 @@ function FilterBar({ sessions, tmuxSessions, fleet, filters, setFilters, archive
         className: `filter-pill${filters.showArchived ? ' active-archived' : ''}`,
         onClick: () => setFilters(prev => ({ ...prev, showArchived: !prev.showArchived })),
         title: filters.showArchived ? 'Hide archived sessions' : 'Show archived sessions',
-      }, filters.showArchived ? '📦 ARCHIVED' : '○ ARCHIVED'),
+        style: { display: 'inline-flex', alignItems: 'center', gap: 4 },
+      },
+        h('span', { className: 'material-icons-round', style: { fontSize: '10px', verticalAlign: 'middle' } }, 'archive'),
+        'ARCHIVED',
+      ),
     ),
 
     // Row 2: Time range + Sort + Search + Reset + Count
