@@ -63,6 +63,10 @@ def run_desktop(bind: str = "localhost", port: int = 44740):
 
     window.events.closed += on_closed
 
+    # Suppress cocoa/webview cosmetic warnings
+    import warnings
+    warnings.filterwarnings("ignore", category=RuntimeWarning)
+
     # Start the native webview event loop (blocks until window closes)
     webview.start(
         debug=("--debug" in sys.argv),
@@ -73,8 +77,12 @@ def run_desktop(bind: str = "localhost", port: int = 44740):
 def _run_server(bind: str, port: int):
     """Run the aiohttp API server in a background thread."""
     import asyncio
+    import logging
     from aiohttp import web
     from .server import create_app
+
+    # Suppress noisy cleanup warnings from asyncio
+    logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -83,7 +91,24 @@ def _run_server(bind: str, port: int):
     runner = web.AppRunner(app)
     loop.run_until_complete(runner.setup())
     site = web.TCPSite(runner, bind, port)
-    loop.run_until_complete(site.start())
+    try:
+        loop.run_until_complete(site.start())
+    except OSError as e:
+        if e.errno == 48 or "address already in use" in str(e).lower():
+            # Port in use — check if it's already our server
+            import urllib.request
+            try:
+                resp = urllib.request.urlopen(f"http://{bind}:{port}/health", timeout=2)
+                if resp.status == 200:
+                    print(f"Server already running on port {port}, connecting to it")
+                    return  # Let the webview connect to the existing server
+            except Exception:
+                pass
+            print(f"ERROR: Port {port} is in use by another process")
+            print(f"  Kill it:  kill $(lsof -ti:{port})")
+            print(f"  Or use:   claude-manager --port {port + 1}")
+            os._exit(1)
+        raise
     loop.run_forever()
 
 
