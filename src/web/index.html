@@ -1,327 +1,1149 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="dark">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>claude-manager</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            surface:       '#0d1117',
+            card:          '#161b22',
+            'card-hover':  '#1c2128',
+            border:        '#30363d',
+            accent:        '#58a6ff',
+            'accent-dim':  '#1f3a5f',
+            success:       '#3fb950',
+            'success-dim': '#1a3a2a',
+            danger:        '#f85149',
+            'danger-dim':  '#3a1a1a',
+            warning:       '#e3b341',
+            'text-primary':'#e6edf3',
+            'text-muted':  '#8b949e',
+            'text-dim':    '#484f58',
+          },
+          fontFamily: {
+            mono: ['"SF Mono"', '"Fira Code"', 'Consolas', 'monospace'],
+            sans: ['-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'Helvetica', 'Arial', 'sans-serif'],
+          },
+          animation: {
+            'pulse-dot': 'pulse-dot 1.4s ease-in-out infinite',
+            'fade-in':   'fade-in 0.2s ease-out',
+            'spin-slow':  'spin 1s linear infinite',
+          },
+          keyframes: {
+            'pulse-dot': {
+              '0%, 100%': { opacity: '1' },
+              '50%':      { opacity: '0.2' },
+            },
+            'fade-in': {
+              from: { opacity: '0', transform: 'translateY(4px)' },
+              to:   { opacity: '1', transform: 'translateY(0)' },
+            },
+          },
+        },
+      },
+    };
+  </script>
   <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; padding: 0; }
+    body { background: #0d1117; color: #e6edf3; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
 
-    :root {
-      --bg:        #0d1117;
-      --surface:   #161b22;
-      --border:    #30363d;
-      --accent:    #58a6ff;
-      --accent2:   #3fb950;
-      --text:      #e6edf3;
-      --muted:     #8b949e;
-      --danger:    #f85149;
-      --font-mono: "SF Mono", "Fira Code", "Consolas", monospace;
-      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #0d1117; }
+    ::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #484f58; }
+
+    .fade-in { animation: fade-in 0.2s ease-out; }
+    @keyframes fade-in {
+      from { opacity: 0; transform: translateY(4px); }
+      to   { opacity: 1; transform: translateY(0); }
     }
 
-    html, body {
-      height: 100%;
-      background: var(--bg);
-      color: var(--text);
-      font-family: var(--font-sans);
-      font-size: 15px;
-      line-height: 1.5;
-    }
-
-    a { color: var(--accent); text-decoration: none; }
-    a:hover { text-decoration: underline; }
-
-    header {
-      border-bottom: 1px solid var(--border);
-      padding: 18px 32px;
-      display: flex;
-      align-items: center;
-      gap: 12px;
-    }
-
-    header h1 {
-      font-size: 1.15rem;
-      font-weight: 600;
-      letter-spacing: -0.3px;
-    }
-
-    header .badge {
-      font-size: 0.7rem;
-      font-family: var(--font-mono);
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 20px;
-      padding: 2px 10px;
-      color: var(--muted);
-    }
-
-    #status-bar {
-      font-size: 0.8rem;
-      font-family: var(--font-mono);
-      color: var(--muted);
-      padding: 8px 32px;
-      border-bottom: 1px solid var(--border);
-      background: var(--surface);
-      display: flex;
-      gap: 24px;
-    }
-
-    #status-bar span { display: inline-flex; align-items: center; gap: 6px; }
-    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); display: inline-block; }
-    .dot.green  { background: var(--accent2); }
-    .dot.red    { background: var(--danger); }
-    .dot.pulse  { animation: pulse 1.4s ease-in-out infinite; }
-
-    @keyframes pulse {
+    .pulse-dot { animation: pulse-dot 1.4s ease-in-out infinite; }
+    @keyframes pulse-dot {
       0%, 100% { opacity: 1; }
-      50% { opacity: 0.3; }
+      50%       { opacity: 0.2; }
     }
 
-    main {
-      max-width: 960px;
-      margin: 48px auto;
-      padding: 0 32px;
+    .card-hover:hover { background: #1c2128; border-color: #444c56; }
+    .btn { transition: all 0.15s ease; cursor: pointer; }
+    .btn:active { transform: scale(0.97); }
+
+    .machine-section { margin-bottom: 12px; }
+    .machine-header {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 12px; cursor: pointer; border-radius: 6px;
+      font-size: 0.78rem; font-weight: 600; letter-spacing: 0.06em;
+      text-transform: uppercase; color: #8b949e;
+      transition: background 0.15s;
+    }
+    .machine-header:hover { background: #161b22; }
+
+    .session-card, .tmux-card {
+      background: #161b22; border: 1px solid #30363d;
+      border-radius: 8px; padding: 14px 16px; margin-bottom: 8px;
+      transition: background 0.15s, border-color 0.15s;
+      animation: fade-in 0.2s ease-out;
+    }
+    .session-card:hover, .tmux-card:hover {
+      background: #1c2128; border-color: #444c56;
     }
 
-    h2 {
-      font-size: 1rem;
-      font-weight: 600;
-      margin-bottom: 16px;
-      color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      font-size: 0.75rem;
+    .status-dot {
+      width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+      display: inline-block;
     }
+    .status-dot.active { background: #3fb950; }
+    .status-dot.idle   { background: #484f58; }
+    .status-dot.pulse  { animation: pulse-dot 1.4s ease-in-out infinite; }
 
-    .card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 20px 24px;
-      margin-bottom: 24px;
-    }
-
-    .endpoint-list {
-      list-style: none;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
-
-    .endpoint-list li {
-      display: flex;
-      align-items: flex-start;
-      gap: 14px;
-      font-family: var(--font-mono);
-      font-size: 0.85rem;
-    }
-
-    .method {
-      min-width: 44px;
-      text-align: center;
-      border-radius: 4px;
-      padding: 1px 6px;
-      font-size: 0.7rem;
-      font-weight: 700;
+    .badge {
+      font-size: 0.65rem; font-family: "SF Mono", "Fira Code", Consolas, monospace;
+      padding: 2px 8px; border-radius: 20px; font-weight: 600;
       letter-spacing: 0.04em;
     }
 
-    .method.get  { background: #1f3a5f; color: #58a6ff; }
-    .method.post { background: #1a3a2a; color: #3fb950; }
-    .method.ws   { background: #3a2a1f; color: #f0883e; }
-
-    .endpoint-path { color: var(--text); }
-    .endpoint-desc { color: var(--muted); font-size: 0.8rem; font-family: var(--font-sans); }
-
-    #sessions-preview {
-      font-family: var(--font-mono);
-      font-size: 0.8rem;
-      color: var(--muted);
-      max-height: 300px;
-      overflow-y: auto;
-      white-space: pre-wrap;
-      word-break: break-all;
+    .modal-overlay {
+      position: fixed; inset: 0;
+      background: rgba(1, 4, 9, 0.85);
+      backdrop-filter: blur(4px);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 1000;
+      animation: fade-in 0.15s ease-out;
     }
 
-    footer {
-      text-align: center;
-      padding: 40px 32px 24px;
-      color: var(--muted);
-      font-size: 0.8rem;
-      border-top: 1px solid var(--border);
-      margin-top: 48px;
+    .modal-box {
+      background: #161b22; border: 1px solid #30363d;
+      border-radius: 12px; padding: 28px; min-width: 420px; max-width: 520px;
+      box-shadow: 0 24px 64px rgba(0,0,0,0.6);
+    }
+
+    .form-input {
+      width: 100%; background: #0d1117; border: 1px solid #30363d;
+      border-radius: 6px; padding: 8px 12px; color: #e6edf3;
+      font-size: 0.875rem; outline: none;
+      transition: border-color 0.15s;
+    }
+    .form-input:focus { border-color: #58a6ff; }
+    .form-input::placeholder { color: #484f58; }
+
+    select.form-input option { background: #161b22; color: #e6edf3; }
+
+    .panel-scroll { overflow-y: auto; flex: 1; min-height: 0; padding: 0 4px 0 0; }
+
+    .toaster {
+      position: fixed; bottom: 24px; right: 24px; z-index: 2000;
+      display: flex; flex-direction: column; gap: 8px;
+    }
+    .toast {
+      background: #161b22; border: 1px solid #30363d;
+      border-radius: 8px; padding: 12px 16px;
+      font-size: 0.85rem; min-width: 240px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+      animation: fade-in 0.2s ease-out;
+    }
+    .toast.success { border-left: 3px solid #3fb950; }
+    .toast.error   { border-left: 3px solid #f85149; }
+    .toast.info    { border-left: 3px solid #58a6ff; }
+
+    @media (max-width: 768px) {
+      .main-panels { flex-direction: column !important; }
+      .panel-sessions, .panel-tmux { width: 100% !important; min-width: 0 !important; }
     }
   </style>
 </head>
 <body>
+<div id="root"></div>
 
-<header>
-  <h1>claude-manager</h1>
-  <span class="badge">Phase 1 — API</span>
-</header>
+<script type="importmap">
+{
+  "imports": {
+    "react":            "https://esm.sh/react@19",
+    "react-dom/client": "https://esm.sh/react-dom@19/client",
+    "react/jsx-runtime":"https://esm.sh/react@19/jsx-runtime"
+  }
+}
+</script>
 
-<div id="status-bar">
-  <span><span class="dot pulse" id="conn-dot"></span><span id="conn-label">connecting…</span></span>
-  <span>sessions: <strong id="session-count">—</strong></span>
-  <span>machines: <strong id="machine-count">—</strong></span>
-  <span>last scan: <strong id="last-scan">—</strong></span>
-</div>
+<script type="module">
+import { createElement as h, useState, useEffect, useRef, useCallback, useMemo, Fragment } from 'react';
+import { createRoot } from 'react-dom/client';
 
-<main>
-  <section class="card">
-    <h2>API Endpoints</h2>
-    <ul class="endpoint-list">
-      <li>
-        <span class="method get">GET</span>
-        <div>
-          <div class="endpoint-path"><a href="/health">/health</a></div>
-          <div class="endpoint-desc">Server health + scan metadata</div>
-        </div>
-      </li>
-      <li>
-        <span class="method get">GET</span>
-        <div>
-          <div class="endpoint-path"><a href="/api/sessions">/api/sessions</a></div>
-          <div class="endpoint-desc">All sessions grouped by machine &amp; project</div>
-        </div>
-      </li>
-      <li>
-        <span class="method get">GET</span>
-        <div>
-          <div class="endpoint-path">/api/sessions/{machine}</div>
-          <div class="endpoint-desc">Sessions for a specific machine</div>
-        </div>
-      </li>
-      <li>
-        <span class="method post">POST</span>
-        <div>
-          <div class="endpoint-path">/api/sessions/scan</div>
-          <div class="endpoint-desc">Force an immediate rescan</div>
-        </div>
-      </li>
-      <li>
-        <span class="method post">POST</span>
-        <div>
-          <div class="endpoint-path">/api/sessions/launch</div>
-          <div class="endpoint-desc">Launch a session in a terminal (Phase 2)</div>
-        </div>
-      </li>
-      <li>
-        <span class="method get">GET</span>
-        <div>
-          <div class="endpoint-path"><a href="/api/fleet">/api/fleet</a></div>
-          <div class="endpoint-desc">Fleet machine health status</div>
-        </div>
-      </li>
-      <li>
-        <span class="method get">GET</span>
-        <div>
-          <div class="endpoint-path"><a href="/api/tmux">/api/tmux</a></div>
-          <div class="endpoint-desc">Tmux sessions (Phase 2)</div>
-        </div>
-      </li>
-      <li>
-        <span class="method ws">WS</span>
-        <div>
-          <div class="endpoint-path">/ws</div>
-          <div class="endpoint-desc">WebSocket: subscribe to sessions / fleet / tmux channels</div>
-        </div>
-      </li>
-    </ul>
-  </section>
+// ─── Utility functions ────────────────────────────────────────────────────────
 
-  <section class="card">
-    <h2>Live Sessions Preview</h2>
-    <pre id="sessions-preview">Waiting for data…</pre>
-  </section>
-</main>
+function relativeTime(isoStr) {
+  if (!isoStr) return '—';
+  const diff = Math.floor((Date.now() - new Date(isoStr).getTime()) / 1000);
+  if (diff < 5)   return 'just now';
+  if (diff < 60)  return `${diff}s ago`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  return `${Math.floor(diff / 86400)}d ago`;
+}
 
-<footer>
-  claude-manager &mdash; Phase 1 &mdash; <a href="https://github.com/raphaelbgr/claude-manager">github</a>
-</footer>
+function shortenPath(p) {
+  if (!p) return '';
+  const parts = p.replace(/\\/g, '/').split('/').filter(Boolean);
+  if (parts.length <= 2) return parts.join('/');
+  return parts.slice(-2).join('/');
+}
 
-<script>
-  (function () {
-    const connDot   = document.getElementById('conn-dot');
-    const connLabel = document.getElementById('conn-label');
-    const sessionCount = document.getElementById('session-count');
-    const machineCount = document.getElementById('machine-count');
-    const lastScan     = document.getElementById('last-scan');
-    const preview      = document.getElementById('sessions-preview');
+function groupBy(arr, key) {
+  const out = {};
+  for (const item of arr) {
+    const k = typeof key === 'function' ? key(item) : item[key];
+    if (!out[k]) out[k] = [];
+    out[k].push(item);
+  }
+  return out;
+}
 
-    // --- Populate health bar from /health ---
-    function refreshHealth() {
-      fetch('/health')
-        .then(r => r.json())
-        .then(d => {
-          sessionCount.textContent = d.sessions ?? '—';
-          machineCount.textContent = d.machines ?? '—';
-          lastScan.textContent = d.last_scan
-            ? new Date(d.last_scan).toLocaleTimeString()
-            : '—';
-        })
-        .catch(() => {});
-    }
-    refreshHealth();
-    setInterval(refreshHealth, 15000);
+function clsx(...args) {
+  return args.filter(Boolean).join(' ');
+}
 
-    // --- WebSocket ---
-    function connect() {
-      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-      const ws = new WebSocket(`${proto}://${location.host}/ws`);
+// ─── Toast system ─────────────────────────────────────────────────────────────
 
-      ws.onopen = () => {
-        connDot.classList.add('green');
-        connDot.classList.remove('red', 'pulse');
-        connLabel.textContent = 'connected';
-        ws.send(JSON.stringify({ type: 'subscribe', channel: 'sessions' }));
-        ws.send(JSON.stringify({ type: 'subscribe', channel: 'fleet' }));
-      };
+let _addToast = null;
+function toast(msg, type = 'info') {
+  if (_addToast) _addToast(msg, type);
+}
 
-      ws.onclose = () => {
-        connDot.classList.remove('green');
-        connDot.classList.add('red', 'pulse');
-        connLabel.textContent = 'disconnected — retrying…';
-        setTimeout(connect, 3000);
-      };
+function Toaster() {
+  const [toasts, setToasts] = useState([]);
+  useEffect(() => {
+    _addToast = (msg, type) => {
+      const id = Date.now() + Math.random();
+      setToasts(t => [...t, { id, msg, type }]);
+      setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 3500);
+    };
+    return () => { _addToast = null; };
+  }, []);
 
-      ws.onerror = () => {
-        connDot.classList.add('red');
-        connLabel.textContent = 'error';
-      };
+  return h('div', { className: 'toaster' },
+    toasts.map(t =>
+      h('div', { key: t.id, className: `toast ${t.type}` }, t.msg)
+    )
+  );
+}
 
-      ws.onmessage = (evt) => {
-        let msg;
-        try { msg = JSON.parse(evt.data); } catch { return; }
+// ─── WebSocket hook ───────────────────────────────────────────────────────────
 
-        if (msg.channel === 'sessions') {
-          const data = msg.data;
-          // data is a dict: machine → [{project_folder, sessions:[]}]
-          if (typeof data === 'object' && !Array.isArray(data)) {
-            let total = 0;
-            const lines = [];
-            for (const [machine, projects] of Object.entries(data)) {
-              lines.push(`[${machine}]`);
-              for (const proj of projects) {
-                lines.push(`  ${proj.project_folder}  (${proj.sessions.length} sessions)`);
-                for (const s of proj.sessions) {
-                  const active = s.status === 'active' ? ' ● ACTIVE' : '';
-                  lines.push(`    ${s.session_id.slice(0, 8)}… ${s.modified.slice(0, 19)}${active}`);
-                  if (s.summary) lines.push(`    "${s.summary.slice(0, 80)}"`);
-                  total++;
-                }
-              }
+function useWebSocket(onMessage) {
+  const wsRef = useRef(null);
+  const reconnectTimer = useRef(null);
+  const retryCount = useRef(0);
+  const [connected, setConnected] = useState(false);
+
+  const connect = useCallback(() => {
+    if (wsRef.current && wsRef.current.readyState < 2) return;
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const ws = new WebSocket(`${proto}://${location.host}/ws`);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      setConnected(true);
+      retryCount.current = 0;
+      ['sessions', 'tmux', 'fleet'].forEach(ch =>
+        ws.send(JSON.stringify({ type: 'subscribe', channel: ch }))
+      );
+    };
+
+    ws.onmessage = evt => {
+      try { onMessage(JSON.parse(evt.data)); } catch {}
+    };
+
+    ws.onclose = () => {
+      setConnected(false);
+      const delay = Math.min(1000 * Math.pow(2, retryCount.current), 30000);
+      retryCount.current++;
+      reconnectTimer.current = setTimeout(connect, delay);
+    };
+
+    ws.onerror = () => { ws.close(); };
+  }, [onMessage]);
+
+  useEffect(() => {
+    connect();
+    return () => {
+      clearTimeout(reconnectTimer.current);
+      wsRef.current?.close();
+    };
+  }, [connect]);
+
+  return connected;
+}
+
+// ─── Status Dot ──────────────────────────────────────────────────────────────
+
+function StatusDot({ status, pulse = false }) {
+  return h('span', {
+    className: clsx('status-dot', status, pulse && status === 'active' && 'pulse'),
+    title: status,
+  });
+}
+
+// ─── Session Card ─────────────────────────────────────────────────────────────
+
+function SessionCard({ session, onLaunch, launching }) {
+  const isActive = session.status === 'active';
+  const projectName = shortenPath(session.project_path || session.project_folder);
+  const summary = session.summary || '(no message preview)';
+
+  return h('div', { className: 'session-card' },
+    h('div', { style: { display: 'flex', alignItems: 'flex-start', gap: 10 } },
+      h('div', { style: { paddingTop: 3 } },
+        h(StatusDot, { status: session.status, pulse: true })
+      ),
+      h('div', { style: { flex: 1, minWidth: 0 } },
+        h('div', {
+          style: {
+            display: 'flex', justifyContent: 'space-between',
+            alignItems: 'center', marginBottom: 4, gap: 8,
+          }
+        },
+          h('span', {
+            style: {
+              fontSize: '0.85rem', fontWeight: 600,
+              color: '#e6edf3', overflow: 'hidden',
+              textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              maxWidth: '65%',
+            },
+            title: session.project_path || session.project_folder,
+          }, projectName),
+          isActive && h('span', {
+            className: 'badge',
+            style: { background: '#1a3a2a', color: '#3fb950', flexShrink: 0 }
+          }, 'ACTIVE'),
+        ),
+        h('div', {
+          style: {
+            fontSize: '0.78rem', color: '#8b949e',
+            overflow: 'hidden', textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap', marginBottom: 8,
+          },
+          title: summary,
+        }, `"${summary}"`),
+        h('div', {
+          style: {
+            display: 'flex', alignItems: 'center',
+            justifyContent: 'space-between', gap: 8,
+          }
+        },
+          h('span', {
+            style: { fontSize: '0.72rem', color: '#484f58', fontFamily: 'monospace' }
+          }, `${session.messages} msgs · ${relativeTime(session.modified)}`),
+          h('button', {
+            className: 'btn',
+            onClick: () => onLaunch(session),
+            disabled: launching,
+            style: {
+              fontSize: '0.72rem', fontWeight: 600,
+              background: '#1f3a5f', color: '#58a6ff',
+              border: '1px solid #2d4f7a', borderRadius: 6,
+              padding: '3px 10px', cursor: launching ? 'not-allowed' : 'pointer',
+              opacity: launching ? 0.6 : 1,
             }
-            preview.textContent = lines.length ? lines.join('\n') : '(no sessions found)';
-            sessionCount.textContent = total;
+          }, launching ? 'Launching…' : 'Launch'),
+        ),
+      ),
+    ),
+  );
+}
+
+// ─── Tmux Card ────────────────────────────────────────────────────────────────
+
+function TmuxCard({ session, onConnect, connecting }) {
+  const isAttached = session.attached;
+
+  return h('div', { className: 'tmux-card' },
+    h('div', { style: { display: 'flex', alignItems: 'center', gap: 10 } },
+      h('span', {
+        style: {
+          color: '#e3b341', fontSize: '0.8rem', flexShrink: 0,
+          fontFamily: 'monospace',
+        }
+      }, '◆'),
+      h('div', { style: { flex: 1, minWidth: 0 } },
+        h('div', {
+          style: {
+            display: 'flex', justifyContent: 'space-between',
+            alignItems: 'center', gap: 8,
+          }
+        },
+          h('span', {
+            style: {
+              fontSize: '0.85rem', fontWeight: 600, color: '#e6edf3',
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            }
+          }, session.session_name || session.name || '(unnamed)'),
+          h('div', { style: { display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 } },
+            session.windows != null && h('span', {
+              style: { fontSize: '0.68rem', color: '#8b949e' }
+            }, `${session.windows} win`),
+            isAttached && h('span', {
+              className: 'badge',
+              style: { background: '#1f3a5f', color: '#58a6ff' }
+            }, 'attached'),
+          ),
+        ),
+        h('div', { style: { marginTop: 8, display: 'flex', justifyContent: 'flex-end' } },
+          h('button', {
+            className: 'btn',
+            onClick: () => onConnect(session),
+            disabled: connecting,
+            style: {
+              fontSize: '0.72rem', fontWeight: 600,
+              background: '#1a3a2a', color: '#3fb950',
+              border: '1px solid #2a5a3a', borderRadius: 6,
+              padding: '3px 10px',
+              cursor: connecting ? 'not-allowed' : 'pointer',
+              opacity: connecting ? 0.6 : 1,
+            }
+          }, connecting ? 'Connecting…' : 'Connect'),
+        ),
+      ),
+    ),
+  );
+}
+
+// ─── Machine Section ──────────────────────────────────────────────────────────
+
+function MachineSection({ machine, children, defaultOpen = true, count }) {
+  const [open, setOpen] = useState(defaultOpen);
+
+  return h('div', { className: 'machine-section' },
+    h('div', {
+      className: 'machine-header',
+      onClick: () => setOpen(o => !o),
+    },
+      h('span', {
+        style: { color: '#8b949e', fontSize: '0.75rem', transition: 'transform 0.15s',
+          display: 'inline-block',
+          transform: open ? 'rotate(90deg)' : 'rotate(0deg)' }
+      }, '▶'),
+      h('span', { style: { color: '#8b949e', fontFamily: 'monospace' } }, machine),
+      count != null && h('span', {
+        style: {
+          background: '#21262d', color: '#8b949e', fontSize: '0.65rem',
+          borderRadius: 20, padding: '1px 7px', marginLeft: 4,
+        }
+      }, count),
+    ),
+    open && h('div', { style: { paddingLeft: 8 } }, children),
+  );
+}
+
+// ─── New Tmux Modal ───────────────────────────────────────────────────────────
+
+function NewTmuxModal({ fleet, onClose, onCreated }) {
+  const machines = Object.keys(fleet || {});
+  const [machine, setMachine] = useState(machines[0] || '');
+  const [name, setName] = useState('');
+  const [cwd, setCwd] = useState('');
+  const [command, setCommand] = useState('');
+  const [creating, setCreating] = useState(false);
+
+  const handleCreate = async () => {
+    if (!machine || !name.trim()) {
+      toast('Machine and session name are required', 'error');
+      return;
+    }
+    setCreating(true);
+    try {
+      const res = await fetch('/api/tmux/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ machine, name: name.trim(), cwd: cwd.trim() || undefined, command: command.trim() || undefined }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        toast(`Created tmux session "${name}" on ${machine}`, 'success');
+        onCreated?.();
+        onClose();
+      } else {
+        toast(data.error || 'Failed to create session', 'error');
+      }
+    } catch (e) {
+      toast('Network error creating session', 'error');
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  return h('div', {
+    className: 'modal-overlay',
+    onClick: e => { if (e.target === e.currentTarget) onClose(); }
+  },
+    h('div', { className: 'modal-box' },
+      h('div', {
+        style: {
+          display: 'flex', justifyContent: 'space-between',
+          alignItems: 'center', marginBottom: 24,
+        }
+      },
+        h('h2', {
+          style: { fontSize: '1rem', fontWeight: 700, color: '#e6edf3' }
+        }, 'New Tmux Session'),
+        h('button', {
+          className: 'btn',
+          onClick: onClose,
+          style: {
+            background: 'none', border: 'none', color: '#8b949e',
+            fontSize: '1.2rem', cursor: 'pointer', padding: '4px 8px',
+            borderRadius: 4,
+          }
+        }, '×'),
+      ),
+
+      h('div', { style: { display: 'flex', flexDirection: 'column', gap: 16 } },
+        h('div', null,
+          h('label', {
+            style: { display: 'block', fontSize: '0.78rem', color: '#8b949e', marginBottom: 6 }
+          }, 'Machine'),
+          h('select', {
+            className: 'form-input',
+            value: machine,
+            onChange: e => setMachine(e.target.value),
+          },
+            machines.map(m => h('option', { key: m, value: m }, m))
+          ),
+        ),
+        h('div', null,
+          h('label', {
+            style: { display: 'block', fontSize: '0.78rem', color: '#8b949e', marginBottom: 6 }
+          }, 'Session Name'),
+          h('input', {
+            className: 'form-input',
+            type: 'text',
+            placeholder: 'e.g. dev-session',
+            value: name,
+            onChange: e => setName(e.target.value),
+            onKeyDown: e => { if (e.key === 'Enter') handleCreate(); },
+          }),
+        ),
+        h('div', null,
+          h('label', {
+            style: { display: 'block', fontSize: '0.78rem', color: '#8b949e', marginBottom: 6 }
+          }, 'Working Directory (optional)'),
+          h('input', {
+            className: 'form-input',
+            type: 'text',
+            placeholder: '/Users/rbgnr/git/project',
+            value: cwd,
+            onChange: e => setCwd(e.target.value),
+          }),
+        ),
+        h('div', null,
+          h('label', {
+            style: { display: 'block', fontSize: '0.78rem', color: '#8b949e', marginBottom: 6 }
+          }, 'Command (optional)'),
+          h('input', {
+            className: 'form-input',
+            type: 'text',
+            placeholder: 'e.g. claude',
+            value: command,
+            onChange: e => setCommand(e.target.value),
+            onKeyDown: e => { if (e.key === 'Enter') handleCreate(); },
+          }),
+        ),
+
+        h('div', { style: { display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 8 } },
+          h('button', {
+            className: 'btn',
+            onClick: onClose,
+            style: {
+              background: '#21262d', color: '#8b949e', border: '1px solid #30363d',
+              borderRadius: 8, padding: '8px 20px', fontSize: '0.85rem',
+              fontWeight: 600, cursor: 'pointer',
+            }
+          }, 'Cancel'),
+          h('button', {
+            className: 'btn',
+            onClick: handleCreate,
+            disabled: creating,
+            style: {
+              background: creating ? '#1a3a2a' : '#238636',
+              color: '#3fb950', border: '1px solid #2a5a3a',
+              borderRadius: 8, padding: '8px 20px', fontSize: '0.85rem',
+              fontWeight: 600, cursor: creating ? 'not-allowed' : 'pointer',
+              opacity: creating ? 0.7 : 1,
+            }
+          }, creating ? 'Creating…' : 'Create Session'),
+        ),
+      ),
+    ),
+  );
+}
+
+// ─── Sessions Panel ───────────────────────────────────────────────────────────
+
+function SessionsPanel({ sessions, filter, onLaunch, launchingId }) {
+  const filtered = useMemo(() => {
+    if (!filter.trim()) return sessions;
+    const q = filter.toLowerCase();
+    return sessions.filter(s =>
+      (s.project_path || '').toLowerCase().includes(q) ||
+      (s.summary || '').toLowerCase().includes(q) ||
+      (s.machine || '').toLowerCase().includes(q) ||
+      (s.slug || '').toLowerCase().includes(q)
+    );
+  }, [sessions, filter]);
+
+  const byMachine = useMemo(() => groupBy(filtered, 'machine'), [filtered]);
+
+  if (!sessions.length) {
+    return h('div', {
+      style: {
+        display: 'flex', flexDirection: 'column', alignItems: 'center',
+        justifyContent: 'center', height: '200px', gap: 12,
+        color: '#484f58',
+      }
+    },
+      h('span', { style: { fontSize: '2rem' } }, '🔍'),
+      h('span', { style: { fontSize: '0.875rem' } }, 'No sessions found'),
+      h('span', { style: { fontSize: '0.78rem' } }, 'Scanning fleet…'),
+    );
+  }
+
+  if (!Object.keys(byMachine).length) {
+    return h('div', {
+      style: {
+        display: 'flex', flexDirection: 'column', alignItems: 'center',
+        justifyContent: 'center', height: '200px', gap: 8,
+        color: '#484f58',
+      }
+    },
+      h('span', { style: { fontSize: '0.875rem' } }, 'No sessions match your filter'),
+    );
+  }
+
+  return h('div', null,
+    Object.entries(byMachine).map(([machine, machineSessions]) =>
+      h(MachineSection, {
+        key: machine,
+        machine,
+        count: machineSessions.length,
+        defaultOpen: true,
+      },
+        machineSessions.map(s =>
+          h(SessionCard, {
+            key: s.session_id,
+            session: s,
+            onLaunch,
+            launching: launchingId === s.session_id,
+          })
+        )
+      )
+    )
+  );
+}
+
+// ─── Tmux Panel ───────────────────────────────────────────────────────────────
+
+function TmuxPanel({ tmuxSessions, fleet, onConnectTmux, connectingId, onNewSession }) {
+  const byMachine = useMemo(() => groupBy(tmuxSessions, s => s.machine || 'unknown'), [tmuxSessions]);
+
+  return h('div', { style: { display: 'flex', flexDirection: 'column', height: '100%' } },
+    h('div', { className: 'panel-scroll', style: { flex: 1 } },
+      !tmuxSessions.length
+        ? h('div', {
+            style: {
+              display: 'flex', flexDirection: 'column', alignItems: 'center',
+              justifyContent: 'center', height: '160px', gap: 8,
+              color: '#484f58',
+            }
+          },
+            h('span', { style: { fontSize: '1.5rem' } }, '⊡'),
+            h('span', { style: { fontSize: '0.875rem' } }, 'No tmux sessions'),
+          )
+        : Object.entries(byMachine).map(([machine, sessions]) =>
+            h(MachineSection, {
+              key: machine,
+              machine,
+              count: sessions.length,
+              defaultOpen: true,
+            },
+              sessions.map(s =>
+                h(TmuxCard, {
+                  key: `${s.machine}-${s.session_name || s.name}`,
+                  session: s,
+                  onConnect: onConnectTmux,
+                  connecting: connectingId === `${s.machine}-${s.session_name || s.name}`,
+                })
+              )
+            )
+          )
+    ),
+
+    h('div', {
+      style: {
+        padding: '12px 0 0 0', borderTop: '1px solid #30363d', marginTop: 12,
+        flexShrink: 0,
+      }
+    },
+      h('button', {
+        className: 'btn',
+        onClick: onNewSession,
+        style: {
+          width: '100%', background: '#21262d',
+          border: '1px dashed #30363d', borderRadius: 8,
+          color: '#8b949e', padding: '10px', fontSize: '0.8rem',
+          fontWeight: 600, cursor: 'pointer', textAlign: 'center',
+          transition: 'all 0.15s',
+        },
+        onMouseEnter: e => {
+          e.currentTarget.style.borderColor = '#58a6ff';
+          e.currentTarget.style.color = '#58a6ff';
+          e.currentTarget.style.background = '#1f3a5f22';
+        },
+        onMouseLeave: e => {
+          e.currentTarget.style.borderColor = '#30363d';
+          e.currentTarget.style.color = '#8b949e';
+          e.currentTarget.style.background = '#21262d';
+        },
+      }, '+ New Tmux Session'),
+    ),
+  );
+}
+
+// ─── Fleet Bar ────────────────────────────────────────────────────────────────
+
+function FleetBar({ fleet, lastScan, wsConnected }) {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => tick(n => n + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  const entries = Object.values(fleet || {});
+  const online = entries.filter(m => m.online).length;
+  const total = entries.length;
+
+  return h('div', {
+    style: {
+      borderTop: '1px solid #30363d', background: '#0d0f12',
+      padding: '8px 24px', display: 'flex', alignItems: 'center',
+      gap: 16, flexWrap: 'wrap', flexShrink: 0,
+      fontSize: '0.72rem', fontFamily: 'monospace',
+    }
+  },
+    h('div', {
+      style: { display: 'flex', alignItems: 'center', gap: 6, marginRight: 8 }
+    },
+      h('span', { style: { color: '#484f58' } }, 'FLEET'),
+      h('span', {
+        style: {
+          color: online === total ? '#3fb950' : online > 0 ? '#e3b341' : '#f85149'
+        }
+      }, `${online}/${total}`),
+    ),
+
+    ...entries.map(m =>
+      h('div', {
+        key: m.name,
+        style: { display: 'flex', alignItems: 'center', gap: 5 }
+      },
+        h('span', {
+          className: clsx('status-dot', m.online ? 'active' : 'idle'),
+          style: { width: 6, height: 6 },
+        }),
+        h('span', {
+          style: { color: m.online ? '#e6edf3' : '#484f58' }
+        }, m.name),
+        m.method && m.method !== 'unreachable' && h('span', {
+          style: { color: '#30363d' }
+        }, `·${m.method}`),
+      )
+    ),
+
+    h('div', {
+      style: { marginLeft: 'auto', color: '#484f58', display: 'flex', gap: 12, alignItems: 'center' }
+    },
+      lastScan && h('span', null, `scan: ${relativeTime(lastScan)}`),
+      h('div', {
+        style: { display: 'flex', alignItems: 'center', gap: 5 }
+      },
+        h('span', {
+          className: clsx('status-dot', wsConnected ? 'active' : 'idle', wsConnected && 'pulse'),
+          style: { width: 6, height: 6 },
+        }),
+        h('span', {
+          style: { color: wsConnected ? '#3fb950' : '#f85149' }
+        }, wsConnected ? 'ws' : 'ws:disconnected'),
+      ),
+    ),
+  );
+}
+
+// ─── Header ───────────────────────────────────────────────────────────────────
+
+function Header({ health, sessions, tmuxSessions, fleet, filter, onFilterChange, onScan, scanning }) {
+  const online = Object.values(fleet || {}).filter(m => m.online).length;
+  const total = Object.keys(fleet || {}).length;
+
+  return h('header', {
+    style: {
+      borderBottom: '1px solid #30363d', padding: '14px 24px',
+      display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap',
+      flexShrink: 0, background: '#0d1117', position: 'sticky', top: 0, zIndex: 100,
+    }
+  },
+    // Title
+    h('div', { style: { display: 'flex', alignItems: 'center', gap: 10, marginRight: 4 } },
+      h('span', {
+        style: {
+          width: 28, height: 28, background: '#1f3a5f', borderRadius: 8,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: '0.9rem', flexShrink: 0,
+        }
+      }, '⊕'),
+      h('span', {
+        style: { fontSize: '1rem', fontWeight: 700, color: '#e6edf3', letterSpacing: '-0.3px' }
+      }, 'claude-manager'),
+    ),
+
+    // Stat pills
+    h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+      h('span', {
+        className: 'badge',
+        style: { background: '#21262d', color: '#8b949e', border: '1px solid #30363d' }
+      }, `${sessions.length} sessions`),
+      h('span', {
+        className: 'badge',
+        style: { background: '#21262d', color: '#8b949e', border: '1px solid #30363d' }
+      }, `${tmuxSessions.length} tmux`),
+      h('span', {
+        className: 'badge',
+        style: {
+          background: online > 0 ? '#1a3a2a' : '#3a1a1a',
+          color: online > 0 ? '#3fb950' : '#f85149',
+          border: `1px solid ${online > 0 ? '#2a5a3a' : '#5a2a2a'}`,
+        }
+      }, `${online}/${total} fleet`),
+    ),
+
+    // Filter input
+    h('div', {
+      style: { flex: 1, minWidth: 160, maxWidth: 320 }
+    },
+      h('input', {
+        type: 'text',
+        className: 'form-input',
+        placeholder: 'Filter sessions…',
+        value: filter,
+        onChange: e => onFilterChange(e.target.value),
+        style: { fontSize: '0.8rem', padding: '6px 12px' }
+      }),
+    ),
+
+    // Scan button
+    h('button', {
+      className: 'btn',
+      onClick: onScan,
+      disabled: scanning,
+      style: {
+        background: scanning ? '#1f3a5f' : '#21262d',
+        border: '1px solid #30363d', borderRadius: 8,
+        color: scanning ? '#58a6ff' : '#8b949e',
+        padding: '6px 14px', fontSize: '0.8rem', fontWeight: 600,
+        display: 'flex', alignItems: 'center', gap: 6, cursor: scanning ? 'not-allowed' : 'pointer',
+        transition: 'all 0.15s', whiteSpace: 'nowrap',
+      }
+    },
+      h('span', {
+        style: {
+          display: 'inline-block',
+          animation: scanning ? 'spin 0.8s linear infinite' : 'none',
+          fontSize: '0.9rem',
+        }
+      }, '↻'),
+      scanning ? 'Scanning…' : 'Scan',
+    ),
+  );
+}
+
+// ─── Root App ─────────────────────────────────────────────────────────────────
+
+function App() {
+  const [sessions, setSessions]       = useState([]);
+  const [tmuxSessions, setTmuxSessions] = useState([]);
+  const [fleet, setFleet]             = useState({});
+  const [health, setHealth]           = useState(null);
+  const [lastScan, setLastScan]       = useState(null);
+  const [filter, setFilter]           = useState('');
+  const [scanning, setScanning]       = useState(false);
+  const [launchingId, setLaunchingId] = useState(null);
+  const [connectingId, setConnectingId] = useState(null);
+  const [showModal, setShowModal]     = useState(false);
+
+  // ── WS message handler ───────────────────────────────────────────────────
+  const handleWsMessage = useCallback((msg) => {
+    if (msg.channel === 'sessions') {
+      const data = msg.data;
+      // data can be a flat list (update) or grouped dict (snapshot)
+      if (Array.isArray(data)) {
+        setSessions(data);
+      } else if (data && typeof data === 'object') {
+        // grouped: { machine: [{project_folder, sessions:[]}] }
+        const flat = [];
+        for (const [machine, projects] of Object.entries(data)) {
+          for (const proj of projects) {
+            for (const s of proj.sessions) {
+              flat.push({ ...s, machine });
+            }
           }
         }
-      };
+        setSessions(flat);
+      }
+    } else if (msg.channel === 'fleet') {
+      const data = msg.data;
+      if (data && typeof data === 'object' && !Array.isArray(data)) {
+        setFleet(data);
+      }
+    } else if (msg.channel === 'tmux') {
+      if (Array.isArray(msg.data)) setTmuxSessions(msg.data);
     }
+  }, []);
 
-    connect();
-  })();
+  const wsConnected = useWebSocket(handleWsMessage);
+
+  // ── Initial data load ────────────────────────────────────────────────────
+  useEffect(() => {
+    fetch('/health')
+      .then(r => r.json())
+      .then(d => {
+        setHealth(d);
+        setLastScan(d.last_scan);
+      })
+      .catch(() => {});
+
+    fetch('/api/sessions')
+      .then(r => r.json())
+      .then(data => {
+        if (data && typeof data === 'object' && !Array.isArray(data)) {
+          const flat = [];
+          for (const [machine, projects] of Object.entries(data)) {
+            for (const proj of projects) {
+              for (const s of proj.sessions) {
+                flat.push({ ...s, machine });
+              }
+            }
+          }
+          setSessions(flat);
+        }
+      })
+      .catch(() => {});
+
+    fetch('/api/fleet')
+      .then(r => r.json())
+      .then(d => { if (d && typeof d === 'object') setFleet(d); })
+      .catch(() => {});
+
+    fetch('/api/tmux')
+      .then(r => r.json())
+      .then(d => { if (Array.isArray(d)) setTmuxSessions(d); })
+      .catch(() => {});
+  }, []);
+
+  // ── Scan ─────────────────────────────────────────────────────────────────
+  const handleScan = useCallback(async () => {
+    setScanning(true);
+    try {
+      const res = await fetch('/api/sessions/scan', { method: 'POST' });
+      const data = await res.json();
+      if (data.ok) {
+        toast(`Scan complete · ${(data.sessions || []).length} sessions`, 'success');
+        setLastScan(data.last_scan);
+        if (Array.isArray(data.sessions)) {
+          setSessions(data.sessions);
+        }
+      } else {
+        toast(data.error || 'Scan failed', 'error');
+      }
+    } catch {
+      toast('Network error during scan', 'error');
+    } finally {
+      setScanning(false);
+    }
+  }, []);
+
+  // ── Launch session ────────────────────────────────────────────────────────
+  const handleLaunch = useCallback(async (session) => {
+    setLaunchingId(session.session_id);
+    try {
+      const res = await fetch('/api/sessions/launch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          machine: session.machine,
+          session_id: session.session_id,
+          cwd: session.cwd || session.project_path,
+        }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        toast(`Launched session in terminal`, 'success');
+      } else {
+        toast(data.error || 'Launch not yet implemented', 'info');
+      }
+    } catch {
+      toast('Network error', 'error');
+    } finally {
+      setLaunchingId(null);
+    }
+  }, []);
+
+  // ── Tmux connect ──────────────────────────────────────────────────────────
+  const handleConnectTmux = useCallback(async (session) => {
+    const key = `${session.machine}-${session.session_name || session.name}`;
+    setConnectingId(key);
+    try {
+      const res = await fetch('/api/tmux/connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ machine: session.machine, session_name: session.session_name || session.name }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        toast(`Connected to ${session.session_name || session.name}`, 'success');
+      } else {
+        toast(data.error || 'Connect not yet implemented', 'info');
+      }
+    } catch {
+      toast('Network error', 'error');
+    } finally {
+      setConnectingId(null);
+    }
+  }, []);
+
+  // ── Render ────────────────────────────────────────────────────────────────
+  return h(Fragment, null,
+    h('div', {
+      style: {
+        height: '100vh', display: 'flex', flexDirection: 'column',
+        overflow: 'hidden',
+      }
+    },
+
+      // Header
+      h(Header, {
+        health, sessions, tmuxSessions, fleet, filter,
+        onFilterChange: setFilter,
+        onScan: handleScan,
+        scanning,
+      }),
+
+      // Main panels
+      h('div', {
+        className: 'main-panels',
+        style: {
+          display: 'flex', flex: 1, minHeight: 0,
+          gap: 0, overflow: 'hidden',
+        }
+      },
+
+        // Sessions panel
+        h('div', {
+          className: 'panel-sessions',
+          style: {
+            flex: '1 1 0', minWidth: 280,
+            borderRight: '1px solid #30363d',
+            display: 'flex', flexDirection: 'column',
+            overflow: 'hidden',
+          }
+        },
+          h('div', {
+            style: {
+              padding: '16px 16px 8px',
+              borderBottom: '1px solid #21262d',
+              flexShrink: 0,
+            }
+          },
+            h('span', {
+              style: {
+                fontSize: '0.7rem', fontWeight: 700, letterSpacing: '0.08em',
+                textTransform: 'uppercase', color: '#484f58',
+              }
+            }, 'Sessions'),
+          ),
+          h('div', {
+            style: { flex: 1, overflowY: 'auto', padding: '12px 16px' }
+          },
+            h(SessionsPanel, {
+              sessions, filter,
+              onLaunch: handleLaunch,
+              launchingId,
+            }),
+          ),
+        ),
+
+        // Tmux panel
+        h('div', {
+          className: 'panel-tmux',
+          style: {
+            width: 320, flexShrink: 0,
+            display: 'flex', flexDirection: 'column',
+            overflow: 'hidden',
+          }
+        },
+          h('div', {
+            style: {
+              padding: '16px 16px 8px',
+              borderBottom: '1px solid #21262d',
+              flexShrink: 0,
+            }
+          },
+            h('span', {
+              style: {
+                fontSize: '0.7rem', fontWeight: 700, letterSpacing: '0.08em',
+                textTransform: 'uppercase', color: '#484f58',
+              }
+            }, 'Tmux'),
+          ),
+          h('div', {
+            style: { flex: 1, overflowY: 'auto', padding: '12px 16px', display: 'flex', flexDirection: 'column' }
+          },
+            h(TmuxPanel, {
+              tmuxSessions, fleet,
+              onConnectTmux: handleConnectTmux,
+              connectingId,
+              onNewSession: () => setShowModal(true),
+            }),
+          ),
+        ),
+      ),
+
+      // Fleet bar
+      h(FleetBar, { fleet, lastScan, wsConnected }),
+    ),
+
+    // Modal
+    showModal && h(NewTmuxModal, {
+      fleet,
+      onClose: () => setShowModal(false),
+      onCreated: () => {
+        fetch('/api/tmux')
+          .then(r => r.json())
+          .then(d => { if (Array.isArray(d)) setTmuxSessions(d); })
+          .catch(() => {});
+      },
+    }),
+
+    // Toaster
+    h(Toaster, null),
+  );
+}
+
+// ─── Mount ────────────────────────────────────────────────────────────────────
+const root = createRoot(document.getElementById('root'));
+root.render(h(App, null));
 </script>
 </body>
 </html>

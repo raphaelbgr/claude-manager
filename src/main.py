@@ -33,7 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--tui",
         action="store_true",
-        help="Launch the Textual TUI (Phase 3, not yet implemented)",
+        help="Launch the Textual TUI",
     )
     parser.add_argument(
         "--enable-web",
@@ -70,8 +70,10 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     if args.tui:
-        print("TUI not yet implemented (Phase 3). Run without --tui to start the API server.")
-        sys.exit(1)
+        from .tui.app import ClaudeManagerApp
+        app = ClaudeManagerApp()
+        app.run()
+        return
 
     if args.enable_gui:
         print("Desktop GUI not yet implemented (Phase 4). Run without --enable-gui to start the API server.")

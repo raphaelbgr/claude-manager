@@ -1,0 +1,204 @@
+/* claude-manager TUI — dark theme stylesheet */
+
+Screen {
+    background: $surface;
+    layers: base overlay;
+}
+
+/* ── Header ─────────────────────────────────────────────────── */
+Header {
+    background: $primary-background;
+    color: $text;
+    text-style: bold;
+    height: 1;
+}
+
+/* ── Tabs ────────────────────────────────────────────────────── */
+TabbedContent {
+    height: 1fr;
+}
+
+TabPane {
+    padding: 0;
+}
+
+/* ── DataTable ───────────────────────────────────────────────── */
+DataTable {
+    height: 1fr;
+    background: $surface;
+    color: $text;
+}
+
+DataTable > .datatable--header {
+    background: $primary-background;
+    color: $text;
+    text-style: bold;
+}
+
+DataTable > .datatable--header-hover {
+    background: $primary-background-lighten-1;
+    color: $text;
+    text-style: bold;
+}
+
+DataTable > .datatable--cursor {
+    background: $accent;
+    color: $background;
+    text-style: bold;
+}
+
+DataTable > .datatable--hover {
+    background: $primary-background-lighten-2;
+    color: $text;
+}
+
+DataTable > .datatable--fixed {
+    background: $primary-background;
+    color: $text;
+    text-style: bold;
+}
+
+DataTable > .datatable--fixed-cursor {
+    background: $accent-darken-1;
+    color: $background;
+    text-style: bold;
+}
+
+/* ── Status Bar ──────────────────────────────────────────────── */
+#status-bar {
+    dock: bottom;
+    height: 1;
+    background: $primary-background;
+    color: $text-muted;
+    padding: 0 1;
+    layout: horizontal;
+    content-align: left middle;
+}
+
+/* ── Filter Bar ──────────────────────────────────────────────── */
+#filter-bar {
+    dock: top;
+    height: 3;
+    background: $primary-background;
+    padding: 0 1;
+    display: none;
+}
+
+#filter-bar.visible {
+    display: block;
+}
+
+#filter-input {
+    background: $surface;
+    border: tall $accent;
+    color: $text;
+    padding: 0 1;
+}
+
+#filter-label {
+    color: $text-muted;
+    padding: 0 1 0 0;
+    content-align: center middle;
+}
+
+/* ── Empty State ─────────────────────────────────────────────── */
+#empty-state {
+    content-align: center middle;
+    color: $text-muted;
+    height: 1fr;
+    text-style: italic;
+}
+
+/* ── Loading ─────────────────────────────────────────────────── */
+LoadingIndicator {
+    background: $surface;
+    color: $accent;
+    height: 1fr;
+}
+
+/* ── Modal / New Tmux Dialog ─────────────────────────────────── */
+NewTmuxScreen {
+    align: center middle;
+}
+
+#dialog {
+    background: $panel;
+    border: thick $accent;
+    padding: 1 2;
+    width: 60;
+    height: auto;
+    max-height: 80vh;
+}
+
+#dialog-title {
+    color: $accent;
+    text-style: bold;
+    text-align: center;
+    padding-bottom: 1;
+    width: 100%;
+}
+
+#dialog Label {
+    color: $text-muted;
+    padding: 0 0 0 0;
+}
+
+#dialog Input {
+    background: $surface;
+    border: tall $primary;
+    color: $text;
+    margin-bottom: 1;
+    width: 100%;
+}
+
+#dialog Input:focus {
+    border: tall $accent;
+}
+
+#dialog-buttons {
+    layout: horizontal;
+    align: center middle;
+    height: auto;
+    margin-top: 1;
+    width: 100%;
+}
+
+#btn-create {
+    background: $accent;
+    color: $background;
+    text-style: bold;
+    margin-right: 1;
+    min-width: 12;
+}
+
+#btn-create:hover {
+    background: $accent-lighten-1;
+}
+
+#btn-cancel {
+    background: $panel-darken-1;
+    color: $text-muted;
+    min-width: 12;
+}
+
+#btn-cancel:hover {
+    background: $panel-lighten-1;
+    color: $text;
+}
+
+/* ── Tab labels ──────────────────────────────────────────────── */
+Tab {
+    color: $text-muted;
+}
+
+Tab.-active {
+    color: $accent;
+    text-style: bold;
+}
+
+/* ── Notification ────────────────────────────────────────────── */
+Toast {
+    background: $panel;
+    border: round $accent;
+    color: $text;
+}
