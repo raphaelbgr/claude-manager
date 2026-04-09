@@ -599,8 +599,12 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
   const launchColor = local ? '#58a6ff' : '#e3b341';
   const launchBorder = local ? '#2d4f7a' : '#5a3a00';
   const muxType = os === 'Windows' ? 'psmux' : 'tmux';
-  const tmuxLabel = local ? `${muxType} Launch` : `SSH + ${muxType}`;
-  const launchLabel = local ? 'Launch' : 'SSH + Launch';
+  // Full labels for expanded card buttons
+  const launchLabel = local ? 'Resume in terminal' : 'Resume via SSH';
+  const tmuxLabel = local ? `Resume in ${muxType}` : `Resume via SSH + ${muxType}`;
+  // Short labels for compact row buttons
+  const launchShort = local ? 'Resume' : 'SSH Resume';
+  const tmuxShort = local ? muxType : `SSH + ${muxType}`;
 
   // ── Collapsed compact row ────────────────────────────────────────────────
   const compactRow = h('div', {
@@ -696,10 +700,10 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
       className: `compact-action-btn btn btn-launch${launching ? '' : ''}`,
       onClick: e => { e.stopPropagation(); onLaunch(session); },
       disabled: launching,
-      title: launchLabel + ' in terminal',
+      title: launchLabel,
     },
       h('span', { className: 'material-icons-round', style: { fontSize: '12px' } }, 'play_arrow'),
-      launching ? '…' : launchLabel,
+      launching ? '…' : launchShort,
     ),
 
     // tmux/psmux launch button
@@ -707,10 +711,10 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
       className: `compact-action-btn btn btn-tmux${tmuxLaunching ? '' : ''}`,
       onClick: e => { e.stopPropagation(); onTmuxLaunch(session); },
       disabled: tmuxLaunching,
-      title: tmuxLabel + ' session',
+      title: tmuxLabel,
     },
       h('span', { className: 'material-icons-round', style: { fontSize: '12px' } }, 'terminal'),
-      tmuxLaunching ? '…' : tmuxLabel,
+      tmuxLaunching ? '…' : tmuxShort,
     ),
 
     // Pin button
@@ -866,7 +870,7 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
           padding: '4px 12px', cursor: launching ? 'not-allowed' : 'pointer',
           opacity: launching ? 0.6 : 1,
         }
-      }, launching ? 'Launching…' : (local ? 'Launch' : 'SSH + Launch')),
+      }, launching ? 'Resuming…' : launchLabel),
 
       h('button', {
         className: 'btn',
@@ -879,7 +883,7 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
           padding: '4px 12px', cursor: tmuxLaunching ? 'not-allowed' : 'pointer',
           opacity: tmuxLaunching ? 0.6 : 1,
         }
-      }, tmuxLaunching ? 'Launching…' : tmuxLabel),
+      }, tmuxLaunching ? 'Resuming…' : tmuxLabel),
     ),
   );
 
