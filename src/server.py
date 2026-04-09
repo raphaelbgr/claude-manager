@@ -238,15 +238,22 @@ async def handle_sessions_launch(request: web.Request) -> web.Response:
     skip = body.get("skip_permissions", False)
     mode = body.get("mode", "terminal")
     if mode == "tmux":
-        # Launch claude inside a new tmux session, then attach to it
         import re
-        # Use project folder name for a readable tmux session name
-        project = cwd.replace("\\", "/").rstrip("/").split("/")[-1] if cwd else "claude"
-        safe_name = re.sub(r"[^a-zA-Z0-9_-]", "-", project) or "claude"
-        # Build the cd + claude command using the OS-aware adapter for the target machine
         adapter = get_adapter(machine)
-        claude_cmd = adapter.build_session_command(cwd, session_id, skip)
-        result = await launch_new_tmux_and_attach(safe_name, machine, cwd=cwd, command=claude_cmd)
+        local_machine = request.app["local_machine"]
+        is_remote_windows = (machine != local_machine and adapter.mux_type == "psmux")
+
+        if is_remote_windows:
+            # psmux can't attach over SSH (Windows limitation).
+            # For remote Windows: run claude directly via SSH -t (no psmux).
+            # This gives the user an interactive claude session in the terminal.
+            result = await launch_claude_session(cwd, session_id, machine, skip_permissions=skip)
+        else:
+            # tmux on macOS/Linux: create session + attach works perfectly
+            project = cwd.replace("\\", "/").rstrip("/").split("/")[-1] if cwd else "claude"
+            safe_name = re.sub(r"[^a-zA-Z0-9_-]", "-", project) or "claude"
+            claude_cmd = adapter.build_session_command(cwd, session_id, skip)
+            result = await launch_new_tmux_and_attach(safe_name, machine, cwd=cwd, command=claude_cmd)
     else:
         result = await launch_claude_session(cwd, session_id, machine, skip_permissions=skip)
     status = 200 if result.get("ok") else 500

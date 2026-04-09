@@ -48,6 +48,22 @@ class CommandAdapter:
         """Chain multiple commands with && (works in both bash and cmd.exe)."""
         return " && ".join(commands)
 
+    def cd_command_ssh(self, path: str) -> str:
+        """Generate a cd command for the SSH login shell (Git Bash on Windows)."""
+        if self.is_windows:
+            # SSH into Windows = Git Bash, which understands both:
+            #   cd "/c/Users/rbgnr/path"  (Git Bash native)
+            #   cd "C:\\Users\\path"       (Git Bash auto-converts)
+            # Use double-quoted Windows path — Git Bash handles it
+            return f'cd "{path}"'
+        return f"cd {shlex.quote(path)}"
+
+    def build_session_command_ssh(self, cwd: str, session_id: str, skip_permissions: bool = False) -> str:
+        """Build cd + claude resume for SSH direct execution (Git Bash on Windows)."""
+        cd = self.cd_command_ssh(cwd)
+        resume = self.claude_resume_command(session_id, skip_permissions)
+        return self.chain_commands(cd, resume)
+
     def quote_arg(self, arg: str) -> str:
         """Quote a shell argument for the target shell."""
         if self.target_shell == "cmd":

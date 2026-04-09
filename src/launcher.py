@@ -163,7 +163,8 @@ async def launch_claude_session(cwd: str, session_id: str, machine: str, skip_pe
     else:
         info = FLEET_MACHINES.get(machine, {})
         alias = info.get("ssh_alias", machine)
-        session_cmd = adapter.build_session_command(cwd, session_id, skip_permissions)
+        # SSH -t runs Git Bash on Windows (not cmd.exe), so use the SSH variant
+        session_cmd = adapter.build_session_command_ssh(cwd, session_id, skip_permissions)
         terminal_cmd = adapter.for_terminal(session_cmd, keep_open=True)
         cmd = f"ssh {shlex.quote(alias)} -t {shlex.quote(terminal_cmd)}"
 
