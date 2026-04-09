@@ -49,20 +49,33 @@ class CommandAdapter:
         return " && ".join(commands)
 
     def cd_command_ssh(self, path: str) -> str:
-        """Generate a cd command for the SSH login shell (Git Bash on Windows)."""
+        """Generate a cd command for the SSH login shell.
+
+        On Windows, SSH defaults to Git Bash but we invoke PowerShell
+        explicitly for reliable Windows path handling.
+        """
         if self.is_windows:
-            # SSH into Windows = Git Bash, which understands both:
-            #   cd "/c/Users/rbgnr/path"  (Git Bash native)
-            #   cd "C:\\Users\\path"       (Git Bash auto-converts)
-            # Use double-quoted Windows path — Git Bash handles it
-            return f'cd "{path}"'
+            # Will be wrapped in powershell -NoExit -Command "..."
+            return f"Set-Location '{path}'"
         return f"cd {shlex.quote(path)}"
 
     def build_session_command_ssh(self, cwd: str, session_id: str, skip_permissions: bool = False) -> str:
-        """Build cd + claude resume for SSH direct execution (Git Bash on Windows)."""
-        cd = self.cd_command_ssh(cwd)
-        resume = self.claude_resume_command(session_id, skip_permissions)
-        return self.chain_commands(cd, resume)
+        """Build cd + claude resume for SSH direct execution.
+
+        On Windows: wraps in 'powershell -NoExit -Command "..."' so the
+        user gets a PowerShell session (not Git Bash) in the correct dir.
+        """
+        quoted_id = self.quote_arg(session_id)
+        skip_flag = " --dangerously-skip-permissions" if skip_permissions else ""
+
+        if self.is_windows:
+            # PowerShell: use Set-Location + semicolons, wrapped in powershell -NoExit
+            ps_cmd = f"Set-Location '{cwd}'; claude --resume {session_id}{skip_flag}"
+            return f'powershell -NoExit -Command "{ps_cmd}"'
+        else:
+            cd = self.cd_command_ssh(cwd)
+            resume = self.claude_resume_command(session_id, skip_permissions)
+            return self.chain_commands(cd, resume)
 
     def quote_arg(self, arg: str) -> str:
         """Quote a shell argument for the target shell."""
