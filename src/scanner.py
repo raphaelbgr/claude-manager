@@ -477,6 +477,7 @@ async def scan_remote(
     """
     script = REMOTE_SCAN_SCRIPT.strip()
     try:
+        # Pipe script via stdin to avoid shell quoting issues with SSH
         proc = await asyncio.wait_for(
             asyncio.create_subprocess_exec(
                 "ssh",
@@ -484,13 +485,17 @@ async def scan_remote(
                 "-o", "ConnectTimeout=5",
                 "-o", "StrictHostKeyChecking=no",
                 ssh_alias,
-                "python3", "-c", script,
+                "python3", "-",
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             ),
             timeout=30,
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(input=script.encode("utf-8")),
+            timeout=30,
+        )
     except asyncio.TimeoutError:
         return []
     except Exception:
