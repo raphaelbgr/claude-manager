@@ -579,7 +579,9 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
   const launchBg    = local ? '#1f3a5f' : '#3a2200';
   const launchColor = local ? '#58a6ff' : '#e3b341';
   const launchBorder = local ? '#2d4f7a' : '#5a3a00';
-  const tmuxLabel = os === 'Windows' ? 'psmux Launch' : 'tmux Launch';
+  const muxType = os === 'Windows' ? 'psmux' : 'tmux';
+  const tmuxLabel = local ? `${muxType} Launch` : `SSH + ${muxType}`;
+  const launchLabel = local ? 'Launch' : 'SSH + Launch';
 
   // ── Collapsed compact row ────────────────────────────────────────────────
   const compactRow = h('div', {
@@ -662,21 +664,21 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
       className: `compact-action-btn btn btn-launch${launching ? '' : ''}`,
       onClick: e => { e.stopPropagation(); onLaunch(session); },
       disabled: launching,
-      title: local ? 'Launch in terminal' : 'SSH + Launch in terminal',
+      title: launchLabel + ' in terminal',
     },
       h('span', { className: 'material-icons-round', style: { fontSize: '12px' } }, 'play_arrow'),
-      launching ? '…' : 'Launch',
+      launching ? '…' : launchLabel,
     ),
 
-    // tmux launch button
+    // tmux/psmux launch button
     h('button', {
       className: `compact-action-btn btn btn-tmux${tmuxLaunching ? '' : ''}`,
       onClick: e => { e.stopPropagation(); onTmuxLaunch(session); },
       disabled: tmuxLaunching,
-      title: os === 'Windows' ? 'Launch in psmux' : 'Launch in tmux',
+      title: tmuxLabel + ' session',
     },
       h('span', { className: 'material-icons-round', style: { fontSize: '12px' } }, 'terminal'),
-      tmuxLaunching ? '…' : 'tmux',
+      tmuxLaunching ? '…' : tmuxLabel,
     ),
 
     // Pin button
@@ -826,7 +828,9 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
 function TmuxCard({ session, onConnect, connecting, onKill, killing, onRemoteAttach, remoteAttaching }) {
   const isAttached = session.attached;
   const local = isLocalMachine(session.machine);
-  const connectLabel = connecting ? 'Attaching…' : (local ? '▶ Attach' : '▶ SSH + Attach');
+  const muxOS = (MACHINE_INFO[session.machine] || {}).os || 'macOS';
+  const muxName = muxOS === 'Windows' ? 'psmux' : 'tmux';
+  const connectLabel = connecting ? 'Attaching…' : (local ? `Attach ${muxName}` : `SSH + Attach ${muxName}`);
   const sessionName = session.session_name || session.name || '(unnamed)';
 
   return h('div', { className: 'tmux-card' },
@@ -866,7 +870,7 @@ function TmuxCard({ session, onConnect, connecting, onKill, killing, onRemoteAtt
             cursor: killing ? 'not-allowed' : 'pointer',
             opacity: killing ? 0.6 : 1,
           }
-        }, killing ? 'Killing…' : 'Kill'),
+        }, killing ? 'Killing…' : (local ? 'Kill' : 'SSH + Kill')),
         !local && h('button', {
           className: 'btn',
           onClick: () => onRemoteAttach(session),
@@ -1144,7 +1148,7 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
       },
         h('h2', {
           style: { fontSize: '1rem', fontWeight: 700, color: '#e6edf3' }
-        }, 'New Tmux Session'),
+        }, 'New Tmux / Psmux Session'),
         h('button', {
           className: 'btn',
           onClick: onClose,
@@ -1682,7 +1686,7 @@ function TmuxPanel({ tmuxSessions, fleet, onConnectTmux, connectingId, onKillTmu
             }
           },
             h('span', { style: { fontSize: '1.5rem' } }, '⊡'),
-            h('span', { style: { fontSize: '0.875rem' } }, 'No tmux sessions'),
+            h('span', { style: { fontSize: '0.875rem' } }, 'No tmux / psmux sessions'),
           )
         : Object.entries(byMachine).map(([machine, sessions]) => {
             const machineKey = `tmux:${machine}`;
@@ -1736,7 +1740,7 @@ function TmuxPanel({ tmuxSessions, fleet, onConnectTmux, connectingId, onKillTmu
           e.currentTarget.style.color = '#8b949e';
           e.currentTarget.style.background = '#21262d';
         },
-      }, '+ New Tmux Session'),
+      }, '+ New Tmux / Psmux Session'),
     ),
   );
 }
@@ -1765,7 +1769,7 @@ function FleetBar({ fleet, lastScan, wsConnected }) {
     h('div', {
       style: { display: 'flex', alignItems: 'center', gap: 6, marginRight: 8 }
     },
-      h('span', { style: { color: '#484f58' } }, 'FLEET'),
+      h('span', { style: { color: '#484f58' } }, 'COMPUTERS'),
       h('span', {
         style: {
           color: online === total ? '#3fb950' : online > 0 ? '#e3b341' : '#f85149'
@@ -1843,24 +1847,32 @@ function Header({ health, sessions, tmuxSessions, fleet, onScan, scanning, skipP
     ),
 
     // Stat pills
-    h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
-      h('span', {
-        className: 'badge',
-        style: { background: '#21262d', color: '#8b949e', border: '1px solid #30363d' }
-      }, `${sessions.length} sessions`),
-      h('span', {
-        className: 'badge',
-        style: { background: '#21262d', color: '#8b949e', border: '1px solid #30363d' }
-      }, `${tmuxSessions.length} tmux`),
-      h('span', {
-        className: 'badge',
-        style: {
-          background: online > 0 ? '#1a3a2a' : '#3a1a1a',
-          color: online > 0 ? '#3fb950' : '#f85149',
-          border: `1px solid ${online > 0 ? '#2a5a3a' : '#5a2a2a'}`,
-        }
-      }, `${online}/${total} fleet`),
-    ),
+    (() => {
+      const tmuxCount = tmuxSessions.filter(s => (MACHINE_INFO[s.machine] || {}).os !== 'Windows').length;
+      const psmuxCount = tmuxSessions.filter(s => (MACHINE_INFO[s.machine] || {}).os === 'Windows').length;
+      return h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+        h('span', {
+          className: 'badge',
+          style: { background: '#21262d', color: '#8b949e', border: '1px solid #30363d' }
+        }, `${sessions.length} sessions`),
+        h('span', {
+          className: 'badge',
+          style: { background: '#21262d', color: '#8b949e', border: '1px solid #30363d' }
+        }, `${tmuxCount} tmux`),
+        h('span', {
+          className: 'badge',
+          style: { background: '#21262d', color: '#8b949e', border: '1px solid #30363d' }
+        }, `${psmuxCount} psmux`),
+        h('span', {
+          className: 'badge',
+          style: {
+            background: online > 0 ? '#1a3a2a' : '#3a1a1a',
+            color: online > 0 ? '#3fb950' : '#f85149',
+            border: `1px solid ${online > 0 ? '#2a5a3a' : '#5a2a2a'}`,
+          }
+        }, `${online}/${total} computers`),
+      );
+    })(),
 
     // Spacer
     h('div', { style: { flex: 1 } }),
@@ -2655,7 +2667,7 @@ function App() {
                 fontSize: '0.7rem', fontWeight: 700, letterSpacing: '0.08em',
                 textTransform: 'uppercase', color: '#484f58',
               }
-            }, 'Tmux'),
+            }, 'Tmux / Psmux'),
           ),
           h('div', {
             style: { flex: 1, overflowY: 'auto', padding: '12px 16px', display: 'flex', flexDirection: 'column' }
