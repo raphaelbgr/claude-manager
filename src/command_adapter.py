@@ -169,11 +169,11 @@ class CommandAdapter:
     def generate_mux_session_name(self, machine: str, project_folder: str, existing_names: list[str]) -> str:
         """Generate a unique mux session name with auto-increment.
 
-        Format: {machine}/{project}-session-{NN}
-        Increments the suffix until the name is not in existing_names.
+        Format: {machine}_{project}-session-{NN}
+        Uses underscore (not slash) — tmux/psmux reject / in names.
         """
         import re
-        base = f"{machine}/{project_folder}-session"
+        base = f"{machine}_{project_folder}-session"
         max_n = 0
         for name in existing_names:
             m = re.match(re.escape(base) + r"-(\d+)$", name)
