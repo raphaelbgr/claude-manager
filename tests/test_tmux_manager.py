@@ -77,35 +77,44 @@ class TestTmuxSessionDataclass:
 # _unix_to_iso
 # ---------------------------------------------------------------------------
 
-class TestUnixToIso:
-    def _fn(self):
-        from src.tmux_manager import _unix_to_iso
-        return _unix_to_iso
+class TestMuxParser:
+    """Test the universal mux parser used by tmux_manager."""
 
-    def test_converts_known_timestamp(self):
-        fn = self._fn()
-        # epoch 0 → 1970-01-01T00:00:00+00:00
-        result = fn("0")
-        assert result == "1970-01-01T00:00:00+00:00"
+    def test_parse_pipe_format(self):
+        from src.mux_parser import parse_mux_output
+        output = "my-session|1712649600|3|0\nother|1712649600|1|1"
+        result = parse_mux_output(output)
+        assert len(result) == 2
+        assert result[0]["name"] == "my-session"
+        assert result[0]["windows"] == 3
+        assert result[0]["attached"] is False
+        assert result[1]["attached"] is True
 
-    def test_converts_recent_timestamp(self):
-        fn = self._fn()
-        # 2024-01-15 10:30:00 UTC → 1705314600
-        ts = int(datetime(2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc).timestamp())
-        result = fn(str(ts))
-        assert "2024-01-15" in result
-        assert "+00:00" in result
+    def test_parse_plain_text(self):
+        from src.mux_parser import parse_mux_output
+        output = "test-avell: 1 windows (created Thu Apr  9 03:25:03 2026)"
+        result = parse_mux_output(output)
+        assert len(result) == 1
+        assert result[0]["name"] == "test-avell"
+        assert result[0]["windows"] == 1
 
-    def test_returns_original_on_invalid_input(self):
-        fn = self._fn()
-        assert fn("not-a-number") == "not-a-number"
-        assert fn("") == ""
-        assert fn("abc123") == "abc123"
+    def test_parse_plain_text_attached(self):
+        from src.mux_parser import parse_mux_output
+        output = "dev: 2 windows (created Mon Jan  1 10:00:00 2024) (attached)"
+        result = parse_mux_output(output)
+        assert result[0]["attached"] is True
 
-    def test_timezone_is_utc(self):
-        fn = self._fn()
-        result = fn("1000000")
-        assert "+00:00" in result
+    def test_parse_empty(self):
+        from src.mux_parser import parse_mux_output
+        assert parse_mux_output("") == []
+        assert parse_mux_output("  \n  \n") == []
+
+    def test_parse_name_only_fallback(self):
+        from src.mux_parser import parse_mux_output
+        output = "session1\nsession2"
+        result = parse_mux_output(output)
+        assert len(result) == 2
+        assert result[0]["name"] == "session1"
 
 
 # ---------------------------------------------------------------------------
@@ -527,10 +536,14 @@ class TestListAllTmux:
         async def fake_list_remote(machine_name, ssh_alias, mux):
             raise OSError("unreachable")
 
+        async def fake_list_remote_api(machine_name, ip, dispatch_port):
+            raise OSError("unreachable")
+
         fleet_status = {"ubuntu-desktop": {"online": True}}
 
         with patch("src.tmux_manager.list_local_tmux", new=fake_list_local), \
-             patch("src.tmux_manager.list_remote_tmux", new=fake_list_remote):
+             patch("src.tmux_manager.list_remote_tmux", new=fake_list_remote), \
+             patch("src.tmux_manager.list_remote_tmux_via_api", new=fake_list_remote_api):
             sessions = await list_all_tmux("mac-mini", fleet_status)
 
         # Only the local session survives

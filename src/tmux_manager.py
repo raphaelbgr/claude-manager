@@ -1,8 +1,8 @@
 """Tmux/psmux session management across fleet machines."""
 import asyncio
 from dataclasses import dataclass, asdict
-from datetime import datetime, timezone
 from .config import FLEET_MACHINES, detect_local_machine, SSH_TIMEOUT
+from .mux_parser import parse_mux_output
 
 
 @dataclass
@@ -18,36 +18,16 @@ class TmuxSession:
         return asdict(self)
 
 
-def _unix_to_iso(ts_str: str) -> str:
-    """Convert Unix timestamp string to ISO 8601 UTC string."""
-    try:
-        ts = int(ts_str)
-        return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
-    except (ValueError, OSError):
-        return ts_str
-
-
-def _parse_tmux_lines(output: str, machine: str, is_local: bool) -> list[TmuxSession]:
-    """Parse tmux list-sessions output into TmuxSession objects."""
+def _dicts_to_sessions(parsed: list[dict], machine: str, is_local: bool) -> list[TmuxSession]:
+    """Convert parse_mux_output dicts into TmuxSession objects."""
     sessions = []
-    for line in output.strip().splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        parts = line.split("|")
-        if len(parts) != 4:
-            continue
-        name, created_raw, windows_raw, attached_raw = parts
-        try:
-            windows = int(windows_raw)
-        except ValueError:
-            windows = 0
+    for d in parsed:
         sessions.append(TmuxSession(
-            name=name,
+            name=d["name"],
             machine=machine,
-            created=_unix_to_iso(created_raw),
-            windows=windows,
-            attached=(attached_raw.strip() == "1"),
+            created=d.get("created") or "",
+            windows=d.get("windows", 0),
+            attached=d.get("attached", False),
             is_local=is_local,
         ))
     return sessions
@@ -71,7 +51,7 @@ async def list_local_tmux() -> list[TmuxSession]:
         # "no server running" or similar — not an error we surface
         return []
 
-    return _parse_tmux_lines(stdout.decode(), machine, is_local=True)
+    return _dicts_to_sessions(parse_mux_output(stdout.decode()), machine, is_local=True)
 
 
 async def list_remote_tmux_via_api(machine_name: str, ip: str, dispatch_port: int) -> list[TmuxSession]:
@@ -119,33 +99,18 @@ async def list_remote_tmux(machine_name: str, ssh_alias: str, mux: str) -> list[
         except (asyncio.TimeoutError, OSError):
             return -1, ""
 
-    if mux == "psmux":
-        # Try same tmux-compatible format first, fall back to plain list
-        rc, out = await _run_remote(f"psmux list-sessions -F '{fmt}'")
-        if rc != 0 or not out.strip():
-            rc, out = await _run_remote("psmux list-sessions")
-            if rc != 0 or not out.strip():
-                return []
-            # Plain psmux output: just session names, one per line
-            sessions = []
-            for line in out.strip().splitlines():
-                line = line.strip()
-                if line:
-                    sessions.append(TmuxSession(
-                        name=line,
-                        machine=machine_name,
-                        created="",
-                        windows=0,
-                        attached=False,
-                        is_local=False,
-                    ))
-            return sessions
-    else:
-        rc, out = await _run_remote(f"tmux list-sessions -F '{fmt}'")
+    # Try with -F format string first (works on tmux; psmux ignores it but may still list)
+    rc, out = await _run_remote(f"{mux} list-sessions -F '{fmt}'")
+    parsed = parse_mux_output(out) if rc == 0 else []
+
+    # If empty and this is psmux, retry without -F (psmux plain-text output)
+    if not parsed and mux == "psmux":
+        rc, out = await _run_remote("psmux list-sessions")
         if rc != 0 or not out.strip():
             return []
+        parsed = parse_mux_output(out)
 
-    return _parse_tmux_lines(out, machine_name, is_local=False)
+    return _dicts_to_sessions(parsed, machine_name, is_local=False)
 
 
 async def list_all_tmux(local_machine: str, fleet_status: dict) -> list[TmuxSession]:
