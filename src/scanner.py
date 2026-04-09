@@ -17,6 +17,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -40,10 +41,11 @@ class ClaudeSession:
     summary: str              # first user message, truncated to 120 chars
     messages: int             # total non-empty lines in JSONL
     modified: str             # ISO-8601 mtime
-    status: str               # "active" | "idle"
-    pid: int | None           # PID if active, else None
+    status: str               # "working" | "active" | "idle"
+    pid: int | None           # PID if active/working, else None
     file_size: int = 0        # file size in bytes of the .jsonl file
     name: str = ""            # session name set by /rename
+    cpu_percent: float = 0.0  # CPU usage if active (0.0 if idle/not measured)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -202,12 +204,38 @@ def _mark_active_sessions(
     active_pids: dict[str, int],
     names: dict[str, str] | None = None,
 ) -> None:
-    """Mutate sessions in-place: set status='active', pid, and name for live sessions."""
+    """Mutate sessions in-place: set status, pid, cpu_percent, and name for live sessions.
+
+    Status logic:
+    - 'working' — PID alive AND (JSONL modified within last 15s OR CPU > 5%)
+    - 'active'  — PID alive but not currently working (waiting for user input)
+    - 'idle'    — PID not alive or session not in active_pids
+    """
     for sess in sessions:
         pid = active_pids.get(sess.session_id)
         if pid:
-            sess.status = "active"
             sess.pid = pid
+            # Determine working vs active using JSONL mtime + CPU
+            is_working = False
+            # Check 1: JSONL file modified recently (within 15 seconds)
+            try:
+                mtime_ts = datetime.fromisoformat(sess.modified).timestamp()
+                age = time.time() - mtime_ts
+                if age < 15:
+                    is_working = True
+            except Exception:
+                pass
+            # Check 2: CPU usage (if psutil available)
+            cpu = 0.0
+            try:
+                proc = psutil.Process(pid)
+                cpu = proc.cpu_percent(interval=0.1)
+                sess.cpu_percent = round(cpu, 1)
+                if cpu > 5.0:
+                    is_working = True
+            except Exception:
+                pass
+            sess.status = "working" if is_working else "active"
         if names:
             n = names.get(sess.session_id, "")
             if n:

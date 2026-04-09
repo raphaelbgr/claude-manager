@@ -302,7 +302,7 @@ class TestClaudeSessionToDict:
         expected_keys = {
             "session_id", "machine", "project_folder", "project_path",
             "cwd", "slug", "summary", "messages", "modified", "status", "pid",
-            "file_size", "name",
+            "file_size", "name", "cpu_percent",
         }
         assert set(d.keys()) == expected_keys
 
@@ -356,11 +356,11 @@ class TestScanLocal:
         assert modified_times == sorted(modified_times, reverse=True)
 
     def test_active_session_detected(self, mock_claude_home):
-        """abc123 has a sessions JSON with current PID → should be active."""
+        """abc123 has a sessions JSON with current PID → should be active or working."""
         result = scan_local(claude_home=mock_claude_home)
         abc_sessions = [s for s in result if s.session_id == "abc123"]
         assert abc_sessions, "abc123 session not found"
-        assert abc_sessions[0].status == "active"
+        assert abc_sessions[0].status in ("active", "working")
         assert abc_sessions[0].pid == os.getpid()
 
     def test_idle_session_not_active(self, mock_claude_home):
