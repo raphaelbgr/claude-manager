@@ -555,10 +555,11 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
 
 // ─── Tmux Card ────────────────────────────────────────────────────────────────
 
-function TmuxCard({ session, onConnect, connecting }) {
+function TmuxCard({ session, onConnect, connecting, onKill, killing }) {
   const isAttached = session.attached;
   const local = isLocalMachine(session.machine);
   const connectLabel = connecting ? 'Connecting…' : (local ? 'Connect' : 'SSH + Connect');
+  const sessionName = session.session_name || session.name || '(unnamed)';
 
   return h('div', { className: 'tmux-card' },
     h('div', { style: { flex: 1, minWidth: 0 } },
@@ -569,7 +570,7 @@ function TmuxCard({ session, onConnect, connecting }) {
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
           marginBottom: 5,
         }
-      }, session.session_name || session.name || '(unnamed)'),
+      }, sessionName),
 
       // Badge row
       h('div', {
@@ -581,8 +582,23 @@ function TmuxCard({ session, onConnect, connecting }) {
         isAttached && h(Badge, { text: 'attached', color: '#58a6ff', bg: '#1f3a5f', border: '#2d4f7a' }),
       ),
 
-      // Connect button
-      h('div', { style: { display: 'flex', justifyContent: 'flex-end' } },
+      // Action buttons
+      h('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: 6 } },
+        h('button', {
+          className: 'btn',
+          onClick: () => onKill(session),
+          disabled: killing,
+          title: `Kill tmux session "${sessionName}" on ${session.machine}`,
+          style: {
+            fontSize: '0.72rem', fontWeight: 600,
+            background: killing ? '#3a1a1a' : '#21262d',
+            color: '#f85149',
+            border: '1px solid #5a2a2a',
+            borderRadius: 6, padding: '4px 10px',
+            cursor: killing ? 'not-allowed' : 'pointer',
+            opacity: killing ? 0.6 : 1,
+          }
+        }, killing ? 'Killing…' : 'Kill'),
         h('button', {
           className: 'btn',
           onClick: () => onConnect(session),
@@ -937,7 +953,7 @@ function SessionsPanel({ sessions, filter, onLaunch, onTmuxLaunch, launchingId, 
 
 // ─── Tmux Panel ───────────────────────────────────────────────────────────────
 
-function TmuxPanel({ tmuxSessions, fleet, onConnectTmux, connectingId, onNewSession, filter, scanning, collapseState, setCollapseState }) {
+function TmuxPanel({ tmuxSessions, fleet, onConnectTmux, connectingId, onKillTmux, killingId, onNewSession, filter, scanning, collapseState, setCollapseState }) {
   const filtered = useMemo(() => {
     if (!filter || !filter.trim()) return tmuxSessions;
     const q = filter.toLowerCase();
@@ -988,6 +1004,8 @@ function TmuxPanel({ tmuxSessions, fleet, onConnectTmux, connectingId, onNewSess
                   session: s,
                   onConnect: onConnectTmux,
                   connecting: connectingId === `${s.machine}-${s.session_name || s.name}`,
+                  onKill: onKillTmux,
+                  killing: killingId === `${s.machine}-${s.session_name || s.name}`,
                 })
               )
             );
@@ -1448,6 +1466,34 @@ function App() {
     }
   }, []);
 
+  // ── Kill tmux session ────────────────────────────────────────────────────
+  const [killingId, setKillingId] = useState(null);
+  const handleKillTmux = useCallback(async (session) => {
+    const name = session.session_name || session.name;
+    const key = `${session.machine}-${name}`;
+    if (!confirm(`Kill tmux session "${name}" on ${session.machine}?`)) return;
+    setKillingId(key);
+    try {
+      const res = await fetch('/api/tmux/kill', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ machine: session.machine, name }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        toast(`Killed "${name}" on ${session.machine}`, 'success');
+        // Refresh tmux list
+        fetch('/api/tmux').then(r => r.json()).then(d => { if (Array.isArray(d)) setTmuxSessions(d); }).catch(() => {});
+      } else {
+        toast(data.error || 'Kill failed', 'error');
+      }
+    } catch {
+      toast('Network error', 'error');
+    } finally {
+      setKillingId(null);
+    }
+  }, []);
+
   // ── Render ────────────────────────────────────────────────────────────────
   return h(Fragment, null,
     h('div', {
@@ -1593,6 +1639,8 @@ function App() {
                   tmuxSessions, fleet,
                   onConnectTmux: handleConnectTmux,
                   connectingId,
+                  onKillTmux: handleKillTmux,
+                  killingId,
                   onNewSession: () => setShowModal(true),
                   filter,
                   scanning,
