@@ -373,19 +373,21 @@ function StatusDot({ status, pulse = false }) {
 function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching, skipPermissions }) {
   const isWorking = session.status === 'working';
   const isActive = session.status === 'active' || isWorking;
-  const projectPath = session.project_path || session.project_folder || '';
-  const projectName = shortenPath(projectPath);
+  // Always prefer cwd over project_path (project_path has a dash→slash bug)
+  const effectivePath = session.cwd || session.project_path || session.project_folder || '';
+  const projectName = shortenPath(effectivePath);
   const summary = session.summary || '(no message preview)';
   const [copied, setCopied] = useState(false);
 
   const sessionId = session.session_id || '';
-  const cwdDiffersFromProject =
-    session.cwd &&
-    session.project_path &&
-    session.cwd !== session.project_path;
 
-  // Display name: custom name > slug > "(unnamed)"
-  const displayName = session.name || session.slug || '(unnamed)';
+  // Display name: custom name (from /rename) > project folder name > "(unnamed)"
+  // Show slug below only when it's meaningfully different from the project name
+  const hasCustomName = Boolean(session.name);
+  const displayName = session.name || projectName || '(unnamed)';
+  // Show slug as secondary hint only when there's no custom name and slug differs from folder
+  const showSlug = !hasCustomName && session.slug && session.slug !== projectName;
+
   const local = isLocalMachine(session.machine);
   const os = getMachineOS(session.machine);
 
@@ -410,18 +412,29 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
   return h('div', { className: 'session-card' },
     h('div', { style: { flex: 1, minWidth: 0 } },
 
-      // Row 1: Display name (bold, primary)
+      // Row 1: Display name (bold, primary) — custom name or project folder
       h('div', {
         style: {
           fontSize: '0.88rem', fontWeight: 700,
           color: '#58a6ff', overflow: 'hidden',
           textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-          marginBottom: 3,
+          marginBottom: 2,
         },
         title: displayName,
       }, displayName),
 
-      // Row 2: Project path + CWD if different
+      // Row 1b: Slug in muted text (only when no custom name and slug differs from folder)
+      showSlug && h('div', {
+        style: {
+          fontSize: '0.65rem', color: '#484f58',
+          fontFamily: '"SF Mono", "Fira Code", Consolas, monospace',
+          overflow: 'hidden', textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap', marginBottom: 2,
+        },
+        title: session.slug,
+      }, session.slug),
+
+      // Row 2: Full CWD path (always uses cwd which is correct)
       h('div', {
         style: {
           fontSize: '0.7rem', color: '#8b949e',
@@ -429,11 +442,8 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
           overflow: 'hidden', textOverflow: 'ellipsis',
           whiteSpace: 'nowrap', marginBottom: 4,
         },
-        title: cwdDiffersFromProject ? `${projectPath} → ${session.cwd}` : projectPath,
-      },
-        projectName,
-        cwdDiffersFromProject && h('span', { style: { color: '#484f58' } }, ` → ${shortenPath(session.cwd)}`),
-      ),
+        title: effectivePath,
+      }, projectName),
 
       // Row 3: Summary
       h('div', {
@@ -594,18 +604,26 @@ function TmuxCard({ session, onConnect, connecting }) {
 
 // ─── Machine Section ──────────────────────────────────────────────────────────
 
-function MachineSection({ machine, children, defaultOpen = true, count }) {
-  const [open, setOpen] = useState(defaultOpen);
+function MachineSection({ machine, children, count, collapseKey, collapseState, setCollapseState }) {
+  const isOpen = (collapseState && collapseKey !== undefined && collapseState[collapseKey] !== undefined)
+    ? collapseState[collapseKey]
+    : true; // default open
+
+  const toggle = () => {
+    if (setCollapseState && collapseKey !== undefined) {
+      setCollapseState(prev => ({ ...prev, [collapseKey]: !isOpen }));
+    }
+  };
 
   return h('div', { className: 'machine-section' },
     h('div', {
       className: 'machine-header',
-      onClick: () => setOpen(o => !o),
+      onClick: toggle,
     },
       h('span', {
         style: { color: '#8b949e', fontSize: '0.75rem', transition: 'transform 0.15s',
           display: 'inline-block',
-          transform: open ? 'rotate(90deg)' : 'rotate(0deg)' }
+          transform: isOpen ? 'rotate(90deg)' : 'rotate(0deg)' }
       }, '▶'),
       h('span', { style: { color: '#8b949e', fontFamily: 'monospace' } }, machine),
       count != null && h('span', {
@@ -615,19 +633,28 @@ function MachineSection({ machine, children, defaultOpen = true, count }) {
         }
       }, count),
     ),
-    open && h('div', { style: { paddingLeft: 8 } }, children),
+    isOpen && h('div', { style: { paddingLeft: 8 } }, children),
   );
 }
 
 // ─── Project Section ──────────────────────────────────────────────────────────
 
-function ProjectSection({ projectPath, children, count, defaultOpen = true }) {
-  const [open, setOpen] = useState(defaultOpen);
+function ProjectSection({ projectPath, children, count, defaultOpen = true, collapseKey, collapseState, setCollapseState }) {
   const shortPath = shortenPath(projectPath) || projectPath || '(unknown)';
+
+  const isOpen = (collapseState && collapseKey !== undefined && collapseState[collapseKey] !== undefined)
+    ? collapseState[collapseKey]
+    : defaultOpen;
+
+  const toggle = () => {
+    if (setCollapseState && collapseKey !== undefined) {
+      setCollapseState(prev => ({ ...prev, [collapseKey]: !isOpen }));
+    }
+  };
 
   return h('div', { style: { marginLeft: 8, marginBottom: 4 } },
     h('div', {
-      onClick: () => setOpen(o => !o),
+      onClick: toggle,
       style: {
         display: 'flex', alignItems: 'center', gap: 6,
         padding: '4px 8px', cursor: 'pointer',
@@ -640,7 +667,7 @@ function ProjectSection({ projectPath, children, count, defaultOpen = true }) {
       h('span', {
         style: {
           color: '#484f58', fontSize: '0.65rem', transition: 'transform 0.15s',
-          display: 'inline-block', transform: open ? 'rotate(90deg)' : 'rotate(0)',
+          display: 'inline-block', transform: isOpen ? 'rotate(90deg)' : 'rotate(0)',
         }
       }, '▶'),
       h('span', {
@@ -653,7 +680,7 @@ function ProjectSection({ projectPath, children, count, defaultOpen = true }) {
         }
       }, count),
     ),
-    open && h('div', { style: { paddingLeft: 4 } }, children),
+    isOpen && h('div', { style: { paddingLeft: 4 } }, children),
   );
 }
 
@@ -801,15 +828,16 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
 
 // ─── Sessions Panel ───────────────────────────────────────────────────────────
 
-function SessionsPanel({ sessions, filter, onLaunch, onTmuxLaunch, launchingId, tmuxLaunchingId, skipPermissions }) {
+function SessionsPanel({ sessions, filter, onLaunch, onTmuxLaunch, launchingId, tmuxLaunchingId, skipPermissions, scanning, collapseState, setCollapseState }) {
   const filtered = useMemo(() => {
     if (!filter.trim()) return sessions;
     const q = filter.toLowerCase();
     return sessions.filter(s =>
-      (s.project_path || '').toLowerCase().includes(q) ||
+      (s.cwd || s.project_path || '').toLowerCase().includes(q) ||
       (s.summary || '').toLowerCase().includes(q) ||
       (s.machine || '').toLowerCase().includes(q) ||
-      (s.slug || '').toLowerCase().includes(q)
+      (s.slug || '').toLowerCase().includes(q) ||
+      (s.name || '').toLowerCase().includes(q)
     );
   }, [sessions, filter]);
 
@@ -846,28 +874,48 @@ function SessionsPanel({ sessions, filter, onLaunch, onTmuxLaunch, launchingId, 
     );
   }
 
+  const machineCount = Object.keys(byMachine).length;
+
   return h('div', null,
+    // Scan progress indicator
+    scanning && h('div', {
+      style: {
+        display: 'flex', alignItems: 'center', gap: 6,
+        padding: '6px 4px 8px', fontSize: '0.72rem', color: '#58a6ff',
+      }
+    },
+      h('span', { style: { display: 'inline-block', animation: 'spin 0.8s linear infinite' } }, '↻'),
+      h('span', null, `Scanning ${machineCount} machine${machineCount !== 1 ? 's' : ''}…`),
+    ),
     Object.entries(byMachine).map(([machine, machineSessions]) => {
-      // Group by project_path within the machine, sorted by most recent modified
-      const byProject = groupBy(machineSessions, 'project_path');
+      // Group by effective path (cwd preferred) within the machine, sorted by most recent modified
+      const byProject = groupBy(machineSessions, s => s.cwd || s.project_path || '');
       const projectEntries = Object.entries(byProject).sort(([, a], [, b]) => {
         const aMax = a.reduce((m, s) => s.modified > m ? s.modified : m, '');
         const bMax = b.reduce((m, s) => s.modified > m ? s.modified : m, '');
         return bMax > aMax ? 1 : bMax < aMax ? -1 : 0;
       });
 
+      const machineKey = machine;
+
       return h(MachineSection, {
         key: machine,
         machine,
         count: machineSessions.length,
-        defaultOpen: true,
+        collapseKey: machineKey,
+        collapseState,
+        setCollapseState,
       },
-        projectEntries.map(([projectPath, projectSessions]) =>
-          h(ProjectSection, {
+        projectEntries.map(([projectPath, projectSessions]) => {
+          const projKey = `project:${machine}:${projectPath}`;
+          return h(ProjectSection, {
             key: projectPath,
             projectPath,
             count: projectSessions.length,
             defaultOpen: projectSessions.length <= 3,
+            collapseKey: projKey,
+            collapseState,
+            setCollapseState,
           },
             projectSessions.map(s =>
               h(SessionCard, {
@@ -880,8 +928,8 @@ function SessionsPanel({ sessions, filter, onLaunch, onTmuxLaunch, launchingId, 
                 skipPermissions,
               })
             )
-          )
-        )
+          );
+        })
       );
     })
   );
@@ -889,12 +937,31 @@ function SessionsPanel({ sessions, filter, onLaunch, onTmuxLaunch, launchingId, 
 
 // ─── Tmux Panel ───────────────────────────────────────────────────────────────
 
-function TmuxPanel({ tmuxSessions, fleet, onConnectTmux, connectingId, onNewSession }) {
-  const byMachine = useMemo(() => groupBy(tmuxSessions, s => s.machine || 'unknown'), [tmuxSessions]);
+function TmuxPanel({ tmuxSessions, fleet, onConnectTmux, connectingId, onNewSession, filter, scanning, collapseState, setCollapseState }) {
+  const filtered = useMemo(() => {
+    if (!filter || !filter.trim()) return tmuxSessions;
+    const q = filter.toLowerCase();
+    return tmuxSessions.filter(s =>
+      (s.session_name || s.name || '').toLowerCase().includes(q) ||
+      (s.machine || '').toLowerCase().includes(q)
+    );
+  }, [tmuxSessions, filter]);
+
+  const byMachine = useMemo(() => groupBy(filtered, s => s.machine || 'unknown'), [filtered]);
 
   return h('div', { style: { display: 'flex', flexDirection: 'column', height: '100%' } },
     h('div', { className: 'panel-scroll', style: { flex: 1 } },
-      !tmuxSessions.length
+      // Scan progress indicator
+      scanning && h('div', {
+        style: {
+          display: 'flex', alignItems: 'center', gap: 6,
+          padding: '6px 4px 8px', fontSize: '0.72rem', color: '#58a6ff',
+        }
+      },
+        h('span', { style: { display: 'inline-block', animation: 'spin 0.8s linear infinite' } }, '↻'),
+        h('span', null, 'Scanning…'),
+      ),
+      !filtered.length
         ? h('div', {
             style: {
               display: 'flex', flexDirection: 'column', alignItems: 'center',
@@ -903,14 +970,17 @@ function TmuxPanel({ tmuxSessions, fleet, onConnectTmux, connectingId, onNewSess
             }
           },
             h('span', { style: { fontSize: '1.5rem' } }, '⊡'),
-            h('span', { style: { fontSize: '0.875rem' } }, 'No tmux sessions'),
+            h('span', { style: { fontSize: '0.875rem' } }, filter && filter.trim() ? 'No tmux sessions match filter' : 'No tmux sessions'),
           )
-        : Object.entries(byMachine).map(([machine, sessions]) =>
-            h(MachineSection, {
+        : Object.entries(byMachine).map(([machine, sessions]) => {
+            const machineKey = `tmux:${machine}`;
+            return h(MachineSection, {
               key: machine,
               machine,
               count: sessions.length,
-              defaultOpen: true,
+              collapseKey: machineKey,
+              collapseState,
+              setCollapseState,
             },
               sessions.map(s =>
                 h(TmuxCard, {
@@ -920,8 +990,8 @@ function TmuxPanel({ tmuxSessions, fleet, onConnectTmux, connectingId, onNewSess
                   connecting: connectingId === `${s.machine}-${s.session_name || s.name}`,
                 })
               )
-            )
-          )
+            );
+          })
     ),
 
     h('div', {
@@ -1080,7 +1150,7 @@ function Header({ health, sessions, tmuxSessions, fleet, filter, onFilterChange,
       h('input', {
         type: 'text',
         className: 'form-input',
-        placeholder: 'Filter sessions…',
+        placeholder: 'Filter sessions & tmux…',
         value: filter,
         onChange: e => onFilterChange(e.target.value),
         style: { fontSize: '0.8rem', padding: '6px 12px' }
@@ -1133,6 +1203,8 @@ function Header({ health, sessions, tmuxSessions, fleet, filter, onFilterChange,
 
 // ─── Root App ─────────────────────────────────────────────────────────────────
 
+const COLLAPSE_KEY = 'claude-manager-collapse-state';
+
 function App() {
   const [sessions, setSessions]           = useState([]);
   const [tmuxSessions, setTmuxSessions]   = useState([]);
@@ -1147,6 +1219,18 @@ function App() {
   const [showModal, setShowModal]         = useState(false);
   const [loading, setLoading]             = useState(true);
   const [skipPermissions, setSkipPermissions] = useState(false);
+
+  // Collapse state: persisted to localStorage
+  const [collapseState, setCollapseState] = useState(() => {
+    try {
+      const saved = localStorage.getItem(COLLAPSE_KEY);
+      return saved ? JSON.parse(saved) : {};
+    } catch { return {}; }
+  });
+
+  useEffect(() => {
+    try { localStorage.setItem(COLLAPSE_KEY, JSON.stringify(collapseState)); } catch {}
+  }, [collapseState]);
 
   // ── WS message handler ───────────────────────────────────────────────────
   const handleWsMessage = useCallback((msg) => {
@@ -1312,6 +1396,35 @@ function App() {
     }
   }, [skipPermissions]);
 
+  // ── Collapse / Expand All ────────────────────────────────────────────────
+  const handleExpandAll = useCallback(() => {
+    // Collect all known machine and project keys from current data
+    const newState = {};
+    const machineNames = [...new Set(sessions.map(s => s.machine).filter(Boolean))];
+    const tmuxMachines = [...new Set(tmuxSessions.map(s => s.machine || 'unknown'))];
+    for (const m of machineNames) { newState[m] = true; }
+    for (const m of tmuxMachines) { newState[`tmux:${m}`] = true; }
+    // Project keys
+    for (const s of sessions) {
+      const path = s.cwd || s.project_path || '';
+      if (path && s.machine) { newState[`project:${s.machine}:${path}`] = true; }
+    }
+    setCollapseState(newState);
+  }, [sessions, tmuxSessions]);
+
+  const handleCollapseAll = useCallback(() => {
+    const newState = {};
+    const machineNames = [...new Set(sessions.map(s => s.machine).filter(Boolean))];
+    const tmuxMachines = [...new Set(tmuxSessions.map(s => s.machine || 'unknown'))];
+    for (const m of machineNames) { newState[m] = false; }
+    for (const m of tmuxMachines) { newState[`tmux:${m}`] = false; }
+    for (const s of sessions) {
+      const path = s.cwd || s.project_path || '';
+      if (path && s.machine) { newState[`project:${s.machine}:${path}`] = false; }
+    }
+    setCollapseState(newState);
+  }, [sessions, tmuxSessions]);
+
   // ── Tmux connect ──────────────────────────────────────────────────────────
   const handleConnectTmux = useCallback(async (session) => {
     const key = `${session.machine}-${session.session_name || session.name}`;
@@ -1378,14 +1491,35 @@ function App() {
               padding: '16px 16px 8px',
               borderBottom: '1px solid #21262d',
               flexShrink: 0,
+              display: 'flex', alignItems: 'center', gap: 8,
             }
           },
             h('span', {
               style: {
                 fontSize: '0.7rem', fontWeight: 700, letterSpacing: '0.08em',
-                textTransform: 'uppercase', color: '#484f58',
+                textTransform: 'uppercase', color: '#484f58', flex: 1,
               }
             }, 'Sessions'),
+            h('button', {
+              className: 'btn',
+              onClick: handleExpandAll,
+              title: 'Expand all sections',
+              style: {
+                background: 'none', border: '1px solid #30363d', borderRadius: 4,
+                color: '#8b949e', padding: '2px 8px', fontSize: '0.65rem',
+                fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap',
+              }
+            }, '▼ Expand'),
+            h('button', {
+              className: 'btn',
+              onClick: handleCollapseAll,
+              title: 'Collapse all sections',
+              style: {
+                background: 'none', border: '1px solid #30363d', borderRadius: 4,
+                color: '#8b949e', padding: '2px 8px', fontSize: '0.65rem',
+                fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap',
+              }
+            }, '▲ Collapse'),
           ),
           h('div', {
             style: { flex: 1, overflowY: 'auto', padding: '12px 16px' }
@@ -1410,6 +1544,9 @@ function App() {
                   launchingId,
                   tmuxLaunchingId,
                   skipPermissions,
+                  scanning,
+                  collapseState,
+                  setCollapseState,
                 }),
           ),
         ),
@@ -1457,6 +1594,10 @@ function App() {
                   onConnectTmux: handleConnectTmux,
                   connectingId,
                   onNewSession: () => setShowModal(true),
+                  filter,
+                  scanning,
+                  collapseState,
+                  setCollapseState,
                 }),
           ),
         ),

@@ -300,6 +300,10 @@ def scan_local(
         for jf in jsonl_files:
             try:
                 sess = parse_session(jf, project_path, folder_name, machine=machine)
+                # Prefer cwd from JSONL as the authoritative path — it avoids the
+                # lossy dash-to-slash decode ambiguity (e.g. "claude-manager" → "claude/manager").
+                if sess.cwd:
+                    sess.project_path = sess.cwd
                 all_sessions.append(sess)
             except Exception:
                 continue
@@ -401,7 +405,7 @@ if projects_dir.is_dir():
                 results.append({
                     'session_id': sid,
                     'project_folder': fn,
-                    'project_path': proj_path,
+                    'project_path': cwd if cwd else proj_path,
                     'cwd': cwd,
                     'slug': slug,
                     'summary': summary,
@@ -569,9 +573,18 @@ async def scan_all(
         info = FLEET_MACHINES[name]
         dispatch_port = info.get("dispatch_port")
         if dispatch_port:
-            tasks.append(asyncio.ensure_future(
-                scan_remote_via_api(name, info["ip"], dispatch_port)
-            ))
+            async def _api_with_ssh_fallback(
+                _name: str = name,
+                _ip: str = info["ip"],
+                _port: int = dispatch_port,
+                _ssh_alias: str = info["ssh_alias"],
+            ) -> list[ClaudeSession]:
+                sessions = await scan_remote_via_api(_name, _ip, _port)
+                if not sessions:
+                    # API failed or returned empty — fall back to SSH
+                    sessions = await scan_remote(_name, _ssh_alias)
+                return sessions
+            tasks.append(asyncio.ensure_future(_api_with_ssh_fallback()))
         else:
             tasks.append(asyncio.ensure_future(scan_remote(name, info["ssh_alias"])))
         labels.append(name)
