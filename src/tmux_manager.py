@@ -14,6 +14,9 @@ class TmuxSession:
     attached: bool
     is_local: bool
 
+    def to_dict(self) -> dict:
+        return asdict(self)
+
 
 def _unix_to_iso(ts_str: str) -> str:
     """Convert Unix timestamp string to ISO 8601 UTC string."""

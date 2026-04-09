@@ -17,7 +17,9 @@ from aiohttp import web
 
 from .config import DEFAULT_BIND, DEFAULT_PORT, SCAN_INTERVAL, detect_local_machine
 from .fleet import discover_fleet
+from .launcher import launch_claude_session, launch_tmux_attach
 from .scanner import ClaudeSession, scan_all
+from .tmux_manager import TmuxSession, list_all_tmux, create_tmux_session, kill_tmux_session
 
 log = logging.getLogger("claude_manager.server")
 
@@ -82,13 +84,16 @@ async def _background_scan(app: web.Application) -> None:
         try:
             fleet = await discover_fleet()
             sessions = await scan_all(local_machine, fleet)
+            tmux = await list_all_tmux(local_machine, fleet)
             app["state"]["fleet"] = fleet
             app["state"]["sessions"] = sessions
+            app["state"]["tmux"] = tmux
             app["state"]["last_scan"] = _now_iso()
 
             # Push to WebSocket subscribers
             await _push_to_ws(app, "sessions", [s.to_dict() for s in sessions])
             await _push_to_ws(app, "fleet", fleet)
+            await _push_to_ws(app, "tmux", [t.to_dict() for t in tmux])
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -198,11 +203,19 @@ async def handle_sessions_scan(request: web.Request) -> web.Response:
 
 
 async def handle_sessions_launch(request: web.Request) -> web.Response:
-    """Stub — Phase 2 will implement terminal launcher."""
-    return web.json_response(
-        {"ok": False, "error": "launch not implemented in Phase 1"},
-        status=501,
-    )
+    """Launch a terminal for a Claude Code session."""
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid JSON body"}, status=400)
+    machine = body.get("machine", "")
+    session_id = body.get("session_id", "")
+    cwd = body.get("cwd", "")
+    if not session_id or not cwd:
+        return web.json_response({"ok": False, "error": "session_id and cwd required"}, status=400)
+    result = await launch_claude_session(cwd, session_id, machine)
+    status = 200 if result.get("ok") else 500
+    return web.json_response(result, status=status)
 
 
 async def handle_fleet(request: web.Request) -> web.Response:
@@ -211,8 +224,62 @@ async def handle_fleet(request: web.Request) -> web.Response:
 
 
 async def handle_tmux(request: web.Request) -> web.Response:
-    """Stub — Phase 2 will implement tmux session listing."""
-    return web.json_response([])
+    """Return all tmux sessions across fleet."""
+    tmux: list[TmuxSession] = request.app["state"]["tmux"]
+    return web.json_response([t.to_dict() for t in tmux])
+
+
+async def handle_tmux_machine(request: web.Request) -> web.Response:
+    """Return tmux sessions for a specific machine."""
+    machine = request.match_info["machine"]
+    tmux: list[TmuxSession] = request.app["state"]["tmux"]
+    filtered = [t.to_dict() for t in tmux if t.machine == machine]
+    return web.json_response(filtered)
+
+
+async def handle_tmux_create(request: web.Request) -> web.Response:
+    """Create a new tmux session."""
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid JSON body"}, status=400)
+    machine = body.get("machine", "")
+    name = body.get("name", "")
+    if not machine or not name:
+        return web.json_response({"ok": False, "error": "machine and name required"}, status=400)
+    result = await create_tmux_session(machine, name, body.get("cwd"), body.get("command"))
+    status = 200 if result.get("ok") else 500
+    return web.json_response(result, status=status)
+
+
+async def handle_tmux_connect(request: web.Request) -> web.Response:
+    """Connect to an existing tmux session (opens terminal)."""
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid JSON body"}, status=400)
+    machine = body.get("machine", "")
+    session_name = body.get("session_name", "")
+    if not machine or not session_name:
+        return web.json_response({"ok": False, "error": "machine and session_name required"}, status=400)
+    result = await launch_tmux_attach(session_name, machine)
+    status = 200 if result.get("ok") else 500
+    return web.json_response(result, status=status)
+
+
+async def handle_tmux_kill(request: web.Request) -> web.Response:
+    """Kill a tmux session."""
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid JSON body"}, status=400)
+    machine = body.get("machine", "")
+    name = body.get("name", "")
+    if not machine or not name:
+        return web.json_response({"ok": False, "error": "machine and name required"}, status=400)
+    result = await kill_tmux_session(machine, name)
+    status = 200 if result.get("ok") else 500
+    return web.json_response(result, status=status)
 
 
 # ---------------------------------------------------------------------------
@@ -248,7 +315,7 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
                     elif channel == "fleet":
                         snap = state["fleet"]
                     elif channel == "tmux":
-                        snap = []
+                        snap = [t.to_dict() for t in state["tmux"]]
                     else:
                         snap = []
                     await ws.send_str(
@@ -306,6 +373,10 @@ def create_app(
     app.router.add_post("/api/sessions/launch", handle_sessions_launch)
     app.router.add_get("/api/fleet", handle_fleet)
     app.router.add_get("/api/tmux", handle_tmux)
+    app.router.add_get("/api/tmux/{machine}", handle_tmux_machine)
+    app.router.add_post("/api/tmux/create", handle_tmux_create)
+    app.router.add_post("/api/tmux/connect", handle_tmux_connect)
+    app.router.add_post("/api/tmux/kill", handle_tmux_kill)
 
     # WebSocket
     app.router.add_get("/ws", handle_ws)
