@@ -74,6 +74,28 @@ async def list_local_tmux() -> list[TmuxSession]:
     return _parse_tmux_lines(stdout.decode(), machine, is_local=True)
 
 
+async def list_remote_tmux_via_api(machine_name: str, ip: str, dispatch_port: int) -> list[TmuxSession]:
+    """Query dispatch daemon's /tmux endpoint."""
+    import aiohttp
+    url = f"http://{ip}:{dispatch_port}/tmux"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                if resp.status != 200:
+                    return []
+                data = await resp.json()
+                return [TmuxSession(
+                    name=item.get("name", ""),
+                    machine=machine_name,
+                    created=item.get("created", ""),
+                    windows=item.get("windows", 0),
+                    attached=item.get("attached", False),
+                    is_local=False,
+                ) for item in data]
+    except Exception:
+        return []
+
+
 async def list_remote_tmux(machine_name: str, ssh_alias: str, mux: str) -> list[TmuxSession]:
     """List tmux/psmux sessions on a remote machine via SSH."""
     fmt = "#{session_name}|#{session_created}|#{session_windows}|#{session_attached}"
@@ -145,9 +167,13 @@ async def list_all_tmux(local_machine: str, fleet_status: dict) -> list[TmuxSess
         status = fleet_status.get(machine_name, {})
         if not status.get("online", False):
             continue
-        ssh_alias = info.get("ssh_alias", machine_name)
-        mux = info.get("mux", "tmux")
-        tasks.append(list_remote_tmux(machine_name, ssh_alias, mux))
+        dispatch_port = info.get("dispatch_port")
+        if dispatch_port:
+            tasks.append(list_remote_tmux_via_api(machine_name, info["ip"], dispatch_port))
+        else:
+            ssh_alias = info.get("ssh_alias", machine_name)
+            mux = info.get("mux", "tmux")
+            tasks.append(list_remote_tmux(machine_name, ssh_alias, mux))
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
 

@@ -415,8 +415,12 @@ class TestListAllTmux:
             "windows-desktop": {"online": False},
         }
 
+        async def fake_list_remote_api(machine_name, ip, dispatch_port):
+            return [remote_session]
+
         with patch("src.tmux_manager.list_local_tmux", new=fake_list_local), \
-             patch("src.tmux_manager.list_remote_tmux", new=fake_list_remote):
+             patch("src.tmux_manager.list_remote_tmux", new=fake_list_remote), \
+             patch("src.tmux_manager.list_remote_tmux_via_api", new=fake_list_remote_api):
             sessions = await list_all_tmux("mac-mini", fleet_status)
 
         names = [s.name for s in sessions]
@@ -463,17 +467,25 @@ class TestListAllTmux:
             remote_call_machines.append(machine_name)
             return []
 
+        api_call_machines = []
+
+        async def fake_list_remote_api(machine_name, ip, dispatch_port):
+            api_call_machines.append(machine_name)
+            return []
+
         fleet_status = {
             "mac-mini": {"online": True},   # local machine — must be skipped
             "ubuntu-desktop": {"online": True},
         }
 
         with patch("src.tmux_manager.list_local_tmux", new=fake_list_local), \
-             patch("src.tmux_manager.list_remote_tmux", new=fake_list_remote):
+             patch("src.tmux_manager.list_remote_tmux", new=fake_list_remote), \
+             patch("src.tmux_manager.list_remote_tmux_via_api", new=fake_list_remote_api):
             await list_all_tmux("mac-mini", fleet_status)
 
-        assert "mac-mini" not in remote_call_machines
-        assert "ubuntu-desktop" in remote_call_machines
+        all_remote = remote_call_machines + api_call_machines
+        assert "mac-mini" not in all_remote
+        assert "ubuntu-desktop" in all_remote
 
     @pytest.mark.asyncio
     async def test_result_is_sorted_by_machine_then_name(self):
@@ -489,10 +501,14 @@ class TestListAllTmux:
         async def fake_list_remote(machine_name, ssh_alias, mux):
             return [_s("mid", "ubuntu-desktop")]
 
+        async def fake_list_remote_api(machine_name, ip, dispatch_port):
+            return [_s("mid", "ubuntu-desktop")]
+
         fleet_status = {"ubuntu-desktop": {"online": True}}
 
         with patch("src.tmux_manager.list_local_tmux", new=fake_list_local), \
-             patch("src.tmux_manager.list_remote_tmux", new=fake_list_remote):
+             patch("src.tmux_manager.list_remote_tmux", new=fake_list_remote), \
+             patch("src.tmux_manager.list_remote_tmux_via_api", new=fake_list_remote_api):
             sessions = await list_all_tmux("mac-mini", fleet_status)
 
         assert sessions[0].name == "aaa"

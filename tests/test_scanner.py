@@ -627,6 +627,7 @@ class TestScanAll:
 
         with (
             patch("src.scanner.scan_local", return_value=[local_sess]),
+            patch("src.scanner.scan_remote_via_api", AsyncMock(return_value=[remote_sess])),
             patch("src.scanner.scan_remote", AsyncMock(return_value=[remote_sess])),
         ):
             result = await scan_all(local_machine=None, fleet=fleet)

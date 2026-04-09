@@ -393,7 +393,44 @@ print(json.dumps(results))
 
 
 # ---------------------------------------------------------------------------
-# Remote scan
+# Remote scan via dispatch daemon API
+# ---------------------------------------------------------------------------
+
+async def scan_remote_via_api(machine_name: str, ip: str, dispatch_port: int) -> list[ClaudeSession]:
+    """Query the dispatch daemon's /sessions endpoint instead of SSH."""
+    import aiohttp
+    url = f"http://{ip}:{dispatch_port}/sessions"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status != 200:
+                    return []
+                data = await resp.json()
+                sessions = []
+                for item in data:
+                    s = ClaudeSession(
+                        session_id=item.get("session_id", ""),
+                        machine=machine_name,
+                        project_folder=item.get("project_folder", ""),
+                        project_path=item.get("project_path", ""),
+                        cwd=item.get("cwd", ""),
+                        slug=item.get("slug", ""),
+                        summary=item.get("summary", ""),
+                        messages=item.get("messages", 0),
+                        modified=item.get("modified", ""),
+                        status=item.get("status", "idle"),
+                        pid=item.get("pid"),
+                        file_size=item.get("file_size", 0),
+                        name=item.get("name", ""),
+                    )
+                    sessions.append(s)
+                return sessions
+    except Exception:
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Remote scan via SSH
 # ---------------------------------------------------------------------------
 
 async def scan_remote(
@@ -501,8 +538,14 @@ async def scan_all(
             continue
         if not health.get("online"):
             continue
-        ssh_alias = FLEET_MACHINES[name]["ssh_alias"]
-        tasks.append(asyncio.ensure_future(scan_remote(name, ssh_alias)))
+        info = FLEET_MACHINES[name]
+        dispatch_port = info.get("dispatch_port")
+        if dispatch_port:
+            tasks.append(asyncio.ensure_future(
+                scan_remote_via_api(name, info["ip"], dispatch_port)
+            ))
+        else:
+            tasks.append(asyncio.ensure_future(scan_remote(name, info["ssh_alias"])))
         labels.append(name)
 
     results = await asyncio.gather(*tasks, return_exceptions=True)

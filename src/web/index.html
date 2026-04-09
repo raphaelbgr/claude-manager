@@ -613,6 +613,44 @@ function MachineSection({ machine, children, defaultOpen = true, count }) {
   );
 }
 
+// ─── Project Section ──────────────────────────────────────────────────────────
+
+function ProjectSection({ projectPath, children, count, defaultOpen = true }) {
+  const [open, setOpen] = useState(defaultOpen);
+  const shortPath = shortenPath(projectPath) || projectPath || '(unknown)';
+
+  return h('div', { style: { marginLeft: 8, marginBottom: 4 } },
+    h('div', {
+      onClick: () => setOpen(o => !o),
+      style: {
+        display: 'flex', alignItems: 'center', gap: 6,
+        padding: '4px 8px', cursor: 'pointer',
+        borderRadius: 4, fontSize: '0.75rem',
+        transition: 'background 0.15s',
+      },
+      onMouseEnter: e => { e.currentTarget.style.background = '#161b22'; },
+      onMouseLeave: e => { e.currentTarget.style.background = 'transparent'; },
+    },
+      h('span', {
+        style: {
+          color: '#484f58', fontSize: '0.65rem', transition: 'transform 0.15s',
+          display: 'inline-block', transform: open ? 'rotate(90deg)' : 'rotate(0)',
+        }
+      }, '▶'),
+      h('span', {
+        style: { color: '#8b949e', fontFamily: 'monospace', fontSize: '0.75rem' }
+      }, shortPath),
+      h('span', {
+        style: {
+          background: '#161b22', color: '#484f58', fontSize: '0.6rem',
+          borderRadius: 10, padding: '1px 6px', marginLeft: 4,
+        }
+      }, count),
+    ),
+    open && h('div', { style: { paddingLeft: 4 } }, children),
+  );
+}
+
 // ─── New Tmux Modal ───────────────────────────────────────────────────────────
 
 function NewTmuxModal({ fleet, onClose, onCreated }) {
@@ -803,26 +841,43 @@ function SessionsPanel({ sessions, filter, onLaunch, onTmuxLaunch, launchingId, 
   }
 
   return h('div', null,
-    Object.entries(byMachine).map(([machine, machineSessions]) =>
-      h(MachineSection, {
+    Object.entries(byMachine).map(([machine, machineSessions]) => {
+      // Group by project_path within the machine, sorted by most recent modified
+      const byProject = groupBy(machineSessions, 'project_path');
+      const projectEntries = Object.entries(byProject).sort(([, a], [, b]) => {
+        const aMax = a.reduce((m, s) => s.modified > m ? s.modified : m, '');
+        const bMax = b.reduce((m, s) => s.modified > m ? s.modified : m, '');
+        return bMax > aMax ? 1 : bMax < aMax ? -1 : 0;
+      });
+
+      return h(MachineSection, {
         key: machine,
         machine,
         count: machineSessions.length,
         defaultOpen: true,
       },
-        machineSessions.map(s =>
-          h(SessionCard, {
-            key: s.session_id,
-            session: s,
-            onLaunch,
-            onTmuxLaunch,
-            launching: launchingId === s.session_id,
-            tmuxLaunching: tmuxLaunchingId === s.session_id,
-            skipPermissions,
-          })
+        projectEntries.map(([projectPath, projectSessions]) =>
+          h(ProjectSection, {
+            key: projectPath,
+            projectPath,
+            count: projectSessions.length,
+            defaultOpen: projectSessions.length <= 3,
+          },
+            projectSessions.map(s =>
+              h(SessionCard, {
+                key: s.session_id,
+                session: s,
+                onLaunch,
+                onTmuxLaunch,
+                launching: launchingId === s.session_id,
+                tmuxLaunching: tmuxLaunchingId === s.session_id,
+                skipPermissions,
+              })
+            )
+          )
         )
-      )
-    )
+      );
+    })
   );
 }
 
