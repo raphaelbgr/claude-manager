@@ -45,6 +45,8 @@ def run_desktop(bind: str = "localhost", port: int = 44740):
         tray_thread.start()
 
     # --- Open native window (this is the main event loop) ---
+    # Webview must use localhost (not 0.0.0.0 which browsers can't resolve)
+    local_url = f"http://localhost:{port}"
     print(f"claude-manager native window — API at {base_url}")
 
     # Dark loading page shown instantly while React loads from CDN
@@ -62,8 +64,8 @@ def run_desktop(bind: str = "localhost", port: int = 44740):
         (async function() {{
             for (let i = 0; i < 30; i++) {{
                 try {{
-                    const r = await fetch('{base_url}/health');
-                    if (r.ok) {{ window.location = '{base_url}'; return; }}
+                    const r = await fetch('{local_url}/health');
+                    if (r.ok) {{ window.location = '{local_url}'; return; }}
                 }} catch(e) {{}}
                 await new Promise(r => setTimeout(r, 500));
             }}
@@ -125,7 +127,7 @@ def _run_server(bind: str, port: int):
             # Port in use — check if it's already our server
             import urllib.request
             try:
-                resp = urllib.request.urlopen(f"http://{bind}:{port}/health", timeout=2)
+                resp = urllib.request.urlopen(f"http://localhost:{port}/health", timeout=2)
                 if resp.status == 200:
                     print(f"Server already running on port {port}, connecting to it")
                     return  # Let the webview connect to the existing server
