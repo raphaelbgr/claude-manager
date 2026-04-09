@@ -855,6 +855,35 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
   const [browsePath, setBrowsePath] = useState('');
   const [browseDirs, setBrowseDirs] = useState([]);
   const [browseLoading, setBrowseLoading] = useState(false);
+  const [drives, setDrives] = useState([]);
+  const [drivesCache, setDrivesCache] = useState({});
+  const [newFolderMode, setNewFolderMode] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [newFolderCreating, setNewFolderCreating] = useState(false);
+  const prevMachineRef = useRef(machine);
+
+  const fetchDrives = async (m) => {
+    if (drivesCache[m]) {
+      setDrives(drivesCache[m]);
+      return drivesCache[m];
+    }
+    try {
+      const res = await fetch('/api/drives', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ machine: m }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setDrives(data.drives);
+        setDrivesCache(prev => ({ ...prev, [m]: data.drives }));
+        return data.drives;
+      }
+    } catch (e) {
+      // silently ignore — drives are optional
+    }
+    return [];
+  };
 
   const fetchDirs = async (path) => {
     setBrowseLoading(true);
@@ -878,12 +907,54 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
     }
   };
 
+  // When machine changes while browser is open — reset and re-fetch
+  useEffect(() => {
+    if (browseOpen && machine !== prevMachineRef.current) {
+      prevMachineRef.current = machine;
+      setDrives([]);
+      fetchDrives(machine);
+      fetchDirs('');
+    }
+    prevMachineRef.current = machine;
+  }, [machine, browseOpen]);
+
   const handleBrowseToggle = async () => {
     if (browseOpen) {
       setBrowseOpen(false);
+      setNewFolderMode(false);
+      setNewFolderName('');
     } else {
       setBrowseOpen(true);
-      await fetchDirs(cwd || '');
+      await Promise.all([fetchDrives(machine), fetchDirs(cwd || '')]);
+    }
+  };
+
+  const handleCreateFolder = async () => {
+    const name = newFolderName.trim();
+    if (!name) return;
+    const sep = browsePath.endsWith('/') || browsePath.endsWith('\\') ? '' : '/';
+    const newPath = browsePath + sep + name;
+    setNewFolderCreating(true);
+    try {
+      const res = await fetch('/api/mkdir', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ machine, path: newPath }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setNewFolderMode(false);
+        setNewFolderName('');
+        await fetchDirs(browsePath);
+        // auto-select the new folder
+        setCwd(data.path);
+      } else {
+        toast(data.error || 'Failed to create folder', 'error');
+      }
+    } catch (e) {
+      toast('Network error creating folder', 'error');
+    } finally {
+      setNewFolderCreating(false);
     }
   };
 
@@ -1003,6 +1074,38 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
               overflow: 'hidden',
             }
           },
+            // Drive picker row
+            drives.length > 0 && h('div', {
+              style: {
+                padding: '6px 12px',
+                background: '#0d1117',
+                borderBottom: '1px solid #30363d',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+              }
+            },
+              h('span', { style: { fontSize: '0.75rem', color: '#8b949e', flexShrink: 0 } }, 'Drive:'),
+              h('select', {
+                value: drives.find(d => browsePath.startsWith(d.path))?.path || (drives.find(d => d.is_system)?.path || ''),
+                onChange: e => fetchDirs(e.target.value),
+                style: {
+                  flex: 1,
+                  background: '#161b22',
+                  color: '#e6edf3',
+                  border: '1px solid #30363d',
+                  borderRadius: 4,
+                  padding: '3px 6px',
+                  fontSize: '0.78rem',
+                  cursor: 'pointer',
+                },
+              },
+                drives.map(d => h('option', { key: d.path, value: d.path },
+                  `\uD83D\uDCBF ${d.is_system ? '\u2605 ' : ''}${d.label} (${d.path}) \u2014 ${d.free_gb} GB free`
+                ))
+              ),
+            ),
+            // Path bar with New Folder button
             h('div', {
               style: {
                 padding: '8px 12px',
@@ -1018,8 +1121,86 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
             },
               '\uD83D\uDCC1 ',
               browseLoading
-                ? h('span', { style: { color: '#8b949e' } }, 'Loading…')
-                : h('span', null, browsePath || '~'),
+                ? h('span', { style: { color: '#8b949e' } }, 'Loading\u2026')
+                : h('span', { style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, browsePath || '~'),
+              !browseLoading && !newFolderMode && h('button', {
+                type: 'button',
+                onClick: () => { setNewFolderMode(true); setNewFolderName(''); },
+                style: {
+                  background: '#21262d',
+                  color: '#e6edf3',
+                  border: '1px solid #30363d',
+                  borderRadius: 4,
+                  padding: '2px 8px',
+                  fontSize: '0.72rem',
+                  cursor: 'pointer',
+                  flexShrink: 0,
+                  whiteSpace: 'nowrap',
+                }
+              }, '+ New Folder'),
+            ),
+            // Inline new-folder input
+            newFolderMode && h('div', {
+              style: {
+                padding: '6px 12px',
+                background: '#0d1117',
+                borderBottom: '1px solid #30363d',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+              }
+            },
+              h('span', { style: { fontSize: '0.82rem' } }, '\uD83D\uDCC1'),
+              h('input', {
+                type: 'text',
+                autoFocus: true,
+                placeholder: 'new-folder-name',
+                value: newFolderName,
+                onChange: e => setNewFolderName(e.target.value),
+                onKeyDown: e => {
+                  if (e.key === 'Enter') handleCreateFolder();
+                  if (e.key === 'Escape') { setNewFolderMode(false); setNewFolderName(''); }
+                },
+                style: {
+                  flex: 1,
+                  background: '#161b22',
+                  color: '#e6edf3',
+                  border: '1px solid #30363d',
+                  borderRadius: 4,
+                  padding: '3px 8px',
+                  fontSize: '0.82rem',
+                  fontFamily: 'monospace',
+                },
+              }),
+              h('button', {
+                type: 'button',
+                onClick: handleCreateFolder,
+                disabled: newFolderCreating || !newFolderName.trim(),
+                style: {
+                  background: '#238636',
+                  color: '#e6edf3',
+                  border: 'none',
+                  borderRadius: 4,
+                  padding: '3px 10px',
+                  fontSize: '0.78rem',
+                  cursor: 'pointer',
+                  flexShrink: 0,
+                }
+              }, newFolderCreating ? '\u2026' : '\u2713'),
+              h('button', {
+                type: 'button',
+                onClick: () => { setNewFolderMode(false); setNewFolderName(''); },
+                style: {
+                  background: '#21262d',
+                  color: '#e6edf3',
+                  border: '1px solid #30363d',
+                  borderRadius: 4,
+                  padding: '3px 8px',
+                  fontSize: '0.78rem',
+                  cursor: 'pointer',
+                  flexShrink: 0,
+                }
+              }, '\u2717'),
             ),
             h('div', {
               style: {
@@ -1030,8 +1211,12 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
             },
               !browseLoading && browsePath && h('div', {
                 onClick: async () => {
-                  const parent = browsePath.split('/').slice(0, -1).join('/') || '/';
-                  await fetchDirs(parent);
+                  // Handle both Unix and Windows paths
+                  const sep = browsePath.includes('\\') ? '\\' : '/';
+                  const parts = browsePath.split(sep).filter(Boolean);
+                  parts.pop();
+                  const parent = parts.length === 0 ? sep : (browsePath.startsWith('/') ? '/' : '') + parts.join(sep);
+                  await fetchDirs(parent || sep);
                 },
                 style: {
                   padding: '6px 14px',
@@ -1068,7 +1253,7 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
               ),
               browseLoading && h('div', {
                 style: { padding: '12px 14px', color: '#8b949e', fontSize: '0.82rem' }
-              }, 'Loading…'),
+              }, 'Loading\u2026'),
             ),
             h('div', {
               style: {
@@ -1083,6 +1268,8 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
                 onClick: () => {
                   if (browsePath) setCwd(browsePath);
                   setBrowseOpen(false);
+                  setNewFolderMode(false);
+                  setNewFolderName('');
                 },
                 style: {
                   background: '#1f6feb',

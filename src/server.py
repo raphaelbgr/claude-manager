@@ -331,6 +331,263 @@ async def handle_tmux_kill(request: web.Request) -> web.Response:
 # Preferences handlers
 # ---------------------------------------------------------------------------
 
+def _get_local_drive(path: str) -> str:
+    """Return the mount point / drive root that contains the given path."""
+    import sys as _sys
+    import pathlib as _pathlib
+    if _sys.platform == "win32":
+        return _pathlib.Path(path).anchor  # e.g. "C:\"
+    # Unix: find longest matching mountpoint
+    try:
+        import psutil as _psutil
+        parts = _psutil.disk_partitions(all=False)
+        mounts = sorted([p.mountpoint for p in parts], key=len, reverse=True)
+        for mp in mounts:
+            if path.startswith(mp):
+                return mp
+    except Exception:
+        pass
+    return "/"
+
+
+def _get_local_drives() -> list[dict]:
+    """Return list of drives/volumes on the local machine."""
+    import sys as _sys
+    import psutil as _psutil
+
+    _SKIP = {"devfs", "autofs", "tmpfs", "sysfs", "proc", "cgroup", "overlay",
+              "squashfs", "efivarfs", "securityfs", "pstore", "bpf", "tracefs",
+              "debugfs", "hugetlbfs", "mqueue", "fusectl", "configfs"}
+
+    drives = []
+    seen = set()
+    for part in _psutil.disk_partitions(all=False):
+        mp = part.mountpoint
+        if mp in seen:
+            continue
+        if part.fstype in _SKIP:
+            continue
+        # Skip macOS system/virtual mounts
+        if _sys.platform == "darwin":
+            if mp.startswith("/dev") or mp.startswith("/private/var/vm"):
+                continue
+        # Skip Linux virtual/system mounts
+        if _sys.platform.startswith("linux"):
+            skip_prefixes = ("/proc", "/sys", "/dev", "/run", "/snap")
+            if any(mp.startswith(pf) for pf in skip_prefixes):
+                continue
+        try:
+            usage = _psutil.disk_usage(mp)
+        except Exception:
+            continue
+        seen.add(mp)
+        # Derive a short name
+        if _sys.platform == "win32":
+            name = part.device.rstrip("\\")  # "C:", "D:", etc.
+            label = name
+        elif mp == "/":
+            name = "Macintosh HD" if _sys.platform == "darwin" else "Root"
+            label = name
+        else:
+            name = mp.rstrip("/").split("/")[-1] or mp
+            label = name
+        is_system = (mp == "/") or (_sys.platform == "win32" and part.device.upper().startswith("C:"))
+        drives.append({
+            "path": mp,
+            "name": name,
+            "label": label,
+            "total_gb": round(usage.total / 1e9, 1),
+            "free_gb": round(usage.free / 1e9, 1),
+            "is_system": is_system,
+        })
+
+    drives.sort(key=lambda d: (not d["is_system"], d["path"]))
+    return drives
+
+
+async def handle_drives(request: web.Request) -> web.Response:
+    """List drives/volumes on a machine."""
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid JSON body"}, status=400)
+
+    machine = body.get("machine", "")
+    from .config import FLEET_MACHINES
+    local_machine = request.app["local_machine"]
+    is_local = (not machine) or (machine == local_machine)
+
+    if is_local:
+        try:
+            drives = _get_local_drives()
+            return web.json_response({"ok": True, "drives": drives})
+        except Exception as exc:
+            log.exception("local drives failed")
+            return web.json_response({"ok": False, "error": str(exc)}, status=500)
+
+    info = FLEET_MACHINES.get(machine)
+    if not info:
+        return web.json_response({"ok": False, "error": f"Unknown machine: {machine}"}, status=400)
+    ssh_alias = info.get("ssh_alias", machine)
+
+    py_script = r"""
+import json, sys
+try:
+    import psutil
+    SKIP = {"devfs","autofs","tmpfs","sysfs","proc","cgroup","overlay","squashfs",
+            "efivarfs","securityfs","pstore","bpf","tracefs","debugfs","hugetlbfs",
+            "mqueue","fusectl","configfs"}
+    drives = []
+    seen = set()
+    for part in psutil.disk_partitions(all=False):
+        mp = part.mountpoint
+        if mp in seen or part.fstype in SKIP:
+            continue
+        if sys.platform == "darwin" and (mp.startswith("/dev") or mp.startswith("/private/var/vm")):
+            continue
+        if sys.platform.startswith("linux"):
+            if any(mp.startswith(pf) for pf in ("/proc","/sys","/dev","/run","/snap")):
+                continue
+        try:
+            u = psutil.disk_usage(mp)
+        except Exception:
+            continue
+        seen.add(mp)
+        if sys.platform == "win32":
+            name = part.device.rstrip("\\")
+        elif mp == "/":
+            name = "Macintosh HD" if sys.platform == "darwin" else "Root"
+        else:
+            name = mp.rstrip("/").split("/")[-1] or mp
+        is_sys = (mp == "/") or (sys.platform == "win32" and part.device.upper().startswith("C:"))
+        drives.append({"path": mp, "name": name, "label": name,
+                       "total_gb": round(u.total/1e9, 1), "free_gb": round(u.free/1e9, 1),
+                       "is_system": is_sys})
+    drives.sort(key=lambda d: (not d["is_system"], d["path"]))
+    print(json.dumps({"drives": drives}))
+except ImportError:
+    # fallback: df -h
+    import subprocess, re
+    lines = subprocess.check_output(["df","-Pl"], text=True).splitlines()[1:]
+    drives = []
+    for ln in lines:
+        parts = ln.split()
+        if len(parts) < 6:
+            continue
+        mp = parts[5]
+        if any(mp.startswith(pf) for pf in ("/proc","/sys","/dev","/run")):
+            continue
+        try:
+            total = int(parts[1]) * 1024
+            avail = int(parts[3]) * 1024
+        except Exception:
+            continue
+        name = "Root" if mp == "/" else mp.rstrip("/").split("/")[-1] or mp
+        drives.append({"path": mp, "name": name, "label": name,
+                       "total_gb": round(total/1e9, 1), "free_gb": round(avail/1e9, 1),
+                       "is_system": mp == "/"})
+    drives.sort(key=lambda d: (not d["is_system"], d["path"]))
+    print(json.dumps({"drives": drives}))
+"""
+
+    proc = await asyncio.create_subprocess_exec(
+        "ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", ssh_alias,
+        "python3", "-",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(input=py_script.encode()), timeout=15)
+    except asyncio.TimeoutError:
+        proc.kill()
+        return web.json_response({"ok": False, "error": "SSH timeout"}, status=504)
+
+    if proc.returncode != 0:
+        err = stderr.decode().strip()
+        return web.json_response({"ok": False, "error": err or "SSH command failed"}, status=500)
+
+    try:
+        result = json.loads(stdout.decode().strip())
+        result["ok"] = True
+        return web.json_response(result)
+    except Exception as exc:
+        return web.json_response({"ok": False, "error": f"Parse error: {exc}"}, status=500)
+
+
+async def handle_mkdir(request: web.Request) -> web.Response:
+    """Create a new folder (one level only) on a machine."""
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid JSON body"}, status=400)
+
+    machine = body.get("machine", "")
+    path = body.get("path", "")
+
+    if not path:
+        return web.json_response({"ok": False, "error": "path required"}, status=400)
+
+    from .config import FLEET_MACHINES
+    local_machine = request.app["local_machine"]
+    is_local = (not machine) or (machine == local_machine)
+
+    if is_local:
+        import pathlib as _pathlib
+        try:
+            p = _pathlib.Path(path)
+            if not p.is_absolute():
+                return web.json_response({"ok": False, "error": "path must be absolute"}, status=400)
+            if p == p.parent:
+                return web.json_response({"ok": False, "error": "cannot create root"}, status=400)
+            if not p.parent.exists():
+                return web.json_response({"ok": False, "error": f"Parent does not exist: {p.parent}"}, status=400)
+            if p.exists():
+                return web.json_response({"ok": False, "error": f"Already exists: {p}"}, status=409)
+            p.mkdir(parents=False, exist_ok=False)
+            return web.json_response({"ok": True, "path": str(p)})
+        except PermissionError as exc:
+            return web.json_response({"ok": False, "error": f"Permission denied: {exc}"}, status=403)
+        except Exception as exc:
+            return web.json_response({"ok": False, "error": str(exc)}, status=500)
+
+    info = FLEET_MACHINES.get(machine)
+    if not info:
+        return web.json_response({"ok": False, "error": f"Unknown machine: {machine}"}, status=400)
+    ssh_alias = info.get("ssh_alias", machine)
+
+    escaped = path.replace("'", "\\'")
+    py_script = (
+        "import pathlib,sys;"
+        f"p=pathlib.Path('{escaped}');"
+        "assert p.is_absolute(), 'path must be absolute';"
+        "assert p!=p.parent, 'cannot create root';"
+        "assert p.parent.exists(), f'Parent does not exist: {{p.parent}}';"
+        "assert not p.exists(), f'Already exists: {{p}}';"
+        "p.mkdir(parents=False,exist_ok=False);"
+        "print('ok')"
+    )
+
+    proc = await asyncio.create_subprocess_exec(
+        "ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", ssh_alias,
+        "python3", "-",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(input=py_script.encode()), timeout=10)
+    except asyncio.TimeoutError:
+        proc.kill()
+        return web.json_response({"ok": False, "error": "SSH timeout"}, status=504)
+
+    if proc.returncode != 0:
+        err = stderr.decode().strip()
+        return web.json_response({"ok": False, "error": err or "SSH mkdir failed"}, status=500)
+
+    return web.json_response({"ok": True, "path": path})
+
+
 async def handle_browse(request: web.Request) -> web.Response:
     """Browse directories on a given machine."""
     try:
@@ -362,10 +619,12 @@ async def handle_browse(request: web.Request) -> web.Response:
                 dirs = [{"name": d.name, "path": str(d)} for d in entries[:200]]
             except PermissionError as pe:
                 return web.json_response({"ok": False, "error": f"Permission denied: {pe}"}, status=403)
+            drive = _get_local_drive(str(p))
             return web.json_response({
                 "ok": True,
                 "path": str(p),
                 "parent": str(p.parent),
+                "drive": drive,
                 "dirs": dirs,
             })
         except Exception as exc:
@@ -390,7 +649,13 @@ async def handle_browse(request: web.Request) -> web.Response:
         f"p={py_expr}.expanduser().resolve();"
         "assert p.exists() and p.is_dir();"
         "dirs=sorted([{'name':d.name,'path':str(d)} for d in p.iterdir() if d.is_dir() and not d.name.startswith('.')],key=lambda x:x['name'])[:200];"
-        "print(json.dumps({'path':str(p),'parent':str(p.parent),'dirs':dirs}))"
+        "drive='/';"
+        "try:\n"
+        " import psutil\n"
+        " mps=sorted([pt.mountpoint for pt in psutil.disk_partitions(all=False)],key=len,reverse=True)\n"
+        " drive=next((m for m in mps if str(p).startswith(m)),'/') \n"
+        "except Exception: pass\n"
+        "print(json.dumps({'path':str(p),'parent':str(p.parent),'drive':drive,'dirs':dirs}))"
     )
 
     proc = await asyncio.create_subprocess_exec(
@@ -604,6 +869,8 @@ def create_app(
     app.router.add_post("/api/tmux/connect-remote", handle_tmux_connect_remote)
     app.router.add_post("/api/tmux/kill", handle_tmux_kill)
     app.router.add_post("/api/browse", handle_browse)
+    app.router.add_post("/api/drives", handle_drives)
+    app.router.add_post("/api/mkdir", handle_mkdir)
     app.router.add_get("/api/preferences", handle_preferences_get)
     app.router.add_post("/api/preferences", handle_preferences_post)
 
