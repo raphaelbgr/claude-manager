@@ -1,0 +1,4 @@
+#!/bin/bash
+cd "$(dirname "$0")/../../../../"
+source .venv/bin/activate 2>/dev/null
+exec python3 -m src.main 2>/dev/null
