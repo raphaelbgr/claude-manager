@@ -1,10 +1,13 @@
 """Tmux/psmux session management across fleet machines."""
 import asyncio
+import logging
 import shlex
 from dataclasses import dataclass, asdict
 from .command_adapter import get_adapter
 from .config import FLEET_MACHINES, detect_local_machine, SSH_TIMEOUT
 from .mux_parser import parse_mux_output
+
+log = logging.getLogger("claude_manager.tmux_manager")
 
 
 @dataclass
@@ -76,7 +79,8 @@ async def list_remote_tmux_via_api(machine_name: str, ip: str, dispatch_port: in
                     attached=item.get("attached", False),
                     is_local=False,
                 ) for item in data]
-    except Exception:
+    except Exception as exc:
+        log.warning("list_remote_tmux(%s): api failed: %s", machine_name, exc)
         return []
 
 
@@ -114,7 +118,9 @@ async def list_remote_tmux(machine_name: str, ssh_alias: str, mux: str) -> list[
             return []
         parsed = parse_mux_output(out)
 
-    return _dicts_to_sessions(parsed, machine_name, is_local=False)
+    sessions = _dicts_to_sessions(parsed, machine_name, is_local=False)
+    log.info("list_remote_tmux(%s): %d sessions", machine_name, len(sessions))
+    return sessions
 
 
 async def list_all_tmux(local_machine: str, fleet_status: dict) -> list[TmuxSession]:
@@ -198,7 +204,10 @@ async def create_tmux_session(
             )
             _, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
             if proc.returncode != 0:
-                return {"ok": False, "error": stderr.decode().strip()}
+                err = stderr.decode().strip()
+                log.error("create_tmux_session(%s, %s): %s", machine, name, err)
+                return {"ok": False, "error": err}
+            log.info("create_tmux_session(%s, %s): ok", machine, name)
             return {"ok": True}
         else:
             # Remote: use create + send-keys approach (avoids quoting hell over SSH).
@@ -222,6 +231,7 @@ async def create_tmux_session(
             if proc.returncode != 0:
                 err = stderr.decode().strip()
                 if err:
+                    log.error("create_tmux_session(%s, %s): %s", machine, name, err)
                     return {"ok": False, "error": err}
 
             # Step 2: Send the command via send-keys (reliable, no quoting issues).
@@ -237,10 +247,13 @@ async def create_tmux_session(
                 )
                 await asyncio.wait_for(proc.communicate(), timeout=15)
 
+            log.info("create_tmux_session(%s, %s): ok", machine, name)
             return {"ok": True, "machine": machine, "session": name}
     except asyncio.TimeoutError:
+        log.error("create_tmux_session(%s, %s): timed out", machine, name)
         return {"ok": False, "error": "Timed out"}
     except OSError as exc:
+        log.error("create_tmux_session(%s, %s): %s", machine, name, exc)
         return {"ok": False, "error": str(exc)}
 
 
@@ -268,7 +281,9 @@ async def kill_tmux_session(machine: str, name: str) -> dict:
             )
             _, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
             if proc.returncode != 0:
-                return {"ok": False, "error": stderr.decode().strip()}
+                err = stderr.decode().strip()
+                log.warning("kill_tmux_session(%s, %s): %s", machine, name, err)
+                return {"ok": False, "error": err}
             return {"ok": True}
         else:
             adapter = get_adapter(machine)
@@ -288,9 +303,13 @@ async def kill_tmux_session(machine: str, name: str) -> dict:
             )
             _, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
             if proc.returncode != 0:
-                return {"ok": False, "error": stderr.decode().strip()}
+                err = stderr.decode().strip()
+                log.warning("kill_tmux_session(%s, %s): %s", machine, name, err)
+                return {"ok": False, "error": err}
             return {"ok": True}
     except asyncio.TimeoutError:
+        log.warning("kill_tmux_session(%s, %s): timed out", machine, name)
         return {"ok": False, "error": "Timed out"}
     except OSError as exc:
+        log.error("kill_tmux_session(%s, %s): %s", machine, name, exc)
         return {"ok": False, "error": str(exc)}

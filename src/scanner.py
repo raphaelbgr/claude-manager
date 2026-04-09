@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -24,6 +25,8 @@ from pathlib import Path
 from typing import Any
 
 import psutil
+
+log = logging.getLogger("claude_manager.scanner")
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +154,7 @@ def parse_session(
         if slug and first_message:
             break
 
+    log.debug("parse_session(%s): %d messages", file_path.name, line_count)
     return ClaudeSession(
         session_id=session_id,
         machine=machine,
@@ -317,6 +321,7 @@ def scan_local(
 
     _mark_active_sessions(all_sessions, active_pids, session_names)
     all_sessions.sort(key=lambda s: s.modified, reverse=True)
+    log.info("scan_local: found %d sessions", len(all_sessions))
     return all_sessions
 
 
@@ -467,8 +472,10 @@ async def scan_remote_via_api(machine_name: str, ip: str, dispatch_port: int) ->
                         subprocess_count=item.get("subprocess_count", 0),
                     )
                     sessions.append(s)
+                log.info("scan_remote(%s): %d sessions via api", machine_name, len(sessions))
                 return sessions
-    except Exception:
+    except Exception as exc:
+        log.warning("scan_remote(%s): api failed: %s", machine_name, exc)
         return []
 
 
@@ -508,16 +515,20 @@ async def scan_remote(
             timeout=30,
         )
     except asyncio.TimeoutError:
+        log.warning("scan_remote(%s): SSH timed out", machine_name)
         return []
-    except Exception:
+    except Exception as exc:
+        log.warning("scan_remote(%s): failed: %s", machine_name, exc)
         return []
 
     if proc.returncode != 0:
+        log.warning("scan_remote(%s): SSH exited %d", machine_name, proc.returncode)
         return []
 
     try:
         raw_list: list[dict] = json.loads(stdout.decode("utf-8", errors="replace"))
     except json.JSONDecodeError:
+        log.warning("scan_remote(%s): JSON parse error", machine_name)
         return []
 
     sessions: list[ClaudeSession] = []
@@ -544,6 +555,7 @@ async def scan_remote(
         except (KeyError, TypeError):
             continue
 
+    log.info("scan_remote(%s): %d sessions via ssh", machine_name, len(sessions))
     return sessions
 
 

@@ -14,6 +14,7 @@ import pathlib
 import platform
 import subprocess
 import time
+from collections import deque
 from datetime import datetime, timezone
 from typing import Any
 
@@ -33,13 +34,42 @@ def _save_prefs(prefs: dict) -> None:
 from aiohttp import web
 
 from .command_adapter import get_adapter
-from .config import DEFAULT_BIND, DEFAULT_PORT, SCAN_INTERVAL, detect_local_machine
+from .config import DEFAULT_BIND, DEFAULT_PORT, FLEET_MACHINES, SCAN_INTERVAL, detect_local_machine
 from .fleet import discover_fleet
 from .launcher import launch_claude_session, launch_tmux_attach, launch_tmux_attach_remote, launch_new_tmux_and_attach, launch_terminal
 from .scanner import ClaudeSession, scan_all
 from .tmux_manager import TmuxSession, list_all_tmux, create_tmux_session, kill_tmux_session
 
 log = logging.getLogger("claude_manager.server")
+
+
+# ---------------------------------------------------------------------------
+# In-memory log ring buffer
+# ---------------------------------------------------------------------------
+
+class MemoryLogHandler(logging.Handler):
+    """Captures log records in a ring buffer for the /api/logs endpoint."""
+
+    def __init__(self, max_entries: int = 500):
+        super().__init__()
+        self.buffer: deque[dict] = deque(maxlen=max_entries)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            self.buffer.append({
+                "timestamp": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
+                "level": record.levelname,
+                "module": record.name.split(".")[-1],
+                "message": self.format(record),
+            })
+        except Exception:
+            pass
+
+    def get_logs(self, limit: int = 100, level: str | None = None) -> list[dict]:
+        logs = list(self.buffer)
+        if level:
+            logs = [l for l in logs if l["level"] == level.upper()]
+        return logs[-limit:]
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +129,7 @@ async def _background_scan(app: web.Application) -> None:
     """
     local_machine = app["local_machine"]
     while True:
+        t0 = time.monotonic()
         try:
             fleet = await discover_fleet()
             sessions = await scan_all(local_machine, fleet)
@@ -107,6 +138,11 @@ async def _background_scan(app: web.Application) -> None:
             app["state"]["sessions"] = sessions
             app["state"]["tmux"] = tmux
             app["state"]["last_scan"] = _now_iso()
+            elapsed = time.monotonic() - t0
+            log.info(
+                "background_scan: %d sessions, %d tmux, %d fleet machines in %.2fs",
+                len(sessions), len(tmux), len(fleet), elapsed,
+            )
 
             # Push to WebSocket subscribers
             await _push_to_ws(app, "sessions", [s.to_dict() for s in sessions])
@@ -200,6 +236,7 @@ async def handle_sessions_scan(request: web.Request) -> web.Response:
     """Force an immediate rescan and return fresh results."""
     app = request.app
     local_machine = app["local_machine"]
+    t0 = time.monotonic()
     try:
         fleet = await discover_fleet()
         sessions = await scan_all(local_machine, fleet)
@@ -211,6 +248,7 @@ async def handle_sessions_scan(request: web.Request) -> web.Response:
         await _push_to_ws(app, "sessions", [s.to_dict() for s in sessions])
         await _push_to_ws(app, "fleet", fleet)
         await _push_to_ws(app, "tmux", [t.to_dict() for t in tmux])
+        log.info("POST /api/sessions/scan: %d sessions, %.2fs", len(sessions), time.monotonic() - t0)
         return web.json_response(
             {
                 "ok": True,
@@ -220,7 +258,7 @@ async def handle_sessions_scan(request: web.Request) -> web.Response:
             }
         )
     except Exception as exc:
-        log.exception("forced scan failed")
+        log.exception("POST /api/sessions/scan: failed after %.2fs: %s", time.monotonic() - t0, exc)
         return web.json_response({"ok": False, "error": str(exc)}, status=500)
 
 
@@ -237,6 +275,7 @@ async def handle_sessions_launch(request: web.Request) -> web.Response:
         return web.json_response({"ok": False, "error": "session_id and cwd required"}, status=400)
     skip = body.get("skip_permissions", False)
     mode = body.get("mode", "terminal")
+    t0 = time.monotonic()
     if mode == "tmux":
         import re
         adapter = get_adapter(machine)
@@ -273,6 +312,11 @@ async def handle_sessions_launch(request: web.Request) -> web.Response:
     else:
         result = await launch_claude_session(cwd, session_id, machine, skip_permissions=skip)
     status = 200 if result.get("ok") else 500
+    elapsed = time.monotonic() - t0
+    if result.get("ok"):
+        log.info("POST /api/sessions/launch machine=%s mode=%s %d %.2fs", machine, mode, status, elapsed)
+    else:
+        log.error("POST /api/sessions/launch machine=%s mode=%s %d %.2fs: %s", machine, mode, status, elapsed, result.get("error"))
     # If tmux mode succeeded, refresh the tmux list immediately
     if mode == "tmux" and result.get("ok"):
         try:
@@ -318,11 +362,14 @@ async def handle_tmux_create(request: web.Request) -> web.Response:
     result = await create_tmux_session(machine, name, body.get("cwd"), body.get("command"))
     status = 200 if result.get("ok") else 500
     if result.get("ok"):
+        log.info("POST /api/tmux/create machine=%s name=%s %d", machine, name, status)
         local_machine = request.app["local_machine"]
         fleet = request.app["state"]["fleet"]
         tmux = await list_all_tmux(local_machine, fleet)
         request.app["state"]["tmux"] = tmux
         await _push_to_ws(request.app, "tmux", [t.to_dict() for t in tmux])
+    else:
+        log.error("POST /api/tmux/create machine=%s name=%s %d: %s", machine, name, status, result.get("error"))
     return web.json_response(result, status=status)
 
 
@@ -338,6 +385,10 @@ async def handle_tmux_connect(request: web.Request) -> web.Response:
         return web.json_response({"ok": False, "error": "machine and session_name required"}, status=400)
     result = await launch_tmux_attach(session_name, machine)
     status = 200 if result.get("ok") else 500
+    if result.get("ok"):
+        log.info("POST /api/tmux/connect machine=%s session=%s %d", machine, session_name, status)
+    else:
+        log.error("POST /api/tmux/connect machine=%s session=%s %d: %s", machine, session_name, status, result.get("error"))
     return web.json_response(result, status=status)
 
 
@@ -369,11 +420,14 @@ async def handle_tmux_kill(request: web.Request) -> web.Response:
     result = await kill_tmux_session(machine, name)
     status = 200 if result.get("ok") else 500
     if result.get("ok"):
+        log.info("POST /api/tmux/kill machine=%s name=%s %d", machine, name, status)
         local_machine = request.app["local_machine"]
         fleet = request.app["state"]["fleet"]
         tmux = await list_all_tmux(local_machine, fleet)
         request.app["state"]["tmux"] = tmux
         await _push_to_ws(request.app, "tmux", [t.to_dict() for t in tmux])
+    else:
+        log.error("POST /api/tmux/kill machine=%s name=%s %d: %s", machine, name, status, result.get("error"))
     return web.json_response(result, status=status)
 
 
@@ -756,6 +810,20 @@ async def handle_browse(request: web.Request) -> web.Response:
         return web.json_response(result)
     except Exception as exc:
         return web.json_response({"ok": False, "error": f"Parse error: {exc}"}, status=500)
+
+
+async def handle_logs(request: web.Request) -> web.Response:
+    """GET /api/logs — return last N log entries from the in-memory ring buffer."""
+    try:
+        limit = int(request.query.get("limit", "100"))
+    except (ValueError, TypeError):
+        limit = 100
+    level = request.query.get("level")
+    handler: MemoryLogHandler | None = request.app.get("log_handler")
+    if not handler:
+        return web.json_response({"logs": []})
+    logs = handler.get_logs(limit=limit, level=level)
+    return web.json_response({"logs": logs})
 
 
 async def handle_restart(request: web.Request) -> web.Response:
@@ -1261,6 +1329,8 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
 
     ws._subscribed_channels: set[str] = set()  # type: ignore[attr-defined]
     request.app["state"]["ws_clients"].add(ws)
+    client_addr = request.remote or "unknown"
+    log.info("WS connect: %s (total: %d)", client_addr, len(request.app["state"]["ws_clients"]))
 
     state = request.app["state"]
 
@@ -1298,6 +1368,7 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
                 break
     finally:
         request.app["state"]["ws_clients"].discard(ws)
+        log.info("WS disconnect: %s (total: %d)", client_addr, len(request.app["state"]["ws_clients"]))
 
     return ws
 
@@ -1318,6 +1389,13 @@ def create_app(
     """
     app = web.Application(middlewares=[cors_middleware])
 
+    # Install in-memory log handler on the claude_manager logger hierarchy
+    mem_handler = MemoryLogHandler(max_entries=500)
+    mem_handler.setFormatter(logging.Formatter("%(message)s"))
+    cm_logger = logging.getLogger("claude_manager")
+    cm_logger.addHandler(mem_handler)
+    app["log_handler"] = mem_handler
+
     # Shared state
     app["port"] = port
     app["bind"] = bind
@@ -1336,6 +1414,7 @@ def create_app(
 
     # REST routes
     app.router.add_get("/health", handle_health)
+    app.router.add_get("/api/logs", handle_logs)
     app.router.add_get("/api/sessions", handle_sessions_all)
     app.router.add_get("/api/sessions/{machine}", handle_sessions_machine)
     app.router.add_post("/api/sessions/scan", handle_sessions_scan)

@@ -1,10 +1,13 @@
 """Cross-platform terminal launcher."""
 import asyncio
+import logging
 import shlex
 import shutil
 import sys
 from .command_adapter import get_adapter
 from .config import FLEET_MACHINES, detect_local_machine
+
+log = logging.getLogger("claude_manager.launcher")
 
 
 def applescript_string(s: str) -> str:
@@ -21,14 +24,18 @@ async def launch_terminal(command: str) -> dict:
     Returns:
         {"ok": True} on success, {"ok": False, "error": str} on failure.
     """
+    log.info("launch_terminal: command=%s...", command[:80])
     if sys.platform == "darwin":
-        return await _launch_macos(command)
+        result = await _launch_macos(command)
     elif sys.platform.startswith("linux"):
-        return await _launch_linux(command)
+        result = await _launch_linux(command)
     elif sys.platform == "win32":
-        return await _launch_windows(command)
+        result = await _launch_windows(command)
     else:
-        return {"ok": False, "error": f"Unsupported platform: {sys.platform}"}
+        result = {"ok": False, "error": f"Unsupported platform: {sys.platform}"}
+    if not result.get("ok"):
+        log.error("launch_terminal: failed: %s", result.get("error"))
+    return result
 
 
 async def _run_osascript(script: str) -> dict:
@@ -157,6 +164,7 @@ async def launch_claude_session(cwd: str, session_id: str, machine: str, skip_pe
     """
     local_machine = detect_local_machine()
     adapter = get_adapter(machine)
+    log.info("launch_claude_session(%s, %s): mode=terminal", machine, session_id[:12])
 
     if machine == local_machine:
         cmd = adapter.build_session_command(cwd, session_id, skip_permissions)

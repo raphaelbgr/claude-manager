@@ -46,6 +46,7 @@ KNOWN_SERVER_API_ROUTES = {
     "/api/drives",
     "/api/mkdir",
     "/api/preferences",
+    "/api/logs",
     "/api/restart",
 }
 

@@ -7,6 +7,7 @@ and falls back to SSH echo if the daemon is unreachable.
 from __future__ import annotations
 
 import asyncio
+import logging
 import subprocess
 import sys
 from typing import Any
@@ -14,6 +15,8 @@ from typing import Any
 import aiohttp
 
 from .config import FLEET_MACHINES, SSH_TIMEOUT
+
+log = logging.getLogger("claude_manager.fleet")
 
 
 async def check_machine_health(name: str, info: dict[str, Any]) -> dict[str, Any]:
@@ -62,6 +65,7 @@ async def check_machine_health(name: str, info: dict[str, Any]) -> dict[str, Any
                             method="http",
                             health_data=data,
                         )
+                        log.info("check_machine_health(%s): online=True via http", name)
                         return base
         except Exception:
             pass  # fall through to SSH
@@ -85,10 +89,12 @@ async def check_machine_health(name: str, info: dict[str, Any]) -> dict[str, Any
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=SSH_TIMEOUT + 2)
         if proc.returncode == 0 and b"ok" in stdout:
             base.update(online=True, method="ssh", health_data={"ssh": "ok"})
+            log.info("check_machine_health(%s): online=True via ssh", name)
             return base
     except Exception:
         pass
 
+    log.info("check_machine_health(%s): online=False", name)
     return base
 
 
@@ -127,4 +133,7 @@ async def discover_fleet(
         else:
             fleet_status[name] = result  # type: ignore[assignment]
 
+    online = sum(1 for v in fleet_status.values() if v.get("online"))
+    total = len(fleet_status)
+    log.info("discover_fleet: %d/%d machines online", online, total)
     return fleet_status

@@ -1900,6 +1900,155 @@ function TmuxPanel({ tmuxSessions, fleet, onConnectTmux, connectingId, onKillTmu
   );
 }
 
+// ─── Log Panel ────────────────────────────────────────────────────────────────
+
+const LOG_LEVEL_COLORS = {
+  ERROR:   { color: '#f85149', bg: '#3a1a1a', border: '#5a2a2a' },
+  WARNING: { color: '#e3b341', bg: '#3a2a0a', border: '#5a4a1a' },
+  INFO:    { color: '#8b949e', bg: 'transparent', border: 'transparent' },
+  DEBUG:   { color: '#484f58', bg: 'transparent', border: 'transparent' },
+};
+
+function LogPanel({ visible, onClose }) {
+  const [logs, setLogs] = useState([]);
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [levelFilter, setLevelFilter] = useState('');
+  const scrollRef = useRef(null);
+
+  useEffect(() => {
+    if (!visible || !autoRefresh) return;
+    const fetchLogs = () => {
+      const params = levelFilter ? `?limit=50&level=${levelFilter}` : '?limit=50';
+      fetch('/api/logs' + params)
+        .then(r => r.json())
+        .then(d => {
+          setLogs(d.logs || []);
+          if (scrollRef.current) {
+            scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+          }
+        })
+        .catch(() => {});
+    };
+    fetchLogs();
+    const interval = setInterval(fetchLogs, 3000);
+    return () => clearInterval(interval);
+  }, [visible, autoRefresh, levelFilter]);
+
+  if (!visible) return null;
+
+  return h('div', {
+    style: {
+      borderTop: '1px solid #30363d',
+      background: '#0a0d10',
+      flexShrink: 0,
+      display: 'flex',
+      flexDirection: 'column',
+      maxHeight: 220,
+    }
+  },
+    // Header bar
+    h('div', {
+      style: {
+        display: 'flex', alignItems: 'center', gap: 8,
+        padding: '6px 16px',
+        borderBottom: '1px solid #21262d',
+        flexShrink: 0,
+      }
+    },
+      h('span', {
+        style: {
+          fontSize: '0.65rem', fontWeight: 700, letterSpacing: '0.08em',
+          textTransform: 'uppercase', color: '#484f58',
+        }
+      }, 'Logs'),
+
+      // Level filter pills
+      ['', 'ERROR', 'WARNING', 'INFO', 'DEBUG'].map(lv =>
+        h('button', {
+          key: lv || 'all',
+          onClick: () => setLevelFilter(lv),
+          style: {
+            fontSize: '0.6rem', fontWeight: 700, padding: '1px 7px',
+            borderRadius: 10, border: '1px solid',
+            cursor: 'pointer', letterSpacing: '0.04em',
+            background: levelFilter === lv ? (LOG_LEVEL_COLORS[lv] || { bg: '#1f3a5f' }).bg || '#1f3a5f' : '#21262d',
+            color: levelFilter === lv ? (LOG_LEVEL_COLORS[lv] || { color: '#58a6ff' }).color || '#58a6ff' : '#6e7681',
+            borderColor: levelFilter === lv ? (LOG_LEVEL_COLORS[lv] || { border: '#2d4f7a' }).border || '#2d4f7a' : '#30363d',
+            transition: 'all 0.1s',
+          }
+        }, lv || 'ALL')
+      ),
+
+      // Auto-refresh toggle
+      h('label', {
+        style: {
+          display: 'flex', alignItems: 'center', gap: 4,
+          cursor: 'pointer', userSelect: 'none',
+          fontSize: '0.65rem', color: autoRefresh ? '#3fb950' : '#6e7681',
+          marginLeft: 4,
+        }
+      },
+        h('input', {
+          type: 'checkbox',
+          checked: autoRefresh,
+          onChange: e => setAutoRefresh(e.target.checked),
+          style: { accentColor: '#3fb950', cursor: 'pointer', width: 11, height: 11 },
+        }),
+        'Auto',
+      ),
+
+      h('div', { style: { flex: 1 } }),
+
+      // Close button
+      h('button', {
+        onClick: onClose,
+        style: {
+          background: 'none', border: 'none', cursor: 'pointer',
+          color: '#484f58', fontSize: '14px', padding: '0 2px',
+          display: 'flex', alignItems: 'center',
+        }
+      }, h('span', { className: 'material-icons-round', style: { fontSize: '14px' } }, 'close')),
+    ),
+
+    // Log entries
+    h('div', {
+      ref: scrollRef,
+      style: {
+        overflowY: 'auto', flex: 1,
+        padding: '4px 0',
+        fontFamily: '"SF Mono", "Fira Code", Consolas, monospace',
+        fontSize: '0.68rem',
+      }
+    },
+      logs.length === 0
+        ? h('div', {
+            style: { color: '#484f58', padding: '8px 16px', fontStyle: 'italic' }
+          }, 'No log entries yet.')
+        : logs.map((entry, i) => {
+            const colors = LOG_LEVEL_COLORS[entry.level] || LOG_LEVEL_COLORS.INFO;
+            const ts = entry.timestamp ? entry.timestamp.replace('T', ' ').replace('Z', '').slice(11, 23) : '';
+            return h('div', {
+              key: i,
+              style: {
+                display: 'flex', alignItems: 'baseline', gap: 6,
+                padding: '1px 16px',
+              }
+            },
+              h('span', { style: { color: '#484f58', flexShrink: 0 } }, ts),
+              h('span', {
+                style: {
+                  color: colors.color, flexShrink: 0,
+                  minWidth: 52, textAlign: 'right', fontWeight: 700,
+                }
+              }, entry.level),
+              h('span', { style: { color: '#6e7681', flexShrink: 0 } }, entry.module),
+              h('span', { style: { color: '#8b949e', wordBreak: 'break-all' } }, entry.message),
+            );
+          })
+    ),
+  );
+}
+
 // ─── Fleet Bar ────────────────────────────────────────────────────────────────
 
 function FleetBar({ fleet, lastScan, wsConnected }) {
@@ -1976,7 +2125,7 @@ function FleetBar({ fleet, lastScan, wsConnected }) {
 
 // ─── Header ───────────────────────────────────────────────────────────────────
 
-function Header({ health, sessions, tmuxSessions, fleet, onScan, scanning, skipPermissions, onSkipPermissionsChange }) {
+function Header({ health, sessions, tmuxSessions, fleet, onScan, scanning, skipPermissions, onSkipPermissionsChange, showLogs, onToggleLogs }) {
   const online = Object.values(fleet || {}).filter(m => m.online).length;
   const total = Object.keys(fleet || {}).length;
   const [restartConfirm, setRestartConfirm] = useState(false);
@@ -2074,6 +2223,23 @@ function Header({ health, sessions, tmuxSessions, fleet, onScan, scanning, skipP
         style: { accentColor: '#e3b341', cursor: 'pointer' },
       }),
       '--dangerously-skip-permissions',
+    ),
+
+    // Logs toggle button
+    h('button', {
+      className: 'btn',
+      onClick: onToggleLogs,
+      title: showLogs ? 'Hide log panel' : 'Show log panel',
+      style: {
+        background: showLogs ? '#1f3a5f' : '#21262d',
+        border: `1px solid ${showLogs ? '#2d4f7a' : '#30363d'}`, borderRadius: 8,
+        color: showLogs ? '#58a6ff' : '#8b949e', padding: '6px 10px', fontSize: '0.75rem', fontWeight: 600,
+        display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer',
+        transition: 'all 0.15s', whiteSpace: 'nowrap',
+      },
+    },
+      h('span', { className: 'material-icons-round', style: { fontSize: '14px' } }, 'subject'),
+      'Logs',
     ),
 
     // Restart server button (double-click to confirm)
@@ -2304,6 +2470,7 @@ function App() {
   const [skipPermissions, setSkipPermissions] = useState(false);
   const [pinnedIds, setPinnedIds]         = useState([]);
   const [archivedIds, setArchivedIds]     = useState(new Set());
+  const [showLogs, setShowLogs]           = useState(false);
 
   // Hardware cache: maps machine name → { data, timestamp } or { error, timestamp }
   const [hwCache, setHwCache] = useState({});
@@ -2788,6 +2955,8 @@ function App() {
         scanning,
         skipPermissions,
         onSkipPermissionsChange: handleSkipPermissionsChange,
+        showLogs,
+        onToggleLogs: () => setShowLogs(v => !v),
       }),
 
       // Filter bar
@@ -2947,6 +3116,9 @@ function App() {
           ),
         ),
       ),
+
+      // Log panel (above fleet bar, collapsible)
+      h(LogPanel, { visible: showLogs, onClose: () => setShowLogs(false) }),
 
       // Fleet bar
       h(FleetBar, { fleet, lastScan, wsConnected }),

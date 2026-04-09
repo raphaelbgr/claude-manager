@@ -6,8 +6,11 @@ Handles command generation for any source→target OS combination:
 - SSH commands (macOS→Linux, macOS→Windows, etc.)
 - tmux/psmux send-keys commands (bash vs cmd.exe shells)
 """
+import logging
 import shlex
 from .config import FLEET_MACHINES
+
+log = logging.getLogger("claude_manager.command_adapter")
 
 
 class CommandAdapter:
@@ -198,4 +201,6 @@ def get_adapter(machine_name: str) -> CommandAdapter:
     info = FLEET_MACHINES.get(machine_name, {})
     target_os = info.get("os", "darwin")
     mux_type = info.get("mux", "tmux")
-    return CommandAdapter(target_os=target_os, mux_type=mux_type)
+    adapter = CommandAdapter(target_os=target_os, mux_type=mux_type)
+    log.debug("adapter(%s): target_shell=%s, mux=%s", machine_name, adapter.target_shell, mux_type)
+    return adapter
