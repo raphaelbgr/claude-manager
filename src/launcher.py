@@ -163,10 +163,17 @@ async def launch_claude_session(cwd: str, session_id: str, machine: str, skip_pe
     else:
         info = FLEET_MACHINES.get(machine, {})
         alias = info.get("ssh_alias", machine)
-        # SSH -t runs Git Bash on Windows (not cmd.exe), so use the SSH variant
+        # Build the remote command using the SSH adapter (PowerShell on Windows)
         session_cmd = adapter.build_session_command_ssh(cwd, session_id, skip_permissions)
         terminal_cmd = adapter.for_terminal(session_cmd, keep_open=True)
-        cmd = f"ssh {shlex.quote(alias)} -t {shlex.quote(terminal_cmd)}"
+        # Avoid shlex.quote on Windows commands — the nested quoting breaks
+        # across multiple shell layers (iTerm2 bash → SSH → Git Bash → PowerShell)
+        if adapter.is_windows:
+            # Escape double quotes for the local bash shell, keep rest intact
+            escaped = terminal_cmd.replace('"', '\\"')
+            cmd = f'ssh {alias} -t "{escaped}"'
+        else:
+            cmd = f"ssh {shlex.quote(alias)} -t {shlex.quote(terminal_cmd)}"
 
     return await launch_terminal(cmd)
 
