@@ -46,6 +46,7 @@ class ClaudeSession:
     file_size: int = 0        # file size in bytes of the .jsonl file
     name: str = ""            # session name set by /rename
     cpu_percent: float = 0.0  # CPU usage if active (0.0 if idle/not measured)
+    git_branch: str = ""      # git branch from JSONL gitBranch field
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -109,6 +110,7 @@ def parse_session(
 
     slug = ""
     cwd = ""
+    git_branch = ""
     first_message = ""
     line_count = 0
 
@@ -131,6 +133,8 @@ def parse_session(
                 slug = d.get("slug", "")
             if not cwd:
                 cwd = d.get("cwd", "")
+            if not git_branch and d.get("gitBranch"):
+                git_branch = d.get("gitBranch", "")
 
         if not first_message and d.get("type") == "user":
             content = d.get("message", {}).get("content", "")
@@ -159,6 +163,7 @@ def parse_session(
         status="idle",  # enriched later by _mark_active_sessions
         pid=None,
         file_size=file_size,
+        git_branch=git_branch,
     )
 
 
@@ -375,7 +380,7 @@ if projects_dir.is_dir():
             try:
                 stat = jf.stat()
                 mod = datetime.datetime.fromtimestamp(stat.st_mtime, tz=datetime.timezone.utc).isoformat()
-                slug = ''; cwd = ''; summary = ''; line_count = 0
+                slug = ''; cwd = ''; git_branch = ''; summary = ''; line_count = 0
                 with open(jf, encoding='utf-8', errors='replace') as fh:
                     all_lines = fh.readlines()
                 line_count = sum(1 for l in all_lines if l.strip())
@@ -390,6 +395,7 @@ if projects_dir.is_dir():
                     if d.get('type') == 'user' and d.get('sessionId'):
                         if not slug: slug = d.get('slug', '')
                         if not cwd: cwd = d.get('cwd', '')
+                        if not git_branch and d.get('gitBranch'): git_branch = d.get('gitBranch', '')
                     if not summary and d.get('type') == 'user':
                         c = d.get('message', {}).get('content', '')
                         if isinstance(c, list):
@@ -415,6 +421,7 @@ if projects_dir.is_dir():
                     'pid': pid,
                     'file_size': stat.st_size,
                     'name': session_names.get(sid, ''),
+                    'git_branch': git_branch,
                 })
             except Exception:
                 pass
@@ -454,6 +461,7 @@ async def scan_remote_via_api(machine_name: str, ip: str, dispatch_port: int) ->
                         pid=item.get("pid"),
                         file_size=item.get("file_size", 0),
                         name=item.get("name", ""),
+                        git_branch=item.get("git_branch", ""),
                     )
                     sessions.append(s)
                 return sessions
@@ -526,6 +534,7 @@ async def scan_remote(
                 pid=item.get("pid"),
                 file_size=item.get("file_size", 0),
                 name=item.get("name", ""),
+                git_branch=item.get("git_branch", ""),
             )
             sessions.append(sess)
         except (KeyError, TypeError):

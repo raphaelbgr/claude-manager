@@ -606,6 +606,21 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
       style: { fontSize: '0.72rem', color: '#8b949e', whiteSpace: 'nowrap', flexShrink: 0 }
     }, `(${session.name})`),
 
+    // Git branch badge
+    session.git_branch && h('span', {
+      className: 'compact-action-btn',
+      style: {
+        cursor: 'default',
+        fontSize: '0.62rem',
+        borderColor: session.git_branch === 'HEAD' ? '#5a4a1a' : '#2a4a3a',
+        color: session.git_branch === 'HEAD' ? '#e3b341' : '#7ee787',
+        padding: '1px 6px',
+      }
+    },
+      h('span', { className: 'material-icons-round', style: { fontSize: '11px' } }, 'account_tree'),
+      ' ' + session.git_branch,
+    ),
+
     // Status badge (only working/active)
     isWorking && h('span', {
       style: { fontSize: '0.6rem', fontWeight: 700, color: '#e3b341', flexShrink: 0, letterSpacing: '0.04em' }
@@ -755,6 +770,19 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
         text: `${session.cpu_percent}% CPU`,
         color: session.cpu_percent > 30 ? '#e3b341' : '#8b949e',
       }),
+      session.git_branch && h('span', {
+        className: 'compact-action-btn',
+        style: {
+          cursor: 'default',
+          fontSize: '0.62rem',
+          borderColor: session.git_branch === 'HEAD' ? '#5a4a1a' : '#2a4a3a',
+          color: session.git_branch === 'HEAD' ? '#e3b341' : '#7ee787',
+          padding: '1px 6px',
+        }
+      },
+        h('span', { className: 'material-icons-round', style: { fontSize: '11px' } }, 'account_tree'),
+        ' ' + session.git_branch,
+      ),
     ),
 
     // Full action buttons row

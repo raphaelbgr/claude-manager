@@ -302,7 +302,7 @@ class TestClaudeSessionToDict:
         expected_keys = {
             "session_id", "machine", "project_folder", "project_path",
             "cwd", "slug", "summary", "messages", "modified", "status", "pid",
-            "file_size", "name", "cpu_percent",
+            "file_size", "name", "cpu_percent", "git_branch",
         }
         assert set(d.keys()) == expected_keys
 
