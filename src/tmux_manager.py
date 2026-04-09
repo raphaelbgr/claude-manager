@@ -223,18 +223,16 @@ async def create_tmux_session(
 
             # Step 2: Send the command via send-keys (reliable, no quoting issues)
             if command:
-                # Convert Windows paths (C:\foo\bar) to Git Bash paths (/c/foo/bar)
-                # so the command works in psmux's Git Bash shell
                 remote_os = info.get("os", "")
                 cmd_to_send = command
+
                 if remote_os == "win32":
+                    # psmux on Windows runs cmd.exe inside sessions.
+                    # - Don't convert paths (cmd uses C:\path, not /c/path)
+                    # - Remove POSIX single quotes around paths (cmd doesn't use them)
+                    # - Replace 'path' quoting with "path" for cmd.exe
                     import re
-                    # Replace C:\path or 'C:\path' with /c/path for Git Bash
-                    def _win_to_bash(m):
-                        drive = m.group(1).lower()
-                        rest = m.group(2).replace("\\", "/")
-                        return f"/{drive}/{rest}" if rest else f"/{drive}/"
-                    cmd_to_send = re.sub(r"'?([A-Za-z]):\\([^']*)'?", _win_to_bash, cmd_to_send)
+                    cmd_to_send = re.sub(r"'([^']*)'", r'"\1"', cmd_to_send)
 
                 keys_cmd = f"{mux} send-keys -t {shlex.quote(name)} {shlex.quote(cmd_to_send)} Enter"
                 proc = await asyncio.create_subprocess_exec(
