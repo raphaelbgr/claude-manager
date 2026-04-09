@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>claude-manager</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0d1117;
+      --surface:   #161b22;
+      --border:    #30363d;
+      --accent:    #58a6ff;
+      --accent2:   #3fb950;
+      --text:      #e6edf3;
+      --muted:     #8b949e;
+      --danger:    #f85149;
+      --font-mono: "SF Mono", "Fira Code", "Consolas", monospace;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-sans);
+      font-size: 15px;
+      line-height: 1.5;
+    }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    header {
+      border-bottom: 1px solid var(--border);
+      padding: 18px 32px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    header h1 {
+      font-size: 1.15rem;
+      font-weight: 600;
+      letter-spacing: -0.3px;
+    }
+
+    header .badge {
+      font-size: 0.7rem;
+      font-family: var(--font-mono);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 2px 10px;
+      color: var(--muted);
+    }
+
+    #status-bar {
+      font-size: 0.8rem;
+      font-family: var(--font-mono);
+      color: var(--muted);
+      padding: 8px 32px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+      display: flex;
+      gap: 24px;
+    }
+
+    #status-bar span { display: inline-flex; align-items: center; gap: 6px; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); display: inline-block; }
+    .dot.green  { background: var(--accent2); }
+    .dot.red    { background: var(--danger); }
+    .dot.pulse  { animation: pulse 1.4s ease-in-out infinite; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+
+    main {
+      max-width: 960px;
+      margin: 48px auto;
+      padding: 0 32px;
+    }
+
+    h2 {
+      font-size: 1rem;
+      font-weight: 600;
+      margin-bottom: 16px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      font-size: 0.75rem;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 20px 24px;
+      margin-bottom: 24px;
+    }
+
+    .endpoint-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .endpoint-list li {
+      display: flex;
+      align-items: flex-start;
+      gap: 14px;
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+    }
+
+    .method {
+      min-width: 44px;
+      text-align: center;
+      border-radius: 4px;
+      padding: 1px 6px;
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+    }
+
+    .method.get  { background: #1f3a5f; color: #58a6ff; }
+    .method.post { background: #1a3a2a; color: #3fb950; }
+    .method.ws   { background: #3a2a1f; color: #f0883e; }
+
+    .endpoint-path { color: var(--text); }
+    .endpoint-desc { color: var(--muted); font-size: 0.8rem; font-family: var(--font-sans); }
+
+    #sessions-preview {
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      color: var(--muted);
+      max-height: 300px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    footer {
+      text-align: center;
+      padding: 40px 32px 24px;
+      color: var(--muted);
+      font-size: 0.8rem;
+      border-top: 1px solid var(--border);
+      margin-top: 48px;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>claude-manager</h1>
+  <span class="badge">Phase 1 — API</span>
+</header>
+
+<div id="status-bar">
+  <span><span class="dot pulse" id="conn-dot"></span><span id="conn-label">connecting…</span></span>
+  <span>sessions: <strong id="session-count">—</strong></span>
+  <span>machines: <strong id="machine-count">—</strong></span>
+  <span>last scan: <strong id="last-scan">—</strong></span>
+</div>
+
+<main>
+  <section class="card">
+    <h2>API Endpoints</h2>
+    <ul class="endpoint-list">
+      <li>
+        <span class="method get">GET</span>
+        <div>
+          <div class="endpoint-path"><a href="/health">/health</a></div>
+          <div class="endpoint-desc">Server health + scan metadata</div>
+        </div>
+      </li>
+      <li>
+        <span class="method get">GET</span>
+        <div>
+          <div class="endpoint-path"><a href="/api/sessions">/api/sessions</a></div>
+          <div class="endpoint-desc">All sessions grouped by machine &amp; project</div>
+        </div>
+      </li>
+      <li>
+        <span class="method get">GET</span>
+        <div>
+          <div class="endpoint-path">/api/sessions/{machine}</div>
+          <div class="endpoint-desc">Sessions for a specific machine</div>
+        </div>
+      </li>
+      <li>
+        <span class="method post">POST</span>
+        <div>
+          <div class="endpoint-path">/api/sessions/scan</div>
+          <div class="endpoint-desc">Force an immediate rescan</div>
+        </div>
+      </li>
+      <li>
+        <span class="method post">POST</span>
+        <div>
+          <div class="endpoint-path">/api/sessions/launch</div>
+          <div class="endpoint-desc">Launch a session in a terminal (Phase 2)</div>
+        </div>
+      </li>
+      <li>
+        <span class="method get">GET</span>
+        <div>
+          <div class="endpoint-path"><a href="/api/fleet">/api/fleet</a></div>
+          <div class="endpoint-desc">Fleet machine health status</div>
+        </div>
+      </li>
+      <li>
+        <span class="method get">GET</span>
+        <div>
+          <div class="endpoint-path"><a href="/api/tmux">/api/tmux</a></div>
+          <div class="endpoint-desc">Tmux sessions (Phase 2)</div>
+        </div>
+      </li>
+      <li>
+        <span class="method ws">WS</span>
+        <div>
+          <div class="endpoint-path">/ws</div>
+          <div class="endpoint-desc">WebSocket: subscribe to sessions / fleet / tmux channels</div>
+        </div>
+      </li>
+    </ul>
+  </section>
+
+  <section class="card">
+    <h2>Live Sessions Preview</h2>
+    <pre id="sessions-preview">Waiting for data…</pre>
+  </section>
+</main>
+
+<footer>
+  claude-manager &mdash; Phase 1 &mdash; <a href="https://github.com/raphaelbgr/claude-manager">github</a>
+</footer>
+
+<script>
+  (function () {
+    const connDot   = document.getElementById('conn-dot');
+    const connLabel = document.getElementById('conn-label');
+    const sessionCount = document.getElementById('session-count');
+    const machineCount = document.getElementById('machine-count');
+    const lastScan     = document.getElementById('last-scan');
+    const preview      = document.getElementById('sessions-preview');
+
+    // --- Populate health bar from /health ---
+    function refreshHealth() {
+      fetch('/health')
+        .then(r => r.json())
+        .then(d => {
+          sessionCount.textContent = d.sessions ?? '—';
+          machineCount.textContent = d.machines ?? '—';
+          lastScan.textContent = d.last_scan
+            ? new Date(d.last_scan).toLocaleTimeString()
+            : '—';
+        })
+        .catch(() => {});
+    }
+    refreshHealth();
+    setInterval(refreshHealth, 15000);
+
+    // --- WebSocket ---
+    function connect() {
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      const ws = new WebSocket(`${proto}://${location.host}/ws`);
+
+      ws.onopen = () => {
+        connDot.classList.add('green');
+        connDot.classList.remove('red', 'pulse');
+        connLabel.textContent = 'connected';
+        ws.send(JSON.stringify({ type: 'subscribe', channel: 'sessions' }));
+        ws.send(JSON.stringify({ type: 'subscribe', channel: 'fleet' }));
+      };
+
+      ws.onclose = () => {
+        connDot.classList.remove('green');
+        connDot.classList.add('red', 'pulse');
+        connLabel.textContent = 'disconnected — retrying…';
+        setTimeout(connect, 3000);
+      };
+
+      ws.onerror = () => {
+        connDot.classList.add('red');
+        connLabel.textContent = 'error';
+      };
+
+      ws.onmessage = (evt) => {
+        let msg;
+        try { msg = JSON.parse(evt.data); } catch { return; }
+
+        if (msg.channel === 'sessions') {
+          const data = msg.data;
+          // data is a dict: machine → [{project_folder, sessions:[]}]
+          if (typeof data === 'object' && !Array.isArray(data)) {
+            let total = 0;
+            const lines = [];
+            for (const [machine, projects] of Object.entries(data)) {
+              lines.push(`[${machine}]`);
+              for (const proj of projects) {
+                lines.push(`  ${proj.project_folder}  (${proj.sessions.length} sessions)`);
+                for (const s of proj.sessions) {
+                  const active = s.status === 'active' ? ' ● ACTIVE' : '';
+                  lines.push(`    ${s.session_id.slice(0, 8)}… ${s.modified.slice(0, 19)}${active}`);
+                  if (s.summary) lines.push(`    "${s.summary.slice(0, 80)}"`);
+                  total++;
+                }
+              }
+            }
+            preview.textContent = lines.length ? lines.join('\n') : '(no sessions found)';
+            sessionCount.textContent = total;
+          }
+        }
+      };
+    }
+
+    connect();
+  })();
+</script>
+</body>
+</html>
