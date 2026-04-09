@@ -2784,14 +2784,19 @@ function App() {
           skip_permissions: skipPermissions,
         }),
       });
+      if (!res.ok) {
+        const text = await res.text();
+        toast(`Launch failed (${res.status}): ${text.slice(0, 120)}`, 'error');
+        return;
+      }
       const data = await res.json();
       if (data.ok) {
-        toast(`Launched session in terminal`, 'success');
+        toast(`Resumed session on ${session.machine}`, 'success');
       } else {
-        toast(data.error || 'Launch not yet implemented', 'info');
+        toast(`Launch error: ${data.error || 'Unknown error'}`, 'error');
       }
-    } catch {
-      toast('Network error', 'error');
+    } catch (e) {
+      toast(`Network error: ${e.message || 'Could not reach server'}`, 'error');
     } finally {
       setLaunchingId(null);
     }
@@ -2799,6 +2804,7 @@ function App() {
 
   // ── Tmux launch (create tmux session + launch claude in it) ──────────────
   const handleTmuxLaunch = useCallback(async (session) => {
+    const mux = (MACHINE_INFO[session.machine] || {}).os === 'Windows' ? 'psmux' : 'tmux';
     setTmuxLaunchingId(session.session_id);
     try {
       const res = await fetch('/api/sessions/launch', {
@@ -2812,14 +2818,19 @@ function App() {
           mode: 'tmux',
         }),
       });
+      if (!res.ok) {
+        const text = await res.text();
+        toast(`${mux} launch failed (${res.status}): ${text.slice(0, 120)}`, 'error');
+        return;
+      }
       const data = await res.json();
       if (data.ok) {
-        toast(`Launched in tmux on ${session.machine}`, 'success');
+        toast(`Resumed in ${mux} on ${session.machine}`, 'success');
       } else {
-        toast(data.error || 'Tmux launch not yet implemented', 'info');
+        toast(`${mux} error: ${data.error || 'Unknown error'}`, 'error');
       }
-    } catch {
-      toast('Network error', 'error');
+    } catch (e) {
+      toast(`Network error: ${e.message || 'Could not reach server'}`, 'error');
     } finally {
       setTmuxLaunchingId(null);
     }
@@ -2856,22 +2867,27 @@ function App() {
 
   // ── Tmux connect ──────────────────────────────────────────────────────────
   const handleConnectTmux = useCallback(async (session) => {
-    const key = `${session.machine}-${session.session_name || session.name}`;
+    const name = session.session_name || session.name;
+    const key = `${session.machine}-${name}`;
     setConnectingId(key);
     try {
       const res = await fetch('/api/tmux/connect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ machine: session.machine, session_name: session.session_name || session.name }),
+        body: JSON.stringify({ machine: session.machine, session_name: name }),
       });
+      if (!res.ok) {
+        toast(`Attach failed (${res.status})`, 'error');
+        return;
+      }
       const data = await res.json();
       if (data.ok) {
-        toast(`Connected to ${session.session_name || session.name}`, 'success');
+        toast(`Attached to "${name}" on ${session.machine}`, 'success');
       } else {
-        toast(data.error || 'Connect not yet implemented', 'info');
+        toast(`Attach error: ${data.error}`, 'error');
       }
-    } catch {
-      toast('Network error', 'error');
+    } catch (e) {
+      toast(`Network error: ${e.message || 'Could not reach server'}`, 'error');
     } finally {
       setConnectingId(null);
     }
@@ -2899,20 +2915,25 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ machine: session.machine, name }),
       });
+      if (!res.ok) {
+        const text = await res.text();
+        toast(`Kill failed (${res.status}): ${text.slice(0, 120)}`, 'error');
+        return;
+      }
       const data = await res.json();
       if (data.ok) {
         toast(`Killed "${name}" on ${session.machine}`, 'success');
-        // Refresh tmux list
+        // Server already pushed tmux update via WS, but also fetch as fallback
         fetch('/api/tmux').then(r => r.json()).then(d => { if (Array.isArray(d)) setTmuxSessions(d); }).catch(() => {});
       } else {
-        toast(data.error || 'Kill failed', 'error');
+        toast(`Kill error on ${session.machine}: ${data.error || 'Unknown'}`, 'error');
       }
-    } catch {
-      toast('Network error', 'error');
+    } catch (e) {
+      toast(`Network error killing "${name}": ${e.message || 'Could not reach server'}`, 'error');
     } finally {
       setKillingId(null);
     }
-  }, []);
+  }, [killConfirm]);
 
   // ── Remote attach (open terminal on the remote machine's display) ────────
   const [remoteAttachingId, setRemoteAttachingId] = useState(null);
