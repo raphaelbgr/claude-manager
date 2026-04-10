@@ -2940,13 +2940,17 @@ function App() {
   const streamEnabledRef = useRef(streamEnabled);
   streamEnabledRef.current = streamEnabled;
 
+  const subscribedPanesRef = useRef(new Set());
   const handleWsReconnect = useCallback((ws) => {
+    // Clear tracked set so useEffect re-subscribes all
+    subscribedPanesRef.current.clear();
     // Re-subscribe to all pane streams that are enabled after a WS reconnect
     for (const session of tmuxSessionsRef.current) {
       const key = session.machine + ':' + (session.session_name || session.name);
       const sessionName = session.session_name || session.name;
       if (streamEnabledRef.current[key] !== false) {
         ws.send(JSON.stringify({ type: 'subscribe_pane', machine: session.machine, session_name: sessionName }));
+        subscribedPanesRef.current.add(key);
       }
     }
   }, []);
@@ -2965,9 +2969,11 @@ function App() {
           // turning off
           ws.send(JSON.stringify({ type: 'unsubscribe_pane', machine, session_name: sessionName }));
           setPaneStreams(p => { const n = { ...p }; delete n[key]; return n; });
+          subscribedPanesRef.current.delete(key);
         } else {
           // turning on
           ws.send(JSON.stringify({ type: 'subscribe_pane', machine, session_name: sessionName }));
+          subscribedPanesRef.current.add(key);
         }
       }
       return newEnabled;
@@ -2981,8 +2987,14 @@ function App() {
     for (const session of tmuxSessions) {
       const key = session.machine + ':' + (session.session_name || session.name);
       const sessionName = session.session_name || session.name;
-      if (streamEnabled[key] !== false) {
+      const enabled = streamEnabled[key] !== false;
+      const alreadySub = subscribedPanesRef.current.has(key);
+      if (enabled && !alreadySub) {
         ws.send(JSON.stringify({ type: 'subscribe_pane', machine: session.machine, session_name: sessionName }));
+        subscribedPanesRef.current.add(key);
+      } else if (!enabled && alreadySub) {
+        ws.send(JSON.stringify({ type: 'unsubscribe_pane', machine: session.machine, session_name: sessionName }));
+        subscribedPanesRef.current.delete(key);
       }
     }
   }, [tmuxSessions, streamEnabled, wsRef]);

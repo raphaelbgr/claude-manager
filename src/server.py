@@ -1404,13 +1404,21 @@ async def _pane_poll_loop(app: web.Application, machine: str, session_name: str)
     state = app["state"]
     key = (machine, session_name)
     last_content = ""
+    log.info("pane_poll_loop started: %s/%s", machine, session_name)
 
-    while key in state["pane_streams"] and state["pane_streams"][key]["subscribers"]:
-        content = await capture_pane(machine, session_name)
-        if content != last_content:
-            await _push_pane_output(state, key, content)
-            last_content = content
-        await asyncio.sleep(2.0)
+    try:
+        while key in state["pane_streams"] and state["pane_streams"][key]["subscribers"]:
+            content = await capture_pane(machine, session_name)
+            if content != last_content:
+                await _push_pane_output(state, key, content)
+                last_content = content
+            await asyncio.sleep(2.0)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        log.exception("pane_poll_loop(%s/%s) crashed: %s", machine, session_name, exc)
+    finally:
+        log.info("pane_poll_loop ended: %s/%s", machine, session_name)
 
 
 async def _pane_stream_loop(app: web.Application, machine: str, session_name: str) -> None:
@@ -1428,6 +1436,8 @@ async def _pane_stream_loop(app: web.Application, machine: str, session_name: st
     is_local_tmux = (machine == local_machine and adapter.mux_type == "tmux")
 
     pipe_file = None
+
+    log.info("pane_stream_loop started: %s/%s (local_tmux=%s)", machine, session_name, is_local_tmux)
 
     try:
         if is_local_tmux:
