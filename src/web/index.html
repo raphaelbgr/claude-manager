@@ -3842,13 +3842,13 @@ function App() {
       const res = await apiFetch('/api/sessions/launch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ machine, cwd, mode: 'terminal' }),
+        body: JSON.stringify({ machine, cwd, mode: 'terminal', skip_permissions: skipPermissions }),
       });
       const data = await res.json();
       if (data.ok) toast('Terminal opened', 'success');
       else toast(data.error || 'Failed', 'error');
     } catch (e) { toast('Network error', 'error'); }
-  }, []);
+  }, [skipPermissions]);
 
   const handleNewTmuxInProject = useCallback(async (machine, cwd) => {
     // Reuse the exact endpoint handleTmuxLaunch uses. mode='tmux' with no
