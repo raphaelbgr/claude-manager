@@ -553,6 +553,23 @@ async def handle_drives(request: web.Request) -> web.Response:
         return web.json_response({"ok": False, "error": f"Unknown machine: {machine}"}, status=400)
     ssh_alias = info.get("ssh_alias", machine)
 
+    # Try dispatch daemon API first
+    dispatch_port = info.get("dispatch_port")
+    ip = info.get("ip", "")
+    if dispatch_port and ip:
+        try:
+            import aiohttp as _aiohttp
+            url = f"http://{ip}:{dispatch_port}/drives"
+            async with _aiohttp.ClientSession() as sess:
+                async with sess.get(url, timeout=_aiohttp.ClientTimeout(total=8)) as resp:
+                    if resp.status == 200:
+                        result = await resp.json()
+                        if result.get("drives"):
+                            result["ok"] = True
+                            return web.json_response(result)
+        except Exception as exc:
+            log.debug("drives API failed for %s: %s, trying SSH", machine, exc)
+
     py_script = r"""
 import json, sys
 try:
@@ -785,26 +802,50 @@ async def handle_browse(request: web.Request) -> web.Response:
         return web.json_response({"ok": False, "error": f"Unknown machine: {machine}"}, status=400)
     ssh_alias = info.get("ssh_alias", machine)
 
-    # Build the python one-liner
-    if path:
-        escaped = path.replace("'", "\\'")
-        py_expr = f"pathlib.Path('{escaped}')"
-    else:
-        py_expr = "pathlib.Path.home()"
+    # Try dispatch daemon API first, fall back to SSH
+    dispatch_port = info.get("dispatch_port")
+    ip = info.get("ip", "")
 
-    py_script = (
-        "import json,pathlib,sys;"
-        f"p={py_expr}.expanduser().resolve();"
-        "assert p.exists() and p.is_dir();"
-        "dirs=sorted([{'name':d.name,'path':str(d)} for d in p.iterdir() if d.is_dir() and not d.name.startswith('.')],key=lambda x:x['name'])[:200];"
-        "drive='/';"
-        "try:\n"
-        " import psutil\n"
-        " mps=sorted([pt.mountpoint for pt in psutil.disk_partitions(all=False)],key=len,reverse=True)\n"
-        " drive=next((m for m in mps if str(p).startswith(m)),'/') \n"
-        "except Exception: pass\n"
-        "print(json.dumps({'path':str(p),'parent':str(p.parent),'drive':drive,'dirs':dirs}))"
-    )
+    if dispatch_port and ip:
+        try:
+            import aiohttp as _aiohttp
+            url = f"http://{ip}:{dispatch_port}/browse"
+            async with _aiohttp.ClientSession() as sess:
+                async with sess.post(url, json={"path": path}, timeout=_aiohttp.ClientTimeout(total=8)) as resp:
+                    if resp.status == 200:
+                        result = await resp.json()
+                        if result.get("ok") or result.get("path"):
+                            result["ok"] = True
+                            return web.json_response(result)
+        except Exception as exc:
+            log.debug("browse API failed for %s: %s, trying SSH", machine, exc)
+
+    # SSH fallback — pipe a full Python script via stdin (works on all shells)
+    if path:
+        escaped = path.replace("\\", "\\\\").replace("'", "\\'")
+        py_path_expr = f"pathlib.Path('{escaped}')"
+    else:
+        py_path_expr = "pathlib.Path.home()"
+
+    py_script = f"""
+import json, pathlib, sys
+p = {py_path_expr}.expanduser().resolve()
+if not p.exists() or not p.is_dir():
+    print(json.dumps({{"error": "Path does not exist"}}))
+    sys.exit(0)
+dirs = sorted(
+    [{{"name": d.name, "path": str(d)}} for d in p.iterdir() if d.is_dir() and not d.name.startswith(".")],
+    key=lambda x: x["name"],
+)[:200]
+drive = "/"
+try:
+    import psutil
+    mps = sorted([pt.mountpoint for pt in psutil.disk_partitions(all=False)], key=len, reverse=True)
+    drive = next((m for m in mps if str(p).startswith(m)), "/")
+except Exception:
+    pass
+print(json.dumps({{"path": str(p), "parent": str(p.parent), "drive": drive, "dirs": dirs}}))
+"""
 
     proc = await asyncio.create_subprocess_exec(
         "ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", ssh_alias,
