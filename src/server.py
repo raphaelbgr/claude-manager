@@ -726,28 +726,28 @@ async def handle_sessions_launch(request: web.Request) -> web.Response:
         safe_name = adapter.generate_mux_session_name(machine, project_safe, existing_names)
 
         if is_remote_windows:
-            # Windows: server creates psmux session + sends cd+claude via send-keys.
-            # Then open terminal: SSH -t powershell → psmux attach.
-            from .tmux_manager import create_tmux_session
-            create_result = await create_tmux_session(machine, safe_name, cwd=cwd, command=claude_cmd)
-            if not create_result.get("ok"):
-                result = create_result
-            else:
-                # Open terminal: SSH lands directly in PowerShell (fleet-wide
-                # default, see global CLAUDE.md Windows SSH Shell Policy).
-                # No need for an intermediate 'powershell' step — just SSH
-                # then psmux attach.
-                from .launcher import _launch_macos_multi
-                info = FLEET_MACHINES.get(machine, {})
-                alias = info.get("ssh_alias", machine)
-                attach_cmd = adapter.mux_attach(safe_name)
-                result = await _launch_macos_multi(
-                    [
-                        f"ssh {alias}",    # SSH into Windows → PowerShell
-                        attach_cmd,         # psmux attach -t session-name
-                    ],
-                    delays=[0, 2],
-                )
+            # Windows psmux: the server cannot be created in a separate SSH
+            # connection because psmux does not fully daemonize on Windows —
+            # the server dies the moment the SSH that spawned it disconnects
+            # (even with `new-session -d`). So we must create + send-keys +
+            # attach all inside ONE persistent SSH session — the terminal
+            # window the user sees. That SSH stays alive for the whole
+            # session, keeping the psmux server alive with it.
+            from .launcher import _launch_macos_multi
+            info = FLEET_MACHINES.get(machine, {})
+            alias = info.get("ssh_alias", machine)
+            create_cmd = adapter.mux_create_session(safe_name)
+            sendkeys_cmd = adapter.mux_send_keys(safe_name, claude_cmd)
+            attach_cmd = adapter.mux_attach(safe_name)
+            result = await _launch_macos_multi(
+                [
+                    f"ssh {alias}",    # SSH into Windows → PowerShell
+                    create_cmd,         # psmux new-session -d -s NAME
+                    sendkeys_cmd,       # psmux send-keys -t NAME "cd && claude" Enter
+                    attach_cmd,         # psmux attach -t NAME
+                ],
+                delays=[0, 2, 0.8, 0.5],
+            )
         else:
             # tmux on macOS/Linux: create session + attach works perfectly
             result = await launch_new_tmux_and_attach(safe_name, machine, cwd=cwd, command=claude_cmd)
