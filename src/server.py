@@ -225,16 +225,10 @@ async def on_cleanup(app: web.Application) -> None:
 # ---------------------------------------------------------------------------
 
 def _read_version_metadata() -> dict:
-    """Read VERSION.json from repo root. Falls back to git, then empty."""
+    """Read version from git (source of truth), fall back to VERSION.json."""
     import pathlib
     repo = pathlib.Path(__file__).parent.parent
-    version_file = repo / "VERSION.json"
-    if version_file.is_file():
-        try:
-            return json.loads(version_file.read_text())
-        except Exception:
-            pass
-    # Git fallback
+    # Prefer live git — always matches running code
     try:
         import subprocess as _sp
         def _g(*args):
@@ -248,7 +242,15 @@ def _read_version_metadata() -> dict:
             "message": _g("log", "-1", "--format=%s"),
         }
     except Exception:
-        return {"version": 0, "commit": "unknown"}
+        pass
+    # Fall back to VERSION.json (packaged install without .git)
+    version_file = repo / "VERSION.json"
+    if version_file.is_file():
+        try:
+            return json.loads(version_file.read_text())
+        except Exception:
+            pass
+    return {"version": 0, "commit": "unknown"}
 
 
 _VERSION_METADATA = _read_version_metadata()
