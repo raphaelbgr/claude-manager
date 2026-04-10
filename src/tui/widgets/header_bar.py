@@ -45,7 +45,7 @@ class StatusBar(Static):
         if self.last_scan is None:
             scan_str = "[cyan]Last scan:[/] [dim]scanning…[/]"
         else:
-            delta = datetime.now(tz=timezone.utc) - self.last_scan
+            delta = datetime.now().astimezone() - self.last_scan
             secs = int(delta.total_seconds())
             if secs < 60:
                 age = f"{secs}s ago"
@@ -69,5 +69,5 @@ class StatusBar(Static):
         self.fleet_total = fleet_total
         self.session_count = session_count
         self.tmux_count = tmux_count
-        self.last_scan = datetime.now(tz=timezone.utc)
+        self.last_scan = datetime.now().astimezone()
         self.update(self._render())

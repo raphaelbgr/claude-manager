@@ -109,7 +109,7 @@ def parse_session(
     """
     session_id = file_path.stem
     stat = file_path.stat()
-    modified = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
+    modified = datetime.fromtimestamp(stat.st_mtime).astimezone().isoformat()
     file_size = stat.st_size
 
     slug = ""
@@ -386,7 +386,7 @@ if projects_dir.is_dir():
         for jf in jsonls:
             try:
                 stat = jf.stat()
-                mod = datetime.datetime.fromtimestamp(stat.st_mtime, tz=datetime.timezone.utc).isoformat()
+                mod = datetime.datetime.fromtimestamp(stat.st_mtime).astimezone().isoformat()
                 slug = ''; cwd = ''; git_branch = ''; summary = ''; line_count = 0
                 with open(jf, encoding='utf-8', errors='replace') as fh:
                     all_lines = fh.readlines()

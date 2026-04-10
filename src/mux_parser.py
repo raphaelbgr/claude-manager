@@ -55,7 +55,7 @@ def _parse_pipe_format(lines: list[str]) -> list[dict]:
             continue
         name = parts[0]
         try:
-            created = datetime.fromtimestamp(int(parts[1]), tz=timezone.utc).isoformat()
+            created = datetime.fromtimestamp(int(parts[1])).astimezone().isoformat()
         except (ValueError, OSError):
             created = parts[1] if parts[1] else None
         try:

@@ -15,8 +15,8 @@ def _relative_time(iso_str: str) -> str:
     try:
         dt = datetime.fromisoformat(iso_str)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        delta = datetime.now(tz=timezone.utc) - dt
+            dt = dt.astimezone()
+        delta = datetime.now().astimezone() - dt
         seconds = int(delta.total_seconds())
         if seconds < 60:
             return f"{seconds}s ago"

@@ -245,15 +245,15 @@ class TestNowIso:
         dt = datetime.fromisoformat(result)
         assert dt.tzinfo is not None
 
-    def test_is_utc(self):
+    def test_has_timezone_info(self):
         result = _now_iso()
         dt = datetime.fromisoformat(result)
-        assert dt.utcoffset().total_seconds() == 0  # type: ignore[union-attr]
+        assert dt.tzinfo is not None  # has timezone (local, not necessarily UTC)
 
     def test_recent_timestamp(self):
-        before = datetime.now(tz=timezone.utc)
+        before = datetime.now().astimezone()
         result = _now_iso()
-        after = datetime.now(tz=timezone.utc)
+        after = datetime.now().astimezone()
         dt = datetime.fromisoformat(result)
         assert before <= dt <= after
 

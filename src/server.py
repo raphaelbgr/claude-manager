@@ -57,7 +57,7 @@ class MemoryLogHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         try:
             self.buffer.append({
-                "timestamp": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
+                "timestamp": datetime.fromtimestamp(record.created).astimezone().isoformat(),
                 "level": record.levelname,
                 "module": record.name.split(".")[-1],
                 "message": self.format(record),
@@ -99,7 +99,7 @@ async def cors_middleware(request: web.Request, handler) -> web.Response:
 # ---------------------------------------------------------------------------
 
 def _now_iso() -> str:
-    return datetime.now(tz=timezone.utc).isoformat()
+    return datetime.now().astimezone().isoformat()
 
 
 def _sessions_by_machine(sessions: list[ClaudeSession]) -> dict[str, list[dict]]:
