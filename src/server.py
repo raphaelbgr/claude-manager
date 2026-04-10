@@ -357,10 +357,39 @@ async def on_cleanup(app: web.Application) -> None:
 # ---------------------------------------------------------------------------
 
 def _read_version_metadata() -> dict:
-    """Read version from VERSION.json if present, fall back to live git."""
+    """Return running-code version metadata.
+
+    Priority:
+      1. Live git — the ONLY source that tracks what's actually checked out.
+      2. VERSION.json — fallback for tarball installs with no .git directory.
+
+    VERSION.json must NEVER be preferred over git. The file is committed to the
+    repo so it always lags HEAD by exactly one commit (the commit that adds
+    VERSION.json creates a new HEAD that VERSION.json cannot reference). Using
+    it as primary made `update_available` permanently true and the Update &
+    Restart button loop forever. See incident 2026-04-10 commit 217ba38 →
+    0f8156b mismatch.
+    """
     import pathlib
     repo = pathlib.Path(__file__).resolve().parent.parent
-    # Prefer committed VERSION.json — canonical fleet-wide standard
+
+    # Primary: live git. This matches the running code bit-for-bit.
+    try:
+        import subprocess as _sp
+        def _g(*args):
+            return _sp.check_output(["git", *args], cwd=str(repo), text=True, timeout=3).strip()
+        return {
+            "version": int(_g("rev-list", "--count", "HEAD")),
+            "commit": _g("rev-parse", "--short", "HEAD"),
+            "commit_full": _g("rev-parse", "HEAD"),
+            "branch": _g("rev-parse", "--abbrev-ref", "HEAD"),
+            "date": _g("log", "-1", "--format=%cI"),
+            "message": _g("log", "-1", "--format=%s"),
+        }
+    except Exception:
+        pass
+
+    # Fallback: VERSION.json (tarball installs with no .git).
     try:
         version_file = repo / "VERSION.json"
         if version_file.is_file():
@@ -379,21 +408,7 @@ def _read_version_metadata() -> dict:
                 }
     except Exception:
         pass
-    # Fall back to live git — matches running code when VERSION.json is missing/stale
-    try:
-        import subprocess as _sp
-        def _g(*args):
-            return _sp.check_output(["git", *args], cwd=str(repo), text=True, timeout=3).strip()
-        return {
-            "version": int(_g("rev-list", "--count", "HEAD")),
-            "commit": _g("rev-parse", "--short", "HEAD"),
-            "commit_full": _g("rev-parse", "HEAD"),
-            "branch": _g("rev-parse", "--abbrev-ref", "HEAD"),
-            "date": _g("log", "-1", "--format=%cI"),
-            "message": _g("log", "-1", "--format=%s"),
-        }
-    except Exception:
-        pass
+
     return {"version": 0, "commit": "unknown"}
 
 
