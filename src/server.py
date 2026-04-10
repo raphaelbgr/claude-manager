@@ -1397,14 +1397,14 @@ async def _push_pane_output(state: dict, key: tuple, content: str) -> None:
     info["subscribers"] -= dead
 
 
-async def _pane_poll_loop(app: web.Application, machine: str, session_name: str) -> None:
+async def _pane_poll_loop(app: web.Application, machine: str, session_name: str, interval: float = 2.0) -> None:
     """Poll capture-pane at intervals and push changes to subscribers."""
     from .tmux_manager import capture_pane
 
     state = app["state"]
     key = (machine, session_name)
     last_content = ""
-    log.info("pane_poll_loop started: %s/%s", machine, session_name)
+    log.info("pane_poll_loop started: %s/%s (interval=%.1fs)", machine, session_name, interval)
 
     try:
         while key in state["pane_streams"] and state["pane_streams"][key]["subscribers"]:
@@ -1412,7 +1412,7 @@ async def _pane_poll_loop(app: web.Application, machine: str, session_name: str)
             if content != last_content:
                 await _push_pane_output(state, key, content)
                 last_content = content
-            await asyncio.sleep(2.0)
+            await asyncio.sleep(interval)
     except asyncio.CancelledError:
         raise
     except Exception as exc:
@@ -1424,76 +1424,23 @@ async def _pane_poll_loop(app: web.Application, machine: str, session_name: str)
 async def _pane_stream_loop(app: web.Application, machine: str, session_name: str) -> None:
     """Background task that streams pane content to subscribers.
 
-    For local tmux: uses pipe-pane (real-time streaming via temp file).
-    For remote tmux / all psmux: polls capture-pane every 2s.
+    Uses capture-pane polling for all machines (local and remote, tmux and psmux).
     """
-    from .tmux_manager import capture_pane, start_pipe_pane, stop_pipe_pane
-
     state = app["state"]
     key = (machine, session_name)
-    local_machine = app.get("local_machine", "")
-    adapter = get_adapter(machine)
-    is_local_tmux = (machine == local_machine and adapter.mux_type == "tmux")
 
-    pipe_file = None
+    log.info("pane_stream_loop started: %s/%s", machine, session_name)
 
-    log.info("pane_stream_loop started: %s/%s (local_tmux=%s)", machine, session_name, is_local_tmux)
+    # Use polling for all machines (local and remote, tmux and psmux).
+    # pipe-pane is fragile over SSH and adds complexity for marginal gain.
+    # Local tmux polls at 1.5s, remote at 2.5s for lower SSH overhead.
+    is_local = (machine == app.get("local_machine", ""))
+    interval = 1.5 if is_local else 2.5
 
     try:
-        if is_local_tmux:
-            import os
-            safe_name = session_name.replace("/", "_").replace(" ", "_")
-            pipe_file = f"/tmp/claude-manager-pane-{safe_name}.log"
-
-            # Get initial content
-            initial = await capture_pane(machine, session_name)
-            await _push_pane_output(state, key, initial)
-
-            # Start pipe-pane
-            ok = await start_pipe_pane(session_name, pipe_file)
-            if not ok:
-                log.warning("pipe-pane failed for %s, falling back to polling", session_name)
-                await _pane_poll_loop(app, machine, session_name)
-                return
-
-            # Tail the file
-            last_size = 0
-            while key in state["pane_streams"] and state["pane_streams"][key]["subscribers"]:
-                try:
-                    if os.path.exists(pipe_file):
-                        current_size = os.path.getsize(pipe_file)
-                        if current_size > last_size:
-                            with open(pipe_file, "r", errors="replace") as f:
-                                f.seek(last_size)
-                                new_data = f.read()
-                            if new_data:
-                                content = await capture_pane(machine, session_name)
-                                await _push_pane_output(state, key, content)
-                            last_size = current_size
-                            # Truncate if file gets too large (>1MB)
-                            if current_size > 1_000_000:
-                                open(pipe_file, "w").close()
-                                last_size = 0
-                except OSError:
-                    pass
-                await asyncio.sleep(0.5)
-        else:
-            # Polling mode for remote or psmux
-            await _pane_poll_loop(app, machine, session_name)
+        await _pane_poll_loop(app, machine, session_name, interval)
     except asyncio.CancelledError:
         pass
-    finally:
-        if is_local_tmux:
-            try:
-                await stop_pipe_pane(session_name)
-            except Exception:
-                pass
-            if pipe_file:
-                import os
-                try:
-                    os.unlink(pipe_file)
-                except OSError:
-                    pass
 
 
 async def handle_tmux_capture(request: web.Request) -> web.Response:
