@@ -173,6 +173,105 @@ curl http://localhost:44740/api/fleet
 
 Each entry has `"online": true` or `"online": false` and a `"method"` field (`"http"`, `"ssh"`, or `"unreachable"`).
 
+## Step 6: Auto-Update via Watchdog (Recommended)
+
+claude-manager integrates with the [claude-dispatch](https://github.com/raphaelbgr/claude-dispatch) watchdog system for automatic updates and crash recovery across the fleet.
+
+### Architecture — The Mesh
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     Each Fleet Machine                       │
+│                                                              │
+│  ┌──────────────────┐  ┌──────────────────┐                 │
+│  │ claude-dispatch   │  │ claude-dispatch   │                │
+│  │ daemon.py :44730  │  │ updater.py :44731 │ ← Watchdog    │
+│  │ (job queue +      │  │ (git poll, test,  │                │
+│  │  /sessions,       │  │  restart daemon,  │                │
+│  │  /tmux,           │  │  sidecar monitor) │                │
+│  │  /browse,         │  │                   │                │
+│  │  /drives,         │  │  Monitors:        │                │
+│  │  /tmux/capture)   │  │  - dispatch daemon│                │
+│  └──────────────────┘  │  - claude-manager  │                │
+│                         │  - personal-cloud  │                │
+│  ┌──────────────────┐  └──────────────────┘                 │
+│  │ claude-manager    │                                       │
+│  │ :44740 (API+GUI)  │  ← Uses dispatch as infrastructure   │
+│  │ REST+WS+Desktop   │                                       │
+│  └──────────────────┘                                       │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Related Repositories
+
+| Repo | Purpose | Port |
+|------|---------|------|
+| [claude-dispatch](https://github.com/raphaelbgr/claude-dispatch) | Fleet mesh daemon + watchdog | 44730 (daemon), 44731 (watchdog) |
+| [claude-manager](https://github.com/raphaelbgr/claude-manager) | Session manager (this project) | 44740 |
+| [personal-cloud](https://github.com/raphaelbgr/personal-cloud) | Clipboard/screenshot daemon | — |
+
+### How Auto-Update Works
+
+The watchdog (`updater.py` on port 44731) runs on each machine and:
+
+1. **Polls git** every 120 seconds for new commits on `main`/`master`
+2. **Pulls changes** (`git pull --ff-only`)
+3. **Runs tests** (5 min timeout) to verify the update is safe
+4. **Restarts the daemon** if tests pass
+5. **Auto-rollbacks** if tests fail or health checks fail after restart
+6. **Writes failures** to `~/git/claude-kb-vault/pending-actions/` for manual review
+
+### Enable Watchdog Monitoring for claude-manager
+
+The dispatch watchdog can monitor claude-manager as a **sidecar service**. It will:
+- Probe `http://localhost:44740/health` every 30s
+- Auto-restart claude-manager if 3 consecutive health checks fail
+- Expose management via `GET/POST /services/claude-manager`
+
+To register claude-manager with the watchdog, the dispatch daemon's sidecar config detects services with a `/health` endpoint on known ports. Since claude-manager runs on `:44740`, it's automatically discovered.
+
+### Boot Services
+
+The installers (`installers/install-*.sh`) create boot services:
+
+| OS | Daemon Service | Location |
+|----|---------------|----------|
+| macOS | launchd | `~/Library/LaunchAgents/com.rbgnr.claude-manager.plist` |
+| Linux | systemd user | `~/.config/systemd/user/claude-manager.service` |
+| Windows | Task Scheduler | "Claude Manager" (runs at logon) |
+
+### Manual Fleet Deploy
+
+Push code to GitHub → the watchdog on each machine auto-pulls within 120s. No SSH needed.
+
+To force immediate deploy on a specific machine:
+
+```bash
+# Via watchdog API (if available)
+curl -X POST http://192.168.7.102:44731/watchdog/deploy -d '{"commit": "main"}'
+
+# Via SSH (direct)
+ssh mac-mini "cd ~/git/claude-manager && git pull && systemctl --user restart claude-manager"
+```
+
+### Verifying the Mesh
+
+```bash
+# Check dispatch daemon health on all machines
+curl http://192.168.7.102:44730/health   # mac-mini
+curl http://192.168.7.13:44730/health    # ubuntu-desktop
+curl http://192.168.7.103:44730/health   # avell-i7
+
+# Check watchdog status
+curl http://192.168.7.102:44731/watchdog/health
+
+# Check claude-manager health
+curl http://192.168.7.102:44740/health
+
+# Check sidecar services
+curl http://192.168.7.102:44731/services
+```
+
 ## Troubleshooting
 
 ### Machine shows offline
@@ -217,13 +316,19 @@ curl http://192.168.1.100:44730/health
 
 ### Windows SSH issues
 
-Windows SSH (via Git Bash) requires Git for Windows to be installed. The SSH server on Windows must be the OpenSSH Server included with Windows 10/11 or Git for Windows.
+Windows machines must use **PowerShell as the default SSH shell** (not Git Bash). Git Bash causes terminal scroll corruption over SSH.
+
+Set PowerShell as default (run on each Windows machine):
+```powershell
+New-ItemProperty -Path 'HKLM:\SOFTWARE\OpenSSH' -Name DefaultShell -Value 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' -PropertyType String -Force
+```
 
 Key points:
 
-- Install Git for Windows, which includes Git Bash and OpenSSH client/server
-- The SSH session lands in Git Bash by default — claude-manager handles this automatically
-- psmux sessions use cmd.exe internally; the CommandAdapter translates commands correctly for each shell
+- SSH lands in PowerShell — claude-manager handles this automatically
+- Git Bash is available if needed: `bash -c 'command'` from PowerShell
+- The `export PATH=...` prefix is NOT sent to Windows targets (PowerShell syntax)
+- psmux sessions use cmd.exe internally; the CommandAdapter translates commands correctly
 
 Check the Windows SSH server is running:
 
