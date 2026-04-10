@@ -426,8 +426,9 @@ function formatFileSize(bytes) {
 
 // ─── Badge Component ──────────────────────────────────────────────────────────
 
-function Badge({ text, color = '#8b949e', bg = '#21262d', border = '#30363d', icon }) {
+function Badge({ text, color = '#8b949e', bg = '#21262d', border = '#30363d', icon, title }) {
   return h('span', {
+    title,
     style: {
       display: 'inline-flex', alignItems: 'center', gap: 4,
       fontSize: '0.65rem', fontWeight: 600,
@@ -545,10 +546,16 @@ function useWebSocket(onMessage) {
 
 // ─── Status Dot ──────────────────────────────────────────────────────────────
 
+const STATUS_DOT_TITLES = {
+  working: 'Working — Claude is actively generating output',
+  active:  'Active — Claude Code is running, waiting for input',
+  idle:    'Idle — session exists but Claude Code is not currently running',
+};
+
 function StatusDot({ status, pulse = false }) {
   return h('span', {
     className: clsx('status-dot', status, pulse && (status === 'active' || status === 'working') && 'pulse'),
-    title: status,
+    title: STATUS_DOT_TITLES[status] || status,
   });
 }
 
@@ -610,7 +617,6 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
   const compactRow = h('div', {
     className: 'session-card-compact',
     onClick: onToggleExpand,
-    title: 'Click to expand',
     style: { cursor: 'pointer' },
   },
     // Status dot
@@ -628,7 +634,8 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
 
     // Custom session name in parentheses (muted)
     session.name && h('span', {
-      style: { fontSize: '0.72rem', color: '#8b949e', whiteSpace: 'nowrap', flexShrink: 0 }
+      style: { fontSize: '0.72rem', color: '#8b949e', whiteSpace: 'nowrap', flexShrink: 0 },
+      title: `Custom session name (set via /rename in Claude Code)`,
     }, `(${session.name})`),
 
     // Status badge (only working/active — compact, no machine stats)
@@ -650,15 +657,18 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
 
     // Stats — message count, size, time (compact essentials only)
     h('span', {
-      style: { fontSize: '0.65rem', color: '#8b949e', fontFamily: 'monospace', whiteSpace: 'nowrap', flexShrink: 0 }
+      style: { fontSize: '0.65rem', color: '#8b949e', fontFamily: 'monospace', whiteSpace: 'nowrap', flexShrink: 0 },
+      title: `${session.messages || 0} messages in this session's conversation`,
     }, `${session.messages || 0}msg`),
 
     session.file_size && h('span', {
-      style: { fontSize: '0.65rem', color: '#8b949e', fontFamily: 'monospace', whiteSpace: 'nowrap', flexShrink: 0 }
+      style: { fontSize: '0.65rem', color: '#8b949e', fontFamily: 'monospace', whiteSpace: 'nowrap', flexShrink: 0 },
+      title: `Size of the session's conversation log file`,
     }, formatFileSize(session.file_size)),
 
     h('span', {
-      style: { fontSize: '0.65rem', color: '#484f58', fontFamily: 'monospace', whiteSpace: 'nowrap', flexShrink: 0 }
+      style: { fontSize: '0.65rem', color: '#484f58', fontFamily: 'monospace', whiteSpace: 'nowrap', flexShrink: 0 },
+      title: `Last activity: ${session.modified || 'unknown'}`,
     }, relativeTime(session.modified)),
     !inMachineSection && h(MachineBadge, { machine: session.machine }),
 
@@ -670,7 +680,9 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
       className: `compact-action-btn btn btn-launch${launching ? '' : ''}`,
       onClick: e => { e.stopPropagation(); onLaunch(session); },
       disabled: launching,
-      title: launchLabel,
+      title: local
+        ? `Open a new terminal and resume this Claude Code session on ${session.machine || 'local'}`
+        : `Open a new terminal and resume this Claude Code session via SSH on ${session.machine}`,
     },
       h('span', { className: 'material-icons-round', style: { fontSize: '12px' } }, 'play_arrow'),
       launching ? '…' : launchShort,
@@ -681,7 +693,9 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
       className: `compact-action-btn btn btn-tmux${tmuxLaunching ? '' : ''}`,
       onClick: e => { e.stopPropagation(); onTmuxLaunch(session); },
       disabled: tmuxLaunching,
-      title: tmuxLabel,
+      title: local
+        ? `Create a new ${muxType} session on ${session.machine || 'local'} and resume Claude Code inside it`
+        : `Create a new ${muxType} session on ${session.machine} via SSH and resume Claude Code inside it`,
     },
       h('span', { className: 'material-icons-round', style: { fontSize: '12px' } }, 'terminal'),
       tmuxLaunching ? '…' : tmuxShort,
@@ -691,7 +705,7 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
     h('button', {
       className: `compact-action-btn btn btn-icon-only${isPinned ? ' btn-pin-active' : ''}`,
       onClick: e => { e.stopPropagation(); isPinned ? onUnpin(sessionId) : onPin(sessionId); },
-      title: isPinned ? 'Unpin' : 'Pin',
+      title: isPinned ? 'Unpin this session' : 'Pin this session to the top of the list for quick access',
     },
       h('span', { className: 'material-icons-round', style: { fontSize: '12px' } }, 'push_pin'),
     ),
@@ -707,7 +721,7 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
           onArchive(sessionId);
         }
       },
-      title: isArchived ? 'Unarchive' : 'Archive',
+      title: isArchived ? 'Unarchive this session' : 'Archive this session to hide it from the main list',
     },
       h('span', { className: 'material-icons-round', style: { fontSize: '12px' } }, 'archive'),
     ),
@@ -716,6 +730,7 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
     h('span', {
       className: 'material-icons-round',
       style: { color: '#484f58', fontSize: '16px', flexShrink: 0, userSelect: 'none', verticalAlign: 'middle' },
+      title: expanded ? 'Click to collapse session details' : 'Click to show full session details',
     }, expanded ? 'expand_less' : 'expand_more'),
   );
 
@@ -778,7 +793,7 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
       isActive && !renaming && h('button', {
         className: 'compact-action-btn',
         onClick: () => { setRenaming(true); setRenameName(session.name || ''); },
-        title: 'Rename session',
+        title: 'Rename this session (equivalent to /rename in Claude Code)',
       }, h(Icon, { name: 'edit', size: 11 }), ' Rename'),
 
       // Inline rename form
@@ -799,18 +814,25 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
 
     // Machine + OS badges (full)
     h('div', { style: { display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center', marginBottom: 8 } },
-      h(MachineBadge, { machine: session.machine }),
-      h(OsBadge, { machine: session.machine }),
+      h('span', {
+        title: `${session.machine} at ${(MACHINE_INFO[session.machine] || {}).ip || 'unknown IP'} — ${isLocalMachine(session.machine) ? 'local' : 'remote'} machine running ${getMachineOS(session.machine)}`,
+      }, h(MachineBadge, { machine: session.machine })),
+      h('span', {
+        title: `Operating system: ${getMachineOS(session.machine)}`,
+      }, h(OsBadge, { machine: session.machine })),
       session.cpu_percent > 0 && h(Badge, {
         text: `${session.cpu_percent}% CPU`,
         color: session.cpu_percent > 30 ? '#e3b341' : '#8b949e',
+        title: `CPU usage of this Claude Code process`,
       }),
       session.subprocess_count > 0 && h(Badge, {
         text: `${session.subprocess_count} subprocesses`,
         color: '#8b949e',
+        title: `Number of child processes spawned by this Claude Code session`,
       }),
       session.git_branch && h('span', {
         className: 'compact-action-btn',
+        title: `Git branch: ${session.git_branch} — the branch active when this session was created`,
         style: {
           cursor: 'default',
           fontSize: '0.62rem',
@@ -833,6 +855,9 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
         className: 'btn',
         onClick: () => onLaunch(session),
         disabled: launching,
+        title: local
+          ? `Open a new terminal and resume this Claude Code session on ${session.machine || 'local'}`
+          : `Open a new terminal and resume this Claude Code session via SSH on ${session.machine}`,
         style: {
           fontSize: '0.72rem', fontWeight: 600,
           background: launchBg, color: launchColor,
@@ -846,6 +871,9 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
         className: 'btn',
         onClick: () => onTmuxLaunch(session),
         disabled: tmuxLaunching,
+        title: local
+          ? `Create a new ${muxType} session on ${session.machine || 'local'} and resume Claude Code inside it`
+          : `Create a new ${muxType} session on ${session.machine} via SSH and resume Claude Code inside it`,
         style: {
           fontSize: '0.72rem', fontWeight: 600,
           background: '#1a3a2a', color: '#3fb950',
@@ -872,13 +900,13 @@ function TmuxCard({ session, onConnect, connecting, onKill, killing, onRemoteAtt
   const local = isLocalMachine(session.machine);
   const muxOS = (MACHINE_INFO[session.machine] || {}).os || 'macOS';
   const muxName = muxOS === 'Windows' ? 'psmux' : 'tmux';
-  const connectLabel = connecting ? 'Attaching…' : (local ? `Attach ${muxName}` : `SSH + Attach ${muxName}`);
   const sessionName = session.session_name || session.name || '(unnamed)';
 
   return h('div', { className: 'tmux-card' },
     h('div', { style: { flex: 1, minWidth: 0 } },
       // Session name
       h('div', {
+        title: `${muxName} session name`,
         style: {
           fontSize: '0.85rem', fontWeight: 700, color: '#e6edf3',
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
@@ -894,70 +922,61 @@ function TmuxCard({ session, onConnect, connecting, onKill, killing, onRemoteAtt
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
           marginBottom: 5,
         },
-        title: session.cwd,
+        title: `Working directory of the active pane: ${session.cwd}`,
       }, session.cwd),
 
       // Badge row
       h('div', {
         style: { display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center', marginBottom: 8 }
       },
-        h(MachineBadge, { machine: session.machine }),
-        h(OsBadge, { machine: session.machine }),
-        session.windows != null && h(Badge, { text: `${session.windows} win` }),
-        isAttached && h(Badge, { text: 'attached', color: '#58a6ff', bg: '#1f3a5f', border: '#2d4f7a' }),
+        h('span', {
+          title: `${session.machine} at ${(MACHINE_INFO[session.machine] || {}).ip || 'unknown IP'} — ${isLocalMachine(session.machine) ? 'local' : 'remote'} machine`,
+        }, h(MachineBadge, { machine: session.machine })),
+        h('span', {
+          title: `Operating system: ${getMachineOS(session.machine)}`,
+        }, h(OsBadge, { machine: session.machine })),
+        session.windows != null && h(Badge, { text: `${session.windows} win`, title: `Number of windows in this ${muxName} session` }),
+        isAttached && h(Badge, { text: 'attached', color: '#58a6ff', bg: '#1f3a5f', border: '#2d4f7a', title: 'A client is currently attached to this session' }),
       ),
 
-      // Action buttons
-      h('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: 6 } },
+      // Action buttons — compact single row, text only
+      h('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap' } },
         h('button', {
-          className: 'btn',
-          onClick: () => onKill(session),
+          className: 'compact-action-btn btn',
+          onClick: (e) => { e.stopPropagation(); onKill(session); },
           disabled: killing,
-          title: confirmKill ? `Click again to confirm kill "${sessionName}"` : `Kill tmux session "${sessionName}" on ${session.machine}`,
+          title: confirmKill
+            ? `Click again to confirm — this will terminate "${sessionName}" on ${session.machine}`
+            : local
+              ? `Terminate this ${muxName} session (click twice to confirm)`
+              : `Terminate this ${muxName} session on ${session.machine} (click twice to confirm)`,
           style: {
-            fontSize: '0.72rem', fontWeight: 600,
-            background: killing ? '#3a1a1a' : confirmKill ? '#5a2a2a' : '#21262d',
+            borderColor: confirmKill ? '#7a2a2a' : '#5a2a2a',
             color: '#f85149',
-            border: '1px solid #5a2a2a',
-            borderRadius: 6, padding: '4px 10px',
-            cursor: killing ? 'not-allowed' : 'pointer',
+            background: confirmKill ? '#5a2a2a' : undefined,
             opacity: killing ? 0.6 : 1,
-          }
-        }, killing ? 'Killing…' : confirmKill ? 'Confirm?' : (local ? 'Kill' : 'SSH + Kill')),
+          },
+        }, killing ? 'Killing…' : confirmKill ? 'Confirm?' : 'Kill'),
         !local && h('button', {
-          className: 'btn',
-          onClick: () => onRemoteAttach(session),
+          className: 'compact-action-btn btn',
+          onClick: (e) => { e.stopPropagation(); onRemoteAttach(session); },
           disabled: remoteAttaching,
-          title: `Open terminal on ${session.machine}'s own display`,
+          title: `Open a terminal directly on ${session.machine}'s own display attached to this session`,
           style: {
-            fontSize: '0.72rem', fontWeight: 600,
-            background: remoteAttaching ? '#1a2a3a' : '#21262d',
+            borderColor: '#3a2a5a',
             color: '#a371f7',
-            border: '1px solid #3a2a5a',
-            borderRadius: 6, padding: '4px 10px',
-            cursor: remoteAttaching ? 'not-allowed' : 'pointer',
             opacity: remoteAttaching ? 0.6 : 1,
-          }
-        },
-          remoteAttaching ? 'Opening…' : h(Fragment, null,
-            h('span', { className: 'material-icons-round', style: { fontSize: '12px', verticalAlign: 'middle', marginRight: 3 } }, 'desktop_windows'),
-            'Remote',
-          ),
-        ),
+          },
+        }, remoteAttaching ? 'Opening…' : 'Remote'),
         h('button', {
-          className: 'btn',
-          onClick: () => onConnect(session),
+          className: `compact-action-btn btn btn-tmux`,
+          onClick: (e) => { e.stopPropagation(); onConnect(session); },
           disabled: connecting,
-          style: {
-            fontSize: '0.72rem', fontWeight: 600,
-            background: local ? '#1a3a2a' : '#3a2200',
-            color: local ? '#3fb950' : '#e3b341',
-            border: `1px solid ${local ? '#2a5a3a' : '#5a3a00'}`,
-            borderRadius: 6, padding: '4px 12px',
-            cursor: connecting ? 'not-allowed' : 'pointer',
-            opacity: connecting ? 0.6 : 1,
-          }
-        }, connectLabel),
+          title: local
+            ? `Attach to this ${muxName} session in a new terminal window`
+            : `Open a local terminal and attach to this ${muxName} session on ${session.machine}`,
+          style: { opacity: connecting ? 0.6 : 1 },
+        }, connecting ? 'Attaching…' : 'Attach'),
       ),
     ),
   );
@@ -1043,6 +1062,7 @@ function MachineSection({ machine, children, count, collapseKey, collapseState, 
     h('div', {
       className: 'machine-header',
       onClick: toggle,
+      title: `Click to ${isOpen ? 'collapse' : 'expand'} sessions from ${machine}`,
     },
       h('span', {
         style: { color: '#8b949e', fontSize: '0.75rem', transition: 'transform 0.15s',
@@ -1094,6 +1114,7 @@ function ProjectSection({ projectPath, children, count, defaultOpen: defOpen = t
   return h('div', { style: { marginLeft: 8, marginBottom: 4 } },
     h('div', {
       onClick: toggle,
+      title: `Click to ${isOpen ? 'collapse' : 'expand'} sessions in ${projectPath}`,
       style: {
         display: 'flex', alignItems: 'center', gap: 6,
         padding: '4px 8px', cursor: 'pointer',
@@ -1308,6 +1329,7 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
           }, 'Machine'),
           h('select', {
             className: 'form-input',
+            title: 'Select which machine to create the session on',
             value: machine,
             onChange: e => setMachine(e.target.value),
           },
@@ -1322,6 +1344,7 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
             className: 'form-input',
             type: 'text',
             placeholder: 'e.g. dev-session',
+            title: 'Name for the new tmux/psmux session',
             value: name,
             onChange: e => setName(e.target.value),
             onKeyDown: e => { if (e.key === 'Enter') handleCreate(); },
@@ -1336,6 +1359,7 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
               className: 'form-input',
               type: 'text',
               placeholder: '/Users/rbgnr/git/project',
+              title: 'Starting directory for the session (leave empty for home directory)',
               value: cwd,
               onChange: e => setCwd(e.target.value),
               style: { flex: 1 },
@@ -1343,6 +1367,7 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
             h('button', {
               type: 'button',
               onClick: handleBrowseToggle,
+              title: 'Browse directories on the selected machine',
               style: {
                 background: browseOpen ? '#1f6feb' : '#21262d',
                 color: browseOpen ? '#e6edf3' : '#8b949e',
@@ -1383,6 +1408,7 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
               h('select', {
                 value: drives.find(d => browsePath.startsWith(d.path))?.path || (drives.find(d => d.is_system)?.path || ''),
                 onChange: e => fetchDirs(e.target.value),
+                title: 'Select a drive/volume on the selected machine',
                 style: {
                   flex: 1,
                   background: '#161b22',
@@ -1420,6 +1446,7 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
               !browseLoading && !newFolderMode && h('button', {
                 type: 'button',
                 onClick: () => { setNewFolderMode(true); setNewFolderName(''); },
+                title: 'Create a new folder in the current directory',
                 style: {
                   background: '#21262d',
                   color: '#e6edf3',
@@ -1589,6 +1616,7 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
             className: 'form-input',
             type: 'text',
             placeholder: 'e.g. claude',
+            title: 'Command to run inside the new session (e.g. claude)',
             value: command,
             onChange: e => setCommand(e.target.value),
             onKeyDown: e => { if (e.key === 'Enter') handleCreate(); },
@@ -1636,6 +1664,7 @@ function PinnedSection({ sessions, pinnedIds, onLaunch, launchingId, onTmuxLaunc
       style: { display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8, padding: '0 2px' }
     },
       h('span', {
+        title: "Sessions you've pinned for quick access",
         style: {
           fontSize: '0.7rem', fontWeight: 700, letterSpacing: '0.08em',
           textTransform: 'uppercase', color: '#e3b341',
@@ -1878,6 +1907,7 @@ function TmuxPanel({ tmuxSessions, fleet, onConnectTmux, connectingId, onKillTmu
       h('button', {
         className: 'btn',
         onClick: onNewSession,
+        title: 'Create a new tmux or psmux session on any machine',
         style: {
           width: '100%', background: '#21262d',
           border: '1px dashed #30363d', borderRadius: 8,
@@ -1967,6 +1997,7 @@ function LogPanel({ visible, onClose }) {
         h('button', {
           key: lv || 'all',
           onClick: () => setLevelFilter(lv),
+          title: lv ? `Show only ${lv} messages` : 'Show all log messages',
           style: {
             fontSize: '0.6rem', fontWeight: 700, padding: '1px 7px',
             borderRadius: 10, border: '1px solid',
@@ -2002,6 +2033,7 @@ function LogPanel({ visible, onClose }) {
       // Close button
       h('button', {
         onClick: onClose,
+        title: 'Close the log panel',
         style: {
           background: 'none', border: 'none', cursor: 'pointer',
           color: '#484f58', fontSize: '14px', padding: '0 2px',
@@ -2085,6 +2117,7 @@ function FleetBar({ fleet, lastScan, wsConnected }) {
       const info = MACHINE_INFO[m.name] || {};
       return h('div', {
         key: m.name,
+        title: `${m.name} (${info.ip || 'unknown IP'}) — ${m.online ? 'online' : 'offline'}, ${info.os || 'unknown OS'}`,
         style: { display: 'flex', alignItems: 'center', gap: 4 }
       },
         h('span', {
@@ -2107,8 +2140,9 @@ function FleetBar({ fleet, lastScan, wsConnected }) {
     h('div', {
       style: { marginLeft: 'auto', color: '#484f58', display: 'flex', gap: 12, alignItems: 'center' }
     },
-      lastScan && h('span', null, `scan: ${relativeTime(lastScan)}`),
+      lastScan && h('span', { title: 'Time since last automatic scan of all machines' }, `scan: ${relativeTime(lastScan)}`),
       h('div', {
+        title: `WebSocket connection status — live updates ${wsConnected ? 'connected' : 'disconnected'}`,
         style: { display: 'flex', alignItems: 'center', gap: 5 }
       },
         h('span', {
@@ -2159,18 +2193,22 @@ function Header({ health, sessions, tmuxSessions, fleet, onScan, scanning, skipP
       return h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
         h('span', {
           className: 'badge',
+          title: 'Total Claude Code sessions found across all machines',
           style: { background: '#21262d', color: '#8b949e', border: '1px solid #30363d' }
         }, `${sessions.length} sessions`),
         h('span', {
           className: 'badge',
+          title: 'Total tmux sessions running across Linux/macOS machines',
           style: { background: '#21262d', color: '#8b949e', border: '1px solid #30363d' }
         }, `${tmuxCount} tmux`),
         h('span', {
           className: 'badge',
+          title: 'Total psmux sessions running across Windows machines',
           style: { background: '#21262d', color: '#8b949e', border: '1px solid #30363d' }
         }, `${psmuxCount} psmux`),
         h('span', {
           className: 'badge',
+          title: `Online machines out of total configured fleet machines`,
           style: {
             background: online > 0 ? '#1a3a2a' : '#3a1a1a',
             color: online > 0 ? '#3fb950' : '#f85149',
@@ -2188,6 +2226,7 @@ function Header({ health, sessions, tmuxSessions, fleet, onScan, scanning, skipP
       className: 'btn',
       onClick: onScan,
       disabled: scanning,
+      title: 'Rescan all machines for Claude Code sessions and tmux/psmux sessions',
       style: {
         background: scanning ? '#1f3a5f' : '#21262d',
         border: '1px solid #30363d', borderRadius: 8,
@@ -2209,6 +2248,7 @@ function Header({ health, sessions, tmuxSessions, fleet, onScan, scanning, skipP
 
     // Skip permissions toggle
     h('label', {
+      title: 'When enabled, all launched sessions include the --dangerously-skip-permissions flag (Claude Code skips permission prompts)',
       style: {
         display: 'flex', alignItems: 'center', gap: 6,
         cursor: 'pointer', userSelect: 'none',
@@ -2270,7 +2310,7 @@ function Header({ health, sessions, tmuxSessions, fleet, onScan, scanning, skipP
           }
         } catch (e) { toast(`Restart error: ${e.message}`, 'error'); }
       },
-      title: restartConfirm ? 'Click again to confirm restart' : 'Restart API server',
+      title: restartConfirm ? 'Click again to confirm restart' : 'Reset the background scan cycle and refresh all data',
       style: {
         background: restartConfirm ? '#5a3a00' : '#21262d',
         border: `1px solid ${restartConfirm ? '#7a5a00' : '#30363d'}`, borderRadius: 8,
@@ -2388,7 +2428,7 @@ function FilterBar({ sessions, tmuxSessions, fleet, filters, setFilters, archive
           key: m,
           className: `filter-pill${filters.machines.has(m) ? ' active-machine' : ''}`,
           onClick: () => toggleMachine(m),
-          title: `Toggle ${m}`,
+          title: `Click to show/hide sessions from ${m} (${(MACHINE_INFO[m] || {}).ip || 'unknown IP'})`,
         }, `${m}${machineCounts[m] != null ? ` (${machineCounts[m]})` : ''}`)
       ),
 
@@ -2398,6 +2438,7 @@ function FilterBar({ sessions, tmuxSessions, fleet, filters, setFilters, archive
           key,
           className: `filter-pill${filters.statuses.has(key) ? ` ${pillClass}` : ''}`,
           onClick: () => toggleStatus(key),
+          title: `Click to show/hide ${label.toLowerCase()} sessions`,
         }, label)
       ),
       h('button', {
@@ -2416,6 +2457,7 @@ function FilterBar({ sessions, tmuxSessions, fleet, filters, setFilters, archive
       h('span', { className: 'filter-label' }, 'Time'),
       h('select', {
         className: 'filter-select',
+        title: 'Filter sessions by when they were last modified',
         value: filters.timeRange,
         onChange: e => setFilters(prev => ({ ...prev, timeRange: e.target.value })),
       }, timeRangeOptions.map(o => h('option', { key: o.value, value: o.value }, o.label))),
@@ -2423,6 +2465,7 @@ function FilterBar({ sessions, tmuxSessions, fleet, filters, setFilters, archive
       h('span', { className: 'filter-label', style: { marginLeft: 8 } }, 'Sort'),
       h('select', {
         className: 'filter-select',
+        title: 'Change the order sessions are displayed',
         value: filters.sortBy,
         onChange: e => setFilters(prev => ({ ...prev, sortBy: e.target.value })),
       }, sortByOptions.map(o => h('option', { key: o.value, value: o.value }, o.label))),
@@ -2431,6 +2474,7 @@ function FilterBar({ sessions, tmuxSessions, fleet, filters, setFilters, archive
         type: 'text',
         className: 'form-input',
         placeholder: 'Search sessions…',
+        title: 'Search sessions by project name, path, summary, or machine',
         value: filters.text,
         onChange: e => setFilters(prev => ({ ...prev, text: e.target.value })),
         style: { fontSize: '0.75rem', padding: '3px 10px', maxWidth: 200, marginLeft: 8 },
@@ -2439,10 +2483,13 @@ function FilterBar({ sessions, tmuxSessions, fleet, filters, setFilters, archive
       isFiltersActive && h('button', {
         className: 'filter-reset',
         onClick: resetFilters,
-        title: 'Reset all filters',
+        title: 'Clear all active filters',
       }, 'Reset'),
 
-      h('span', { className: 'filter-count' },
+      h('span', {
+        className: 'filter-count',
+        title: `Number of sessions matching current filters out of total`,
+      },
         visibleCount === totalSessions
           ? `${totalSessions} sessions`
           : `Showing ${visibleCount} of ${totalSessions} sessions`
@@ -3034,7 +3081,7 @@ function App() {
             h('button', {
               className: 'btn',
               onClick: handleExpandAll,
-              title: 'Expand all sections',
+              title: 'Expand all machine and project sections',
               style: {
                 background: 'none', border: '1px solid #30363d', borderRadius: 4,
                 color: '#8b949e', padding: '2px 8px', fontSize: '0.65rem',
@@ -3044,7 +3091,7 @@ function App() {
             h('button', {
               className: 'btn',
               onClick: handleCollapseAll,
-              title: 'Collapse all sections',
+              title: 'Collapse all machine and project sections',
               style: {
                 background: 'none', border: '1px solid #30363d', borderRadius: 4,
                 color: '#8b949e', padding: '2px 8px', fontSize: '0.65rem',
@@ -3109,6 +3156,7 @@ function App() {
             }
           },
             h('span', {
+              title: 'Terminal multiplexer sessions across all machines',
               style: {
                 fontSize: '0.7rem', fontWeight: 700, letterSpacing: '0.08em',
                 textTransform: 'uppercase', color: '#484f58',
