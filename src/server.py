@@ -827,18 +827,10 @@ async def handle_logs(request: web.Request) -> web.Response:
 
 
 async def handle_restart(request: web.Request) -> web.Response:
-    """POST /api/restart — restart the API server.
-
-    In GUI mode (pywebview): restarts just the server thread, webview stays open.
-    In API-only mode: re-execs the process.
-    Either way, the client reloads after a few seconds.
-    """
-    import asyncio
-
+    """POST /api/restart — reset the scan cycle without killing the server."""
     app = request.app
 
-    async def _do_restart():
-        await asyncio.sleep(0.5)
+    try:
         # Cancel the background scan task
         bg = app.get("bg_task")
         if bg:
@@ -847,17 +839,21 @@ async def handle_restart(request: web.Request) -> web.Response:
                 await bg
             except asyncio.CancelledError:
                 pass
+
         # Clear state to force a fresh scan on next cycle
         app["state"]["sessions"] = []
         app["state"]["fleet"] = {}
         app["state"]["tmux"] = []
         app["state"]["last_scan"] = None
+
         # Restart background scan
         app["bg_task"] = asyncio.ensure_future(_background_scan(app))
         log.info("Server restarted (background scan reset)")
 
-    asyncio.ensure_future(_do_restart())
-    return web.json_response({"ok": True, "message": "Restarting scan cycle..."})
+        return web.json_response({"ok": True, "message": "Scan cycle restarted"})
+    except Exception as exc:
+        log.exception("restart failed")
+        return web.json_response({"ok": False, "error": str(exc)}, status=500)
 
 
 async def handle_preferences_get(request: web.Request) -> web.Response:

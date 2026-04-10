@@ -880,30 +880,21 @@ class TestRestart:
     @pytest.mark.asyncio
     async def test_restart_returns_ok(self, tmp_path):
         async with make_client(tmp_path) as client:
-            # os is imported locally inside handle_restart, patch os.execv globally
-            with patch("os.execv"), \
-                 patch("asyncio.ensure_future"):
-                resp = await client.post("/api/restart")
-                data = await resp.json()
-
+            resp = await client.post("/api/restart")
+            data = await resp.json()
         assert data["ok"] is True
 
     @pytest.mark.asyncio
     async def test_restart_returns_message(self, tmp_path):
         async with make_client(tmp_path) as client:
-            with patch("os.execv"), \
-                 patch("asyncio.ensure_future"):
-                resp = await client.post("/api/restart")
-                data = await resp.json()
-
-        assert "message" in data or "Restart" in str(data)
+            resp = await client.post("/api/restart")
+            data = await resp.json()
+        assert "message" in data
 
     @pytest.mark.asyncio
     async def test_restart_200_status(self, tmp_path):
         async with make_client(tmp_path) as client:
-            with patch("os.execv"), \
-                 patch("asyncio.ensure_future"):
-                resp = await client.post("/api/restart")
+            resp = await client.post("/api/restart")
         assert resp.status == 200
 
 
