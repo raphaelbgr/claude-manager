@@ -2643,11 +2643,16 @@ function SecurityModal({ authStatus, onClose, onAuthStatusChange }) {
 
 // ─── Header ───────────────────────────────────────────────────────────────────
 
-function Header({ health, sessions, tmuxSessions, fleet, onScan, scanning, scanProgress, skipPermissions, onSkipPermissionsChange, showLogs, onToggleLogs, authStatus, onToggleSecurity }) {
+function Header({ health, sessions, tmuxSessions, fleet, onScan, scanning, scanProgress, skipPermissions, onSkipPermissionsChange, showLogs, onToggleLogs, authStatus, onToggleSecurity, updateStatus, onApplyUpdate, applyingUpdate }) {
   const online = Object.values(fleet || {}).filter(m => m.online).length;
   const total = Object.keys(fleet || {}).length;
   const [restartConfirm, setRestartConfirm] = useState(false);
   const restartTimerRef = useRef(null);
+  const currentVersion = health && health.version && health.version.version;
+  const currentCommit = health && health.version && health.version.commit;
+  const updateAvailable = updateStatus && updateStatus.update_available;
+  const latestCommit = updateStatus && updateStatus.latest && updateStatus.latest.commit;
+  const latestMsg = updateStatus && updateStatus.latest && updateStatus.latest.message;
 
   return h('header', {
     style: {
@@ -2668,9 +2673,42 @@ function Header({ health, sessions, tmuxSessions, fleet, onScan, scanning, scanP
       h('span', {
         style: { fontSize: '1rem', fontWeight: 700, color: '#e6edf3', letterSpacing: '-0.3px' }
       }, 'claude-manager'),
-      h('span', {
-        style: { fontSize: '0.7rem', color: '#8b949e', fontWeight: 400, letterSpacing: '0.2px', marginLeft: 2, alignSelf: 'flex-end', paddingBottom: '1px' }
-      }, 'v1.0.0'),
+      // Version badge (current version, or "v97 → v98" when update available)
+      h('button', {
+        onClick: updateAvailable ? onApplyUpdate : undefined,
+        disabled: applyingUpdate || !updateAvailable,
+        title: updateAvailable
+          ? `Update available: ${currentCommit} → ${latestCommit}\n\n${latestMsg || ''}\n\nClick to pull and restart.`
+          : currentCommit
+            ? `Running v${currentVersion} (${currentCommit}) — up to date`
+            : 'Version info unavailable',
+        style: {
+          background: updateAvailable ? '#5a4a00' : 'transparent',
+          border: `1px solid ${updateAvailable ? '#7a6a00' : 'transparent'}`,
+          borderRadius: 6,
+          padding: updateAvailable ? '2px 8px' : '0',
+          fontSize: '0.7rem',
+          color: updateAvailable ? '#e3b341' : '#8b949e',
+          fontWeight: updateAvailable ? 700 : 400,
+          letterSpacing: '0.2px',
+          marginLeft: 2,
+          alignSelf: 'flex-end',
+          cursor: updateAvailable ? (applyingUpdate ? 'wait' : 'pointer') : 'default',
+          display: 'flex', alignItems: 'center', gap: 4,
+          whiteSpace: 'nowrap',
+          opacity: applyingUpdate ? 0.6 : 1,
+        }
+      },
+        updateAvailable && h('span', {
+          className: 'material-icons-round',
+          style: { fontSize: '12px' }
+        }, applyingUpdate ? 'hourglass_top' : 'system_update_alt'),
+        applyingUpdate
+          ? 'Updating…'
+          : updateAvailable
+            ? `v${currentVersion || '?'} → ${latestCommit}`
+            : `v${currentVersion || '?'}`,
+      ),
     ),
 
     // Stat pills
@@ -3231,6 +3269,8 @@ function App() {
   const [showLogs, setShowLogs]           = useState(false);
   const [authStatus, setAuthStatus]       = useState(null);
   const [showSecurity, setShowSecurity]   = useState(false);
+  const [updateStatus, setUpdateStatus]   = useState(null);
+  const [applyingUpdate, setApplyingUpdate] = useState(false);
 
   // ── Auth config on startup ────────────────────────────────────────────────
   useEffect(() => {
@@ -3243,6 +3283,50 @@ function App() {
       }
     }).catch(() => {});
   }, []);
+
+  // ── Check for updates on startup + every 5 minutes ───────────────────────
+  const fetchUpdateStatus = useCallback(async () => {
+    try {
+      const resp = await fetch('/api/update/check');
+      if (resp.ok) {
+        const data = await resp.json();
+        setUpdateStatus(data);
+      }
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    fetchUpdateStatus();
+    const id = setInterval(fetchUpdateStatus, 5 * 60 * 1000);
+    return () => clearInterval(id);
+  }, [fetchUpdateStatus]);
+
+  // ── Apply update (git pull + restart) ───────────────────────────────────
+  const handleApplyUpdate = useCallback(async () => {
+    if (applyingUpdate) return;
+    if (!confirm('Pull latest code and restart?\n\nThe window will briefly close and reopen.')) return;
+    setApplyingUpdate(true);
+    toast('Pulling latest code…', 'info');
+    try {
+      const resp = await apiFetch('/api/update/apply', { method: 'POST' });
+      const data = await resp.json();
+      if (data.ok) {
+        toast('Update applied — restarting…', 'success');
+        // The server will restart itself; the WS will disconnect and reconnect
+        // once the new process is up. Refresh update status after a bit.
+        setTimeout(() => {
+          fetchUpdateStatus();
+          setApplyingUpdate(false);
+        }, 6000);
+      } else {
+        toast(`Update failed: ${data.error || 'unknown'}`, 'error');
+        setApplyingUpdate(false);
+      }
+    } catch (e) {
+      toast(`Update failed: ${e.message}`, 'error');
+      setApplyingUpdate(false);
+    }
+  }, [applyingUpdate, fetchUpdateStatus]);
 
   // Pane stream state: { "machine:session_name": "content string" }
   const [paneStreams, setPaneStreams] = useState({});
@@ -3868,6 +3952,9 @@ function App() {
         onToggleLogs: () => setShowLogs(v => !v),
         authStatus,
         onToggleSecurity: () => setShowSecurity(v => !v),
+        updateStatus,
+        onApplyUpdate: handleApplyUpdate,
+        applyingUpdate,
       }),
 
       // Filter bar

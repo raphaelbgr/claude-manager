@@ -53,6 +53,8 @@ KNOWN_SERVER_API_ROUTES = {
     "/api/auth/config",
     "/api/auth/token",
     "/api/auth/update",
+    "/api/update/check",
+    "/api/update/apply",
 }
 
 # Expected WebSocket channels (from handle_ws in server.py)
@@ -401,10 +403,13 @@ class TestNoConfirmCalls:
     """The UI must not use window.confirm() for destructive actions."""
 
     def test_no_window_confirm_calls(self, html):
-        # confirm() is only allowed for the Exit button (destructive, non-reversible)
+        # confirm() only allowed for destructive/disruptive actions:
+        #   1. Exit button (kills the server)
+        #   2. Update and restart (closes and reopens the window)
         matches = re.findall(r"\bconfirm\s*\(", html)
-        # Allow exactly 1 confirm for Exit
-        assert len(matches) <= 1, f"Found {len(matches)} confirm() calls — only Exit button should use it"
+        assert len(matches) <= 2, (
+            f"Found {len(matches)} confirm() calls — only Exit and Update should use it"
+        )
 
 
 # ---------------------------------------------------------------------------

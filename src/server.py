@@ -10,9 +10,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import pathlib
 import platform
 import subprocess
+import sys
 import time
 from collections import deque
 from datetime import datetime, timezone
@@ -105,6 +107,7 @@ _AUTH_EXEMPT_PATHS = {
     "/",
     "/health",
     "/api/auth/config",
+    "/api/update/check",
 }
 _AUTH_EXEMPT_PREFIXES = ("/static/",)
 
@@ -366,6 +369,135 @@ def _read_version_metadata() -> dict:
 
 
 _VERSION_METADATA = _read_version_metadata()
+
+# Cached GitHub upstream version check — avoid rate-limiting the unauth API
+_update_check_cache: dict = {"data": None, "ts": 0.0}
+_UPDATE_CHECK_TTL = 60.0  # seconds
+_GITHUB_API_URL = "https://api.github.com/repos/raphaelbgr/claude-manager/commits/master"
+
+
+async def _fetch_github_latest() -> dict | None:
+    """Fetch the latest commit from GitHub. Returns a metadata dict or None on failure."""
+    try:
+        import aiohttp as _aiohttp
+        async with _aiohttp.ClientSession() as session:
+            async with session.get(
+                _GITHUB_API_URL,
+                headers={"Accept": "application/vnd.github.v3+json"},
+                timeout=_aiohttp.ClientTimeout(total=5),
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+        msg = (data.get("commit", {}).get("message") or "").split("\n", 1)[0][:120]
+        return {
+            "commit": data["sha"][:7],
+            "commit_full": data["sha"],
+            "date": data["commit"]["author"]["date"],
+            "message": msg,
+        }
+    except Exception as exc:
+        log.debug("github version fetch failed: %s", exc)
+        return None
+
+
+async def handle_update_check(request: web.Request) -> web.Response:
+    """GET /api/update/check — compare local vs GitHub latest commit.
+
+    Returns: {ok, current, latest, update_available}
+    Cached for 60s to avoid GitHub rate limits.
+    """
+    now = time.monotonic()
+    cached = _update_check_cache.get("data")
+    if cached and (now - _update_check_cache["ts"]) < _UPDATE_CHECK_TTL:
+        return web.json_response(cached)
+
+    # Refresh current version from git (may have changed via out-of-band pull)
+    global _VERSION_METADATA
+    _VERSION_METADATA = _read_version_metadata()
+    current = _VERSION_METADATA
+
+    latest = await _fetch_github_latest()
+    if latest is None:
+        return web.json_response({
+            "ok": False,
+            "error": "failed to reach github",
+            "current": current,
+            "latest": None,
+            "update_available": False,
+        })
+
+    update_available = bool(latest.get("commit_full") != current.get("commit_full"))
+
+    result = {
+        "ok": True,
+        "current": current,
+        "latest": latest,
+        "update_available": update_available,
+    }
+    _update_check_cache["data"] = result
+    _update_check_cache["ts"] = now
+    return web.json_response(result)
+
+
+async def handle_update_apply(request: web.Request) -> web.Response:
+    """POST /api/update/apply — git pull + restart process.
+
+    Loopback-only. Runs `git pull --ff-only`, updates the version cache,
+    and schedules os.execv() so the response returns before the restart.
+    The desktop window will close briefly and reopen with the new code.
+    """
+    from .auth import is_loopback
+    if not is_loopback(request.remote):
+        return web.json_response({"ok": False, "error": "loopback only"}, status=403)
+
+    import pathlib as _pathlib
+    repo = _pathlib.Path(__file__).parent.parent
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git", "pull", "--ff-only",
+            cwd=str(repo),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+    except asyncio.TimeoutError:
+        return web.json_response({"ok": False, "error": "git pull timed out"}, status=504)
+    except Exception as exc:
+        return web.json_response({"ok": False, "error": str(exc)}, status=500)
+
+    if proc.returncode != 0:
+        err = stderr.decode("utf-8", errors="replace").strip()
+        return web.json_response({
+            "ok": False,
+            "error": f"git pull failed: {err}",
+        }, status=500)
+
+    pull_output = stdout.decode("utf-8", errors="replace").strip()
+
+    # Refresh version metadata and invalidate the GitHub cache
+    global _VERSION_METADATA
+    _VERSION_METADATA = _read_version_metadata()
+    _update_check_cache["data"] = None
+    _update_check_cache["ts"] = 0.0
+
+    log.info("update: git pull ok — %s", pull_output.splitlines()[-1] if pull_output else "no output")
+
+    # Schedule the restart AFTER we return the response
+    async def _delayed_restart():
+        await asyncio.sleep(0.8)
+        log.info("update: restarting process via os.execv")
+        os.execv(sys.executable, [sys.executable, *sys.argv])
+
+    asyncio.ensure_future(_delayed_restart())
+
+    return web.json_response({
+        "ok": True,
+        "pulled": pull_output,
+        "new_version": _VERSION_METADATA,
+        "restarting": True,
+    })
 
 
 async def handle_health(request: web.Request) -> web.Response:
@@ -1968,6 +2100,8 @@ def create_app(
     app.router.add_get("/api/auth/config", handle_auth_config)
     app.router.add_post("/api/auth/update", handle_auth_update)
     app.router.add_get("/api/auth/token", handle_auth_token)
+    app.router.add_get("/api/update/check", handle_update_check)
+    app.router.add_post("/api/update/apply", handle_update_apply)
     app.router.add_get("/api/logs", handle_logs)
     app.router.add_get("/api/sessions", handle_sessions_all)
     app.router.add_get("/api/sessions/{machine}", handle_sessions_machine)
