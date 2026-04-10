@@ -539,23 +539,30 @@ async def handle_sessions_launch(request: web.Request) -> web.Response:
     # New session (no session_id): cd to cwd and start a fresh claude
     if not session_id:
         local_machine = request.app["local_machine"]
-        adapter = get_adapter(machine or local_machine)
         if not machine:
             machine = local_machine
-        cd_cmd = adapter.cd_command(cwd)
-        claude_cmd = "claude"
-        if skip:
-            claude_cmd += " --dangerously-skip-permissions"
-        full_cmd = adapter.chain_commands(cd_cmd, claude_cmd)
-        if machine == local_machine:
+        adapter = get_adapter(machine)
+        is_local = (machine == local_machine)
+
+        if is_local:
+            # Local: use the target shell (cmd for psmux, bash for tmux)
+            cd_cmd = adapter.cd_command(cwd)
+            claude_cmd = "claude"
+            if skip:
+                claude_cmd += " --dangerously-skip-permissions"
+            full_cmd = adapter.chain_commands(cd_cmd, claude_cmd)
             result = await launch_terminal(full_cmd)
         else:
+            # Remote: build command in the SSH landing shell syntax
+            # (PowerShell for Windows, bash for Linux/macOS)
             from .config import FLEET_MACHINES as _FM
             info = _FM.get(machine, {})
             alias = info.get("ssh_alias", machine)
+            full_cmd = adapter.build_new_session_command_ssh(cwd, skip_permissions=skip)
             ssh_cmd = _ssh_path_prefix(machine) + full_cmd
             terminal_cmd = f"ssh {shlex.quote(alias)} -t {shlex.quote(ssh_cmd)}"
             result = await launch_terminal(terminal_cmd)
+
         status = 200 if result.get("ok") else 500
         log.info("POST /api/sessions/launch NEW machine=%s %d", machine, status)
         return web.json_response(result, status=status)
@@ -579,18 +586,20 @@ async def handle_sessions_launch(request: web.Request) -> web.Response:
             if not create_result.get("ok"):
                 result = create_result
             else:
-                # Open terminal: SSH → PowerShell → psmux attach
+                # Open terminal: SSH lands directly in PowerShell (fleet-wide
+                # default, see global CLAUDE.md Windows SSH Shell Policy).
+                # No need for an intermediate 'powershell' step — just SSH
+                # then psmux attach.
                 from .launcher import _launch_macos_multi
                 info = FLEET_MACHINES.get(machine, {})
                 alias = info.get("ssh_alias", machine)
                 attach_cmd = adapter.mux_attach(safe_name)
                 result = await _launch_macos_multi(
                     [
-                        f"ssh {alias}",    # SSH into Windows (Git Bash)
-                        "powershell",       # Start PowerShell
+                        f"ssh {alias}",    # SSH into Windows → PowerShell
                         attach_cmd,         # psmux attach -t session-name
                     ],
-                    delays=[0, 2, 1],
+                    delays=[0, 2],
                 )
         else:
             # tmux on macOS/Linux: create session + attach works perfectly

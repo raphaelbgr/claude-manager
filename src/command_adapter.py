@@ -65,26 +65,39 @@ class CommandAdapter:
     def build_session_command_ssh(self, cwd: str, session_id: str, skip_permissions: bool = False) -> str:
         """Build cd + claude resume for SSH -t direct execution.
 
-        The returned string is meant to be wrapped in SINGLE QUOTES by the
-        caller for the SSH argument: ssh host -t '<this string>'
+        The returned string is wrapped in SINGLE QUOTES by the caller for SSH:
+            ssh host -t '<this string>'
 
-        On Windows: SSH lands in Git Bash, so use Git Bash paths (/c/path)
-        and bash syntax — same as Linux/macOS. Works with SSH -t.
+        Windows SSH default shell is PowerShell (enforced fleet-wide — see
+        global CLAUDE.md Windows SSH Shell Policy). PowerShell syntax:
+            Set-Location 'C:\\path'; claude --resume <id>
+        PowerShell 5.1 does NOT support &&; use ; as separator.
         """
         if self.is_windows:
-            # SSH into Windows lands in the DefaultShell (Git Bash, PowerShell, or cmd).
-            # Git Bash: cd /c/Users/path && claude ... (bash syntax)
-            # PowerShell: cd 'C:\path'; claude ... (PS syntax, not chained with &&)
-            # cmd.exe: cd /d C:\path && claude ... (cmd syntax)
-            # We try Git Bash first (most common for dev machines with Git installed).
-            # The for_terminal method adds '; exec bash' for Git Bash (no-op if not bash).
-            bash_cwd = self._win_path_to_bash(cwd)
-            cd = f"cd {shlex.quote(bash_cwd)}"
-        else:
-            cd = f"cd {shlex.quote(cwd)}"
+            # PowerShell syntax — escape single quotes by doubling them
+            cwd_ps = cwd.replace("'", "''")
+            resume = self.claude_resume_command(session_id, skip_permissions)
+            return f"Set-Location '{cwd_ps}'; {resume}"
 
+        cd = f"cd {shlex.quote(cwd)}"
         resume = self.claude_resume_command(session_id, skip_permissions)
         return self.chain_commands(cd, resume)
+
+    def build_new_session_command_ssh(self, cwd: str, skip_permissions: bool = False) -> str:
+        """Build cd + claude (fresh session, no --resume) for SSH -t direct execution.
+
+        Used by the 'New session' button. Same shell rules as build_session_command_ssh.
+        """
+        claude = "claude"
+        if skip_permissions:
+            claude += " --dangerously-skip-permissions"
+
+        if self.is_windows:
+            cwd_ps = cwd.replace("'", "''")
+            return f"Set-Location '{cwd_ps}'; {claude}"
+
+        cd = f"cd {shlex.quote(cwd)}"
+        return self.chain_commands(cd, claude)
 
     @staticmethod
     def _win_path_to_bash(path: str) -> str:

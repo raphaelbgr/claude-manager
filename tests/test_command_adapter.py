@@ -184,29 +184,71 @@ class TestBuildSessionCommandSsh:
         )
         assert "--dangerously-skip-permissions" in result
 
-    def test_windows_converts_c_drive(self):
+    def test_windows_uses_set_location_with_native_path(self):
+        """Windows SSH lands in PowerShell — use Set-Location with native C:\\ paths."""
         result = self.win.build_session_command_ssh(
             "C:\\Users\\rbgnr\\project", self.SESSION_ID
         )
-        # shlex.quote on /c/Users/... (safe chars) returns path unquoted
-        assert "cd /c/Users/rbgnr/project" in result
+        assert "Set-Location 'C:\\Users\\rbgnr\\project'" in result
 
-    def test_windows_converts_d_drive(self):
+    def test_windows_d_drive(self):
         result = self.win.build_session_command_ssh(
             "D:\\Work\\myapp", self.SESSION_ID
         )
-        assert "cd /d/Work/myapp" in result
+        assert "Set-Location 'D:\\Work\\myapp'" in result
 
-    def test_windows_chained_with_and(self):
+    def test_windows_chained_with_semicolon_not_amp(self):
+        """PowerShell 5.1 does NOT support && — use ; separator."""
         result = self.win.build_session_command_ssh(
             "C:\\Projects\\x", self.SESSION_ID
         )
-        assert " && " in result
+        assert ";" in result
+        assert " && " not in result
 
     def test_windows_with_skip_permissions(self):
         result = self.win.build_session_command_ssh(
             "C:\\proj", self.SESSION_ID, skip_permissions=True
         )
+        assert "--dangerously-skip-permissions" in result
+
+    def test_windows_escapes_single_quotes_in_path(self):
+        """Paths with single quotes must be escaped by doubling in PowerShell."""
+        result = self.win.build_session_command_ssh(
+            "C:\\O'Brien\\app", self.SESSION_ID
+        )
+        assert "O''Brien" in result
+
+
+class TestBuildNewSessionCommandSsh:
+    """build_new_session_command_ssh — fresh session without --resume."""
+    CWD_LINUX = "/home/rbgnr/git/proj"
+    CWD_WIN = "C:\\Users\\rbgnr\\git\\proj"
+
+    def setup_method(self):
+        self.linux = CommandAdapter("linux", "tmux")
+        self.win = CommandAdapter("win32", "psmux")
+
+    def test_linux_basic(self):
+        result = self.linux.build_new_session_command_ssh(self.CWD_LINUX)
+        assert result == "cd /home/rbgnr/git/proj && claude"
+
+    def test_linux_skip_permissions(self):
+        result = self.linux.build_new_session_command_ssh(self.CWD_LINUX, skip_permissions=True)
+        assert "--dangerously-skip-permissions" in result
+        assert " && " in result
+
+    def test_windows_uses_powershell_syntax(self):
+        result = self.win.build_new_session_command_ssh(self.CWD_WIN)
+        assert "Set-Location 'C:\\Users\\rbgnr\\git\\proj'" in result
+        assert "; claude" in result
+        assert " && " not in result
+
+    def test_windows_no_resume_flag(self):
+        result = self.win.build_new_session_command_ssh(self.CWD_WIN)
+        assert "--resume" not in result
+
+    def test_windows_skip_permissions(self):
+        result = self.win.build_new_session_command_ssh(self.CWD_WIN, skip_permissions=True)
         assert "--dangerously-skip-permissions" in result
 
 
