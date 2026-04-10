@@ -132,7 +132,26 @@ async def _background_scan(app: web.Application) -> None:
         t0 = time.monotonic()
         try:
             fleet = await discover_fleet()
-            sessions = await scan_all(local_machine, fleet)
+
+            async def _emit_scan_progress(
+                machine: str, found: int, total: int, current_file: str
+            ) -> None:
+                payload = json.dumps({
+                    "type": "scan_progress",
+                    "machine": machine,
+                    "found": found,
+                    "total": total,
+                    "current_file": current_file,
+                })
+                dead: set = set()
+                for ws in list(app["state"]["ws_clients"]):
+                    try:
+                        await ws.send_str(payload)
+                    except Exception:
+                        dead.add(ws)
+                app["state"]["ws_clients"] -= dead
+
+            sessions = await scan_all(local_machine, fleet, on_progress=_emit_scan_progress)
             tmux = await list_all_tmux(local_machine, fleet)
             app["state"]["fleet"] = fleet
             app["state"]["sessions"] = sessions

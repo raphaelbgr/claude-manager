@@ -159,6 +159,12 @@
       to   { transform: rotate(360deg); }
     }
 
+    @keyframes indeterminate {
+      0%   { margin-left: 0; }
+      50%  { margin-left: 70%; }
+      100% { margin-left: 0; }
+    }
+
     @media (max-width: 768px) {
       .main-panels { flex-direction: column !important; }
       .panel-sessions, .panel-tmux { width: 100% !important; min-width: 0 !important; }
@@ -2380,7 +2386,7 @@ function FleetBar({ fleet, lastScan, wsConnected }) {
 
 // ─── Header ───────────────────────────────────────────────────────────────────
 
-function Header({ health, sessions, tmuxSessions, fleet, onScan, scanning, skipPermissions, onSkipPermissionsChange, showLogs, onToggleLogs }) {
+function Header({ health, sessions, tmuxSessions, fleet, onScan, scanning, scanProgress, skipPermissions, onSkipPermissionsChange, showLogs, onToggleLogs }) {
   const online = Object.values(fleet || {}).filter(m => m.online).length;
   const total = Object.keys(fleet || {}).length;
   const [restartConfirm, setRestartConfirm] = useState(false);
@@ -2446,29 +2452,32 @@ function Header({ health, sessions, tmuxSessions, fleet, onScan, scanning, skipP
     h('div', { style: { flex: 1 } }),
 
     // Scan button
-    h('button', {
-      className: 'btn',
-      onClick: onScan,
-      disabled: scanning,
-      title: 'Rescan all machines for Claude Code sessions and tmux/psmux sessions',
-      style: {
-        background: scanning ? '#1f3a5f' : '#21262d',
-        border: '1px solid #30363d', borderRadius: 8,
-        color: scanning ? '#58a6ff' : '#8b949e',
-        padding: '6px 14px', fontSize: '0.8rem', fontWeight: 600,
-        display: 'flex', alignItems: 'center', gap: 6, cursor: scanning ? 'not-allowed' : 'pointer',
-        transition: 'all 0.15s', whiteSpace: 'nowrap',
-      }
-    },
-      h('span', {
+    (() => {
+      const isScanning = scanning || Object.keys(scanProgress || {}).length > 0;
+      return h('button', {
+        className: 'btn',
+        onClick: onScan,
+        disabled: isScanning,
+        title: 'Rescan all machines for Claude Code sessions and tmux/psmux sessions',
         style: {
-          display: 'inline-block',
-          animation: scanning ? 'spin 0.8s linear infinite' : 'none',
-          fontSize: '0.9rem',
+          background: isScanning ? '#1f3a5f' : '#21262d',
+          border: '1px solid #30363d', borderRadius: 8,
+          color: isScanning ? '#58a6ff' : '#8b949e',
+          padding: '6px 14px', fontSize: '0.8rem', fontWeight: 600,
+          display: 'flex', alignItems: 'center', gap: 6, cursor: isScanning ? 'not-allowed' : 'pointer',
+          transition: 'all 0.15s', whiteSpace: 'nowrap',
         }
-      }, '↻'),
-      scanning ? 'Scanning…' : 'Scan',
-    ),
+      },
+        h('span', {
+          style: {
+            display: 'inline-block',
+            animation: isScanning ? 'spin 0.8s linear infinite' : 'none',
+            fontSize: '0.9rem',
+          }
+        }, '↻'),
+        isScanning ? 'Scanning…' : 'Scan',
+      );
+    })(),
 
     // Skip permissions toggle
     h('label', {
@@ -2785,6 +2794,97 @@ function FilterBar({ sessions, tmuxSessions, fleet, filters, setFilters, archive
   );
 }
 
+// ─── Scan Progress ────────────────────────────────────────────────────────────
+
+function ScanProgress({ progress }) {
+  const machines = Object.entries(progress);
+  if (!machines.length) return null;
+
+  return h('div', {
+    style: {
+      padding: '10px 24px',
+      background: '#161b22',
+      borderBottom: '1px solid #21262d',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 6,
+      flexShrink: 0,
+    }
+  },
+    h('div', {
+      style: { fontSize: '0.72rem', color: '#8b949e', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }
+    },
+      h('span', { style: { display: 'inline-block', animation: 'spin 0.8s linear infinite', fontSize: '0.8rem' } }, '↻'),
+      'Scanning fleet...',
+    ),
+    machines.map(([machine, info]) => {
+      const isDone = info.current_file === 'done';
+      const isIndeterminate = info.total === 0 && !isDone;
+      const pct = info.total > 0 ? Math.round((info.found / info.total) * 100) : 0;
+
+      return h('div', {
+        key: machine,
+        style: { display: 'flex', alignItems: 'center', gap: 10, fontSize: '0.68rem' }
+      },
+        // Machine name
+        h('span', {
+          style: { color: '#e6edf3', fontWeight: 600, minWidth: 120 }
+        }, machine),
+
+        // Progress bar (only for local scan with known total)
+        !isIndeterminate && !isDone && h('div', {
+          style: {
+            flex: 1, maxWidth: 200, height: 4,
+            background: '#21262d', borderRadius: 2, overflow: 'hidden',
+          }
+        },
+          h('div', {
+            style: {
+              width: `${pct}%`, height: '100%',
+              background: '#58a6ff', borderRadius: 2,
+              transition: 'width 0.2s ease',
+            }
+          }),
+        ),
+
+        // Indeterminate bar (pulsing for remote)
+        isIndeterminate && h('div', {
+          style: {
+            flex: 1, maxWidth: 200, height: 4,
+            background: '#21262d', borderRadius: 2, overflow: 'hidden',
+          }
+        },
+          h('div', {
+            style: {
+              width: '30%', height: '100%',
+              background: '#58a6ff', borderRadius: 2,
+              animation: 'indeterminate 1.5s ease-in-out infinite',
+            }
+          }),
+        ),
+
+        // Count
+        h('span', { style: { color: isDone ? '#3fb950' : '#8b949e', minWidth: 60 } },
+          isDone ? `${info.found} found` : info.total > 0 ? `${info.found}/${info.total}` : '',
+        ),
+
+        // Current file or status
+        h('span', {
+          style: {
+            color: '#484f58',
+            fontFamily: 'monospace',
+            fontSize: '0.6rem',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            maxWidth: 250,
+          }
+        }, isDone ? '' : info.current_file || ''),
+      );
+    }),
+  );
+}
+
 // ─── Root App ─────────────────────────────────────────────────────────────────
 
 const COLLAPSE_KEY = 'claude-manager-collapse-state';
@@ -2804,6 +2904,7 @@ function App() {
     showArchived: false,
   });
   const [scanning, setScanning]           = useState(false);
+  const [scanProgress, setScanProgress]   = useState({});
   const [launchingId, setLaunchingId]     = useState(null);
   const [tmuxLaunchingId, setTmuxLaunchingId] = useState(null);
   const [connectingId, setConnectingId]   = useState(null);
@@ -2939,7 +3040,14 @@ function App() {
 
   // ── WS message handler ───────────────────────────────────────────────────
   const handleWsMessage = useCallback((msg) => {
-    if (msg.channel === 'sessions') {
+    if (msg.type === 'scan_progress') {
+      setScanProgress(prev => ({
+        ...prev,
+        [msg.machine]: { found: msg.found, total: msg.total, current_file: msg.current_file },
+      }));
+    } else if (msg.channel === 'sessions') {
+      // Clear scan progress when a full sessions snapshot/update arrives
+      setScanProgress({});
       const data = msg.data;
       let newSessions;
       // data can be a flat list (update) or grouped dict (snapshot)
@@ -3392,6 +3500,7 @@ function App() {
         health, sessions, tmuxSessions, fleet,
         onScan: handleScan,
         scanning,
+        scanProgress,
         skipPermissions,
         onSkipPermissionsChange: handleSkipPermissionsChange,
         showLogs,
@@ -3404,6 +3513,9 @@ function App() {
         filters, setFilters,
         archivedIds,
       }),
+
+      // Scan progress indicator (shown during active scans)
+      h(ScanProgress, { progress: scanProgress }),
 
       // Main panels
       h('div', {

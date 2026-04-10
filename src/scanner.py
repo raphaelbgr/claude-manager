@@ -22,7 +22,7 @@ import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import psutil
 
@@ -260,6 +260,7 @@ def _mark_active_sessions(
 def scan_local(
     claude_home: Path | None = None,
     machine: str = "local",
+    on_progress: Callable | None = None,
 ) -> list[ClaudeSession]:
     """
     Scan ~/.claude/projects/ for JSONL session files.
@@ -280,6 +281,8 @@ def scan_local(
     active_pids, session_names = _load_active_pids(claude_home)
     all_sessions: list[ClaudeSession] = []
 
+    # Collect all (jf, project_path, folder_name) tuples first so we know total_files
+    all_jsonl: list[tuple[Path, str, str]] = []
     for entry in projects_dir.iterdir():
         if not entry.is_dir():
             continue
@@ -309,15 +312,23 @@ def scan_local(
         jsonl_files = jsonl_files[:20]
 
         for jf in jsonl_files:
-            try:
-                sess = parse_session(jf, project_path, folder_name, machine=machine)
-                # Prefer cwd from JSONL as the authoritative path — it avoids the
-                # lossy dash-to-slash decode ambiguity (e.g. "claude-manager" → "claude/manager").
-                if sess.cwd:
-                    sess.project_path = sess.cwd
-                all_sessions.append(sess)
-            except Exception:
-                continue
+            all_jsonl.append((jf, project_path, folder_name))
+
+    total_files = len(all_jsonl)
+    found = 0
+    for jf, project_path, folder_name in all_jsonl:
+        found += 1
+        if on_progress:
+            on_progress(machine, found, total_files, str(jf.name))
+        try:
+            sess = parse_session(jf, project_path, folder_name, machine=machine)
+            # Prefer cwd from JSONL as the authoritative path — it avoids the
+            # lossy dash-to-slash decode ambiguity (e.g. "claude-manager" → "claude/manager").
+            if sess.cwd:
+                sess.project_path = sess.cwd
+            all_sessions.append(sess)
+        except Exception:
+            continue
 
     _mark_active_sessions(all_sessions, active_pids, session_names)
     all_sessions.sort(key=lambda s: s.modified, reverse=True)
@@ -566,6 +577,7 @@ async def scan_remote(
 async def scan_all(
     local_machine: str | None,
     fleet: dict[str, dict[str, Any]],
+    on_progress: Callable | None = None,
 ) -> list[ClaudeSession]:
     """
     Run local scan and remote scans in parallel via asyncio.gather.
@@ -574,22 +586,45 @@ async def scan_all(
         local_machine: Fleet machine name for this host, or None.
         fleet:         Fleet health dict from fleet.discover_fleet().
                        Only machines with online=True are scanned remotely.
+        on_progress:   Optional async or sync callback(machine, found, total, current_file).
+                       Called as files are parsed (local) or at start/end (remote).
 
     Returns all sessions sorted by modified descending.
     """
     from .config import FLEET_MACHINES
 
+    loop = asyncio.get_running_loop()
+
+    async def _call_progress(machine: str, found: int, total: int, current_file: str) -> None:
+        if on_progress is None:
+            return
+        result = on_progress(machine, found, total, current_file)
+        if asyncio.iscoroutine(result):
+            await result
+
     tasks: list[asyncio.Task] = []
     labels: list[str] = []
 
     # Local scan (run in executor to avoid blocking event loop on large dirs)
-    loop = asyncio.get_running_loop()
+    # Progress callback is sync inside executor; we bridge via thread-safe call.
+    def _sync_progress(machine: str, found: int, total: int, current_file: str) -> None:
+        if on_progress is None:
+            return
+        result = on_progress(machine, found, total, current_file)
+        if asyncio.iscoroutine(result):
+            # Schedule on event loop from executor thread
+            asyncio.run_coroutine_threadsafe(result, loop)
+
+    local_label = local_machine or "local"
 
     async def _local() -> list[ClaudeSession]:
-        return await loop.run_in_executor(
+        await _call_progress(local_label, 0, 0, "scanning...")
+        sessions = await loop.run_in_executor(
             None,
-            lambda: scan_local(machine=local_machine or "local"),
+            lambda: scan_local(machine=local_label, on_progress=_sync_progress),
         )
+        await _call_progress(local_label, len(sessions), len(sessions), "done")
+        return sessions
 
     tasks.append(asyncio.ensure_future(_local()))
     labels.append("__local__")
@@ -609,14 +644,25 @@ async def scan_all(
                 _port: int = dispatch_port,
                 _ssh_alias: str = info["ssh_alias"],
             ) -> list[ClaudeSession]:
+                await _call_progress(_name, 0, 0, "querying API...")
                 sessions = await scan_remote_via_api(_name, _ip, _port)
                 if not sessions:
                     # API failed or returned empty — fall back to SSH
+                    await _call_progress(_name, 0, 0, "connecting...")
                     sessions = await scan_remote(_name, _ssh_alias)
+                await _call_progress(_name, len(sessions), len(sessions), "done")
                 return sessions
             tasks.append(asyncio.ensure_future(_api_with_ssh_fallback()))
         else:
-            tasks.append(asyncio.ensure_future(scan_remote(name, info["ssh_alias"])))
+            async def _ssh_only(
+                _name: str = name,
+                _ssh_alias: str = info["ssh_alias"],
+            ) -> list[ClaudeSession]:
+                await _call_progress(_name, 0, 0, "connecting...")
+                sessions = await scan_remote(_name, _ssh_alias)
+                await _call_progress(_name, len(sessions), len(sessions), "done")
+                return sessions
+            tasks.append(asyncio.ensure_future(_ssh_only()))
         labels.append(name)
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
