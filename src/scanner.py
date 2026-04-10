@@ -47,6 +47,7 @@ class ClaudeSession:
     status: str               # "working" | "active" | "idle"
     pid: int | None           # PID if active/working, else None
     file_size: int = 0        # file size in bytes of the .jsonl file
+    tokens: int = 0           # sum of input + output tokens from assistant messages
     name: str = ""            # session name set by /rename
     cpu_percent: float = 0.0  # CPU usage if active (0.0 if idle/not measured)
     git_branch: str = ""      # git branch from JSONL gitBranch field
@@ -117,13 +118,16 @@ def parse_session(
     git_branch = ""
     first_message = ""
     line_count = 0
+    tokens = 0
+    metadata_found = False
 
     with file_path.open("r", encoding="utf-8", errors="replace") as fh:
         all_lines = fh.readlines()
 
     line_count = sum(1 for ln in all_lines if ln.strip())
 
-    for raw in all_lines[:50]:
+    # Single pass: metadata from first ~50 lines, tokens from all assistant messages
+    for idx, raw in enumerate(all_lines):
         raw = raw.strip()
         if not raw:
             continue
@@ -132,29 +136,42 @@ def parse_session(
         except json.JSONDecodeError:
             continue
 
-        if d.get("type") == "user" and d.get("sessionId"):
-            if not slug:
-                slug = d.get("slug", "")
-            if not cwd:
-                cwd = d.get("cwd", "")
-            if not git_branch and d.get("gitBranch"):
-                git_branch = d.get("gitBranch", "")
+        # Sum tokens from assistant messages (every line)
+        if d.get("type") == "assistant":
+            msg = d.get("message")
+            if isinstance(msg, dict):
+                usage = msg.get("usage") or {}
+                if isinstance(usage, dict):
+                    tokens += int(usage.get("input_tokens", 0) or 0)
+                    tokens += int(usage.get("output_tokens", 0) or 0)
+                    tokens += int(usage.get("cache_creation_input_tokens", 0) or 0)
+                    tokens += int(usage.get("cache_read_input_tokens", 0) or 0)
 
-        if not first_message and d.get("type") == "user":
-            content = d.get("message", {}).get("content", "")
-            if isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict) and block.get("type") == "text":
-                        text = block.get("text", "") or ""
-                        first_message = text[:120]
-                        break
-            elif isinstance(content, str):
-                first_message = content[:120]
+        # Metadata — only scan first 50 lines
+        if not metadata_found and idx < 50:
+            if d.get("type") == "user" and d.get("sessionId"):
+                if not slug:
+                    slug = d.get("slug", "")
+                if not cwd:
+                    cwd = d.get("cwd", "")
+                if not git_branch and d.get("gitBranch"):
+                    git_branch = d.get("gitBranch", "")
 
-        if slug and first_message:
-            break
+            if not first_message and d.get("type") == "user":
+                content = d.get("message", {}).get("content", "")
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            text = block.get("text", "") or ""
+                            first_message = text[:120]
+                            break
+                elif isinstance(content, str):
+                    first_message = content[:120]
 
-    log.debug("parse_session(%s): %d messages", file_path.name, line_count)
+            if slug and first_message:
+                metadata_found = True
+
+    log.debug("parse_session(%s): %d messages, ~%d tokens", file_path.name, line_count, tokens)
     return ClaudeSession(
         session_id=session_id,
         machine=machine,
@@ -168,6 +185,7 @@ def parse_session(
         status="idle",  # enriched later by _mark_active_sessions
         pid=None,
         file_size=file_size,
+        tokens=tokens,
         git_branch=git_branch,
     )
 
@@ -398,11 +416,12 @@ if projects_dir.is_dir():
             try:
                 stat = jf.stat()
                 mod = datetime.datetime.fromtimestamp(stat.st_mtime).astimezone().isoformat()
-                slug = ''; cwd = ''; git_branch = ''; summary = ''; line_count = 0
+                slug = ''; cwd = ''; git_branch = ''; summary = ''; line_count = 0; tokens = 0
+                meta_done = False
                 with open(jf, encoding='utf-8', errors='replace') as fh:
                     all_lines = fh.readlines()
                 line_count = sum(1 for l in all_lines if l.strip())
-                for raw in all_lines[:50]:
+                for i, raw in enumerate(all_lines):
                     raw = raw.strip()
                     if not raw:
                         continue
@@ -410,20 +429,29 @@ if projects_dir.is_dir():
                         d = json.loads(raw)
                     except Exception:
                         continue
-                    if d.get('type') == 'user' and d.get('sessionId'):
-                        if not slug: slug = d.get('slug', '')
-                        if not cwd: cwd = d.get('cwd', '')
-                        if not git_branch and d.get('gitBranch'): git_branch = d.get('gitBranch', '')
-                    if not summary and d.get('type') == 'user':
-                        c = d.get('message', {}).get('content', '')
-                        if isinstance(c, list):
-                            for b in c:
-                                if isinstance(b, dict) and b.get('type') == 'text':
-                                    summary = (b.get('text') or '')[:120]; break
-                        elif isinstance(c, str):
-                            summary = c[:120]
-                    if slug and summary:
-                        break
+                    # Tokens — every line
+                    if d.get('type') == 'assistant':
+                        u = d.get('message', {}).get('usage', {}) or {}
+                        tokens += int(u.get('input_tokens', 0) or 0)
+                        tokens += int(u.get('output_tokens', 0) or 0)
+                        tokens += int(u.get('cache_creation_input_tokens', 0) or 0)
+                        tokens += int(u.get('cache_read_input_tokens', 0) or 0)
+                    # Metadata — first 50 lines
+                    if not meta_done and i < 50:
+                        if d.get('type') == 'user' and d.get('sessionId'):
+                            if not slug: slug = d.get('slug', '')
+                            if not cwd: cwd = d.get('cwd', '')
+                            if not git_branch and d.get('gitBranch'): git_branch = d.get('gitBranch', '')
+                        if not summary and d.get('type') == 'user':
+                            c = d.get('message', {}).get('content', '')
+                            if isinstance(c, list):
+                                for b in c:
+                                    if isinstance(b, dict) and b.get('type') == 'text':
+                                        summary = (b.get('text') or '')[:120]; break
+                            elif isinstance(c, str):
+                                summary = c[:120]
+                        if slug and summary:
+                            meta_done = True
                 sid = jf.stem
                 pid = active_pids.get(sid)
                 results.append({
@@ -438,6 +466,7 @@ if projects_dir.is_dir():
                     'status': 'active' if pid else 'idle',
                     'pid': pid,
                     'file_size': stat.st_size,
+                    'tokens': tokens,
                     'name': session_names.get(sid, ''),
                     'git_branch': git_branch,
                 })
@@ -478,6 +507,7 @@ async def scan_remote_via_api(machine_name: str, ip: str, dispatch_port: int) ->
                         status=item.get("status", "idle"),
                         pid=item.get("pid"),
                         file_size=item.get("file_size", 0),
+                        tokens=item.get("tokens", 0),
                         name=item.get("name", ""),
                         git_branch=item.get("git_branch", ""),
                         subprocess_count=item.get("subprocess_count", 0),
@@ -558,6 +588,7 @@ async def scan_remote(
                 status=item.get("status", "idle"),
                 pid=item.get("pid"),
                 file_size=item.get("file_size", 0),
+                tokens=item.get("tokens", 0),
                 name=item.get("name", ""),
                 git_branch=item.get("git_branch", ""),
                 subprocess_count=item.get("subprocess_count", 0),
