@@ -2835,10 +2835,49 @@ function FilterBar({ sessions, tmuxSessions, fleet, filters, setFilters, archive
 
 // ─── Scan Progress ────────────────────────────────────────────────────────────
 
-function ScanProgress({ progress }) {
+function ScanProgress({ progress, isFirstScan }) {
   const machines = Object.entries(progress);
   if (!machines.length) return null;
 
+  // Subsequent scans: thin silent bar at top, absolute positioned, doesn't push content
+  if (!isFirstScan) {
+    const totalFound = machines.reduce((sum, [, info]) => sum + (info.found || 0), 0);
+    const totalFiles = machines.reduce((sum, [, info]) => sum + (info.total || 0), 0);
+    const overallPct = totalFiles > 0 ? Math.round((totalFound / totalFiles) * 100) : 0;
+    const activeCount = machines.filter(([, info]) => info.current_file !== 'done').length;
+
+    return h('div', {
+      title: `Background scan: ${activeCount} machine${activeCount !== 1 ? 's' : ''} scanning`,
+      style: {
+        position: 'fixed',
+        top: 0, left: 0, right: 0,
+        height: 2,
+        background: '#21262d',
+        zIndex: 200,
+        overflow: 'hidden',
+        pointerEvents: 'none',
+      }
+    },
+      // Progress bar fill (determinate if total known, else indeterminate pulse)
+      totalFiles > 0
+        ? h('div', {
+            style: {
+              width: `${overallPct}%`, height: '100%',
+              background: '#58a6ff',
+              transition: 'width 0.3s ease',
+            }
+          })
+        : h('div', {
+            style: {
+              width: '30%', height: '100%',
+              background: '#58a6ff',
+              animation: 'indeterminate 1.5s ease-in-out infinite',
+            }
+          }),
+    );
+  }
+
+  // First scan: full panel with per-machine details
   return h('div', {
     style: {
       padding: '10px 24px',
@@ -2944,6 +2983,7 @@ function App() {
   });
   const [scanning, setScanning]           = useState(false);
   const [scanProgress, setScanProgress]   = useState({});
+  const [isFirstScan, setIsFirstScan]     = useState(true);
   const [launchingId, setLaunchingId]     = useState(null);
   const [tmuxLaunchingId, setTmuxLaunchingId] = useState(null);
   const [connectingId, setConnectingId]   = useState(null);
@@ -3087,6 +3127,8 @@ function App() {
     } else if (msg.channel === 'sessions') {
       // Clear scan progress when a full sessions snapshot/update arrives
       setScanProgress({});
+      // After first scan completes, subsequent scans use the silent thin bar
+      setIsFirstScan(false);
       const data = msg.data;
       let newSessions;
       // data can be a flat list (update) or grouped dict (snapshot)
@@ -3584,7 +3626,7 @@ function App() {
       }),
 
       // Scan progress indicator (shown during active scans)
-      h(ScanProgress, { progress: scanProgress }),
+      h(ScanProgress, { progress: scanProgress, isFirstScan }),
 
       // Main panels
       h('div', {
