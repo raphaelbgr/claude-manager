@@ -5,7 +5,7 @@ Uses pywebview to render a native window (WebKit on macOS, WebView2 on Windows,
 GTK WebKit on Linux) with the web UI as content. The API server runs in a
 background thread. System tray icon provides quick access when minimized.
 
-Launch: python -m src.main --enable-gui
+Launch: python -m src.main --enable-desktop
 """
 import json
 import os

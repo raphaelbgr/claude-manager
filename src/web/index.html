@@ -2493,6 +2493,43 @@ function Header({ health, sessions, tmuxSessions, fleet, onScan, scanning, skipP
       'Logs',
     ),
 
+    // Web Access toggle — show LAN URL
+    (() => {
+      const [webOn, setWebOn] = useState(false);
+      const lanUrl = health && health.port ? `http://${location.hostname === 'localhost' || location.hostname === '127.0.0.1' ? (health.local_ip || location.hostname) : location.hostname}:${health.port}` : '';
+      return h('div', {
+        style: { display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' },
+      },
+        h('label', {
+          title: 'Share this app on the local network — anyone on LAN can access the Web UI at the shown URL',
+          style: {
+            display: 'flex', alignItems: 'center', gap: 5,
+            cursor: 'pointer', userSelect: 'none',
+            fontSize: '0.72rem', color: webOn ? '#58a6ff' : '#6e7681',
+          },
+        },
+          h('input', {
+            type: 'checkbox',
+            checked: webOn,
+            onChange: () => setWebOn(p => !p),
+            style: { accentColor: '#58a6ff', cursor: 'pointer' },
+          }),
+          h('span', { className: 'material-icons-round', style: { fontSize: '14px' } }, 'language'),
+          'Web',
+        ),
+        webOn && lanUrl && h('a', {
+          href: lanUrl,
+          target: '_blank',
+          title: 'Open Web UI in browser — share this URL with other devices on LAN',
+          style: {
+            fontSize: '0.65rem', color: '#58a6ff', textDecoration: 'none',
+            background: '#1f3a5f', padding: '2px 8px', borderRadius: 6,
+            border: '1px solid #2d4f7a', fontFamily: 'monospace',
+          },
+        }, lanUrl),
+      );
+    })(),
+
     // Restart server button (double-click to confirm)
     h('button', {
       className: 'btn',

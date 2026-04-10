@@ -83,7 +83,7 @@ claude-manager --enable-web
 claude-manager --enable-web --bind 0.0.0.0
 
 # Native desktop window (pywebview)
-claude-manager --enable-gui
+claude-manager --enable-desktop
 
 # API server only (headless, integrate with your own tools)
 claude-manager --api-only

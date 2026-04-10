@@ -207,11 +207,22 @@ async def handle_health(request: web.Request) -> web.Response:
     state = request.app["state"]
     sessions: list[ClaudeSession] = state["sessions"]
     fleet: dict = state["fleet"]
+    # Detect LAN IP for Web Access URL
+    local_ip = "localhost"
+    try:
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("192.168.7.1", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        pass
     return web.json_response(
         {
             "status": "ok",
             "port": request.app["port"],
             "local_machine": request.app.get("local_machine"),
+            "local_ip": local_ip,
             "machines": len(fleet),
             "sessions": len(sessions),
             "last_scan": state["last_scan"],

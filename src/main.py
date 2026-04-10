@@ -2,9 +2,9 @@
 claude-manager entry point.
 
 CLI:
-    claude-manager [--bind HOST] [--port PORT] [--tui] [--enable-web] [--enable-gui]
+    claude-manager [--bind HOST] [--port PORT] [--tui] [--enable-web] [--enable-desktop]
 
-Default mode: start the REST/WebSocket API server.
+Default mode (no flags): launch native desktop window with embedded API server.
 """
 from __future__ import annotations
 
@@ -47,9 +47,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable the web UI (API only)",
     )
     parser.add_argument(
+        "--enable-desktop",
+        action="store_true",
+        default=True,
+        help="Launch the native desktop window (default mode)",
+    )
+    parser.add_argument(
         "--enable-gui",
         action="store_true",
-        help="Launch the native desktop GUI window",
+        dest="enable_desktop",
+        help="Alias for --enable-desktop (deprecated)",
     )
     parser.add_argument(
         "--api-only",
@@ -168,14 +175,20 @@ def main(argv: list[str] | None = None) -> None:
         run_server(port=args.port, bind=args.bind)
         return
 
-    # Default: launch native desktop GUI with embedded API server
-    # Use --api-only to skip the GUI and run headless
+    if args.enable_web and not args.enable_desktop:
+        # --enable-web without desktop: API server + web UI only (no native window)
+        from .server import run_server
+        print_banner(args.bind, args.port)
+        run_server(port=args.port, bind=args.bind)
+        return
+
+    # Default: launch native desktop window with embedded API server
+    # Falls back to --enable-web if pywebview is not installed
     try:
         from .desktop import run_desktop
         run_desktop(args.bind, args.port)
     except (ImportError, Exception) as e:
-        # If pywebview not available, fall back to API server + print LAN URL
-        print(f"Desktop GUI unavailable ({e}), starting API server...")
+        print(f"Desktop window unavailable ({e}), starting web server...")
         from .server import run_server
         print_banner(args.bind, args.port)
         run_server(port=args.port, bind=args.bind)

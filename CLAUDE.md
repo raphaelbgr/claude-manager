@@ -7,10 +7,10 @@ Multi-interface fleet session manager for Claude Code and tmux.
 ```
 ./setup.sh                              # Install deps
 source .venv/bin/activate
+claude-manager                          # Native desktop window (default)
 claude-manager --tui                    # TUI mode
 claude-manager --enable-web             # API + Web UI on :44740
 claude-manager --enable-web --bind 0.0.0.0  # LAN accessible
-claude-manager --enable-gui             # System tray mode
 ```
 
 ## Architecture

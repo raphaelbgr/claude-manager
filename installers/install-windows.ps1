@@ -109,7 +109,7 @@ if ($gitBash) {
 $WshShell = New-Object -ComObject WScript.Shell
 $Shortcut = $WshShell.CreateShortcut("$env:USERPROFILE\Desktop\Claude Manager.lnk")
 $Shortcut.TargetPath = "$installDir\.venv\Scripts\pythonw.exe"
-$Shortcut.Arguments = "-m src --enable-gui"
+$Shortcut.Arguments = "-m src --enable-desktop"
 $Shortcut.WorkingDirectory = $installDir
 $Shortcut.Description = "Claude Manager - Fleet Session Manager"
 if (Test-Path "$installDir\assets\icon.ico") {
@@ -136,5 +136,5 @@ Write-Host "  Web: http://localhost:44740"
 Write-Host ""
 Write-Host "  CLI usage:" -ForegroundColor Yellow
 Write-Host "    claude-manager --daemon     Start as background service"
-Write-Host "    claude-manager --enable-gui  Start with native window"
+Write-Host "    claude-manager               Start with native desktop window (default)"
 Write-Host "    claude-manager --tui        Start terminal UI"

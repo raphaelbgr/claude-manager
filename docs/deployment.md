@@ -58,7 +58,7 @@ claude-manager --enable-web --bind 0.0.0.0
 |-------|----------|-------------|
 | *(none)* | `aiohttp`, `psutil` | API server only |
 | `tui` | `textual>=3.0` | TUI mode (`--tui`) |
-| `desktop` | `pystray`, `pywebview`, `Pillow` | Native window (`--enable-gui`) |
+| `desktop` | `pystray`, `pywebview`, `Pillow` | Native desktop window (default mode) |
 | `all` | all of the above | Full install (`setup.sh` default) |
 
 Install a specific extra:
@@ -140,10 +140,10 @@ Register-ScheduledTask `
 
 ## System Tray (Desktop GUI)
 
-The `--enable-gui` flag opens a native desktop window backed by the same API server. On Linux and Windows, a system tray icon is also created (requires `pystray` and `Pillow`, both installed by the `desktop` extra).
+The default mode (`--enable-desktop`, or just `claude-manager` with no flags) opens a native desktop window backed by the same API server. On Linux and Windows, a system tray icon is also created (requires `pystray` and `Pillow`, both installed by the `desktop` extra).
 
 ```bash
-claude-manager --enable-gui
+claude-manager
 ```
 
 The tray icon provides:

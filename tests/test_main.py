@@ -40,10 +40,16 @@ class TestBuildParser:
         args = parser.parse_args(["--no-web"])
         assert args.no_web is True
 
-    def test_enable_gui_flag(self):
+    def test_enable_desktop_flag(self):
+        parser = build_parser()
+        args = parser.parse_args(["--enable-desktop"])
+        assert args.enable_desktop is True
+
+    def test_enable_gui_alias(self):
+        """--enable-gui is a deprecated alias for --enable-desktop."""
         parser = build_parser()
         args = parser.parse_args(["--enable-gui"])
-        assert args.enable_gui is True
+        assert args.enable_desktop is True
 
     def test_api_only_flag(self):
         parser = build_parser()
