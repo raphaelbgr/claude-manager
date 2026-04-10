@@ -224,10 +224,6 @@ On Linux and Windows, an optional **system tray icon** (via `pystray` + `Pillow`
 
 Install desktop dependencies: `pip install ".[desktop]"`
 
-## Screenshots
-
-![Web UI](docs/screenshot.png)
-
 ## Development
 
 ```bash
