@@ -10,6 +10,14 @@ from .config import FLEET_MACHINES, detect_local_machine
 log = logging.getLogger("claude_manager.launcher")
 
 
+def _ssh_path_prefix(machine: str) -> str:
+    """Return PATH export prefix for SSH to Unix machines, empty for Windows."""
+    info = FLEET_MACHINES.get(machine, {})
+    if info.get("os") == "win32":
+        return ""
+    return "export PATH=/opt/homebrew/bin:/usr/local/bin:/snap/bin:$PATH; "
+
+
 def applescript_string(s: str) -> str:
     """Escape a string for safe embedding inside an AppleScript double-quoted string."""
     # Escape backslashes first, then double quotes
@@ -228,7 +236,7 @@ async def launch_claude_session(cwd: str, session_id: str, machine: str, skip_pe
     # Windows: build_session_command_ssh converts C:\path to /c/path for Git Bash.
     # Linux/macOS: uses native paths. Both use bash syntax with SSH -t.
     session_cmd = adapter.build_session_command_ssh(cwd, session_id, skip_permissions)
-    terminal_cmd = adapter.for_terminal(session_cmd, keep_open=True)
+    terminal_cmd = _ssh_path_prefix(machine) + adapter.for_terminal(session_cmd, keep_open=True)
     cmd = f"ssh {shlex.quote(alias)} -t {shlex.quote(terminal_cmd)}"
     return await launch_terminal(cmd)
 
@@ -264,7 +272,8 @@ async def launch_tmux_attach(session_name: str, machine: str) -> dict:
         cmd = f"ssh {shlex.quote(alias)}"
     else:
         # tmux: SSH -t with direct attach works
-        cmd = f"ssh {shlex.quote(alias)} -t {shlex.quote(adapter.mux_attach(session_name))}"
+        attach_cmd = _ssh_path_prefix(machine) + adapter.mux_attach(session_name)
+        cmd = f"ssh {shlex.quote(alias)} -t {shlex.quote(attach_cmd)}"
 
     return await launch_terminal(cmd)
 
