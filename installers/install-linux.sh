@@ -103,6 +103,20 @@ EOF
 systemctl --user daemon-reload
 systemctl --user enable claude-manager
 
+# Verify SSH is available
+if command -v ssh &>/dev/null; then
+    echo "  SSH found — fleet scanning will work."
+else
+    echo "  WARNING: SSH not found — install with: sudo apt install openssh-client"
+fi
+
+# Verify tmux is available
+if command -v tmux &>/dev/null; then
+    echo "  tmux found: $(tmux -V)"
+else
+    echo "  WARNING: tmux not found — install with: sudo apt install tmux"
+fi
+
 echo ""
 echo "claude-manager installed!"
 echo "  Launch: search 'Claude Manager' in app launcher"

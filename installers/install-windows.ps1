@@ -73,6 +73,38 @@ if ($LASTEXITCODE -ne 0) {
 # Try system tray extras (pystray)
 pip install pystray Pillow 2>$null
 
+# Check for psmux (required for tmux-equivalent session management on Windows)
+$psmux = Get-Command psmux -ErrorAction SilentlyContinue
+if ($psmux) {
+    $psmuxVer = & psmux --version 2>$null
+    Write-Host "  psmux found: $psmuxVer" -ForegroundColor Green
+} else {
+    Write-Host "  psmux not found — tmux session management will be unavailable on this machine." -ForegroundColor Yellow
+    Write-Host "  Install: winget install psmux  (or download from https://github.com/psmux/psmux)" -ForegroundColor Yellow
+}
+
+# Check for SSH (required for fleet connectivity)
+$ssh = Get-Command ssh -ErrorAction SilentlyContinue
+if ($ssh) {
+    Write-Host "  SSH found: $($ssh.Source)" -ForegroundColor Green
+} else {
+    Write-Host "  SSH not found — remote machine access will be unavailable." -ForegroundColor Yellow
+    Write-Host "  Enable: Settings > Apps > Optional Features > OpenSSH Client" -ForegroundColor Yellow
+}
+
+# Check for Git Bash (used by SSH -t for remote session resume)
+$gitBash = Get-Command bash -ErrorAction SilentlyContinue
+if (-not $gitBash) {
+    $gitBashPath = "C:\Program Files\Git\bin\bash.exe"
+    if (Test-Path $gitBashPath) { $gitBash = $gitBashPath }
+}
+if ($gitBash) {
+    Write-Host "  Git Bash found (used for remote SSH sessions)." -ForegroundColor Green
+} else {
+    Write-Host "  Git Bash not found — remote session resume may not work." -ForegroundColor Yellow
+    Write-Host "  Install Git for Windows: winget install Git.Git" -ForegroundColor Yellow
+}
+
 # Desktop shortcut — pythonw.exe (no console window)
 $WshShell = New-Object -ComObject WScript.Shell
 $Shortcut = $WshShell.CreateShortcut("$env:USERPROFILE\Desktop\Claude Manager.lnk")

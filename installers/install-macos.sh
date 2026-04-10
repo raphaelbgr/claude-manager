@@ -101,6 +101,20 @@ if ! grep -q "claude-manager" "$SHELL_RC" 2>/dev/null; then
     echo "alias claude-manager='cd $INSTALL_DIR && source .venv/bin/activate && python3 -m src.main'" >> "$SHELL_RC"
 fi
 
+# Verify SSH is available (needed for fleet scanning)
+if command -v ssh &>/dev/null; then
+    echo "  SSH found — fleet scanning will work."
+else
+    echo "  WARNING: SSH not found — remote machine scanning unavailable."
+fi
+
+# Verify tmux is available (needed for local session management)
+if command -v tmux &>/dev/null; then
+    echo "  tmux found: $(tmux -V)"
+else
+    echo "  WARNING: tmux not found — install with: brew install tmux"
+fi
+
 echo ""
 echo "claude-manager installed!"
 echo "  Desktop shortcut: ~/Desktop/Claude Manager.app"
