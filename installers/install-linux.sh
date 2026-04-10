@@ -64,6 +64,11 @@ else
     echo "  System tray extras failed — tray icon unavailable."
 fi
 
+# Generate VERSION.json from git (source of truth for watchdog)
+if [ -f "scripts/gen_version.py" ]; then
+    python3 scripts/gen_version.py || echo "  gen_version failed (watchdog will fall back to git)"
+fi
+
 # .desktop entry
 ICON_PATH="utilities-terminal"
 if [ -f "$INSTALL_DIR/assets/icon.png" ]; then

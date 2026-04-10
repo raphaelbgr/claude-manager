@@ -224,6 +224,36 @@ async def on_cleanup(app: web.Application) -> None:
 # REST handlers
 # ---------------------------------------------------------------------------
 
+def _read_version_metadata() -> dict:
+    """Read VERSION.json from repo root. Falls back to git, then empty."""
+    import pathlib
+    repo = pathlib.Path(__file__).parent.parent
+    version_file = repo / "VERSION.json"
+    if version_file.is_file():
+        try:
+            return json.loads(version_file.read_text())
+        except Exception:
+            pass
+    # Git fallback
+    try:
+        import subprocess as _sp
+        def _g(*args):
+            return _sp.check_output(["git", *args], cwd=str(repo), text=True, timeout=3).strip()
+        return {
+            "version": int(_g("rev-list", "--count", "HEAD")),
+            "commit": _g("rev-parse", "--short", "HEAD"),
+            "commit_full": _g("rev-parse", "HEAD"),
+            "branch": _g("rev-parse", "--abbrev-ref", "HEAD"),
+            "date": _g("log", "-1", "--format=%cI"),
+            "message": _g("log", "-1", "--format=%s"),
+        }
+    except Exception:
+        return {"version": 0, "commit": "unknown"}
+
+
+_VERSION_METADATA = _read_version_metadata()
+
+
 async def handle_health(request: web.Request) -> web.Response:
     state = request.app["state"]
     sessions: list[ClaudeSession] = state["sessions"]
@@ -247,6 +277,7 @@ async def handle_health(request: web.Request) -> web.Response:
             "machines": len(fleet),
             "sessions": len(sessions),
             "last_scan": state["last_scan"],
+            "version": _VERSION_METADATA,
         }
     )
 

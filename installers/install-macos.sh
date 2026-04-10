@@ -56,6 +56,11 @@ else
     echo "  TUI extras failed — --tui mode unavailable."
 fi
 
+# Generate VERSION.json from git (source of truth for watchdog)
+if [ -f "scripts/gen_version.py" ]; then
+    python3 scripts/gen_version.py || echo "  gen_version failed (watchdog will fall back to git)"
+fi
+
 # Create .app bundle
 APP_DIR="$INSTALL_DIR/shortcuts/Claude Manager.app/Contents/MacOS"
 RES_DIR="$INSTALL_DIR/shortcuts/Claude Manager.app/Contents/Resources"

@@ -1,0 +1,8 @@
+{
+  "version": 92,
+  "commit": "6dc87eb",
+  "commit_full": "6dc87eb790471c52eb9d01c750e59e8e3a2bd815",
+  "branch": "master",
+  "date": "2026-04-10T02:22:12-03:00",
+  "message": "fix: launch_remote_terminal uses stdin-piped scripts (no quoting hell)"
+}

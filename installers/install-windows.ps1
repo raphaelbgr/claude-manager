@@ -73,6 +73,12 @@ if ($LASTEXITCODE -ne 0) {
 # Try system tray extras (pystray)
 pip install pystray Pillow 2>$null
 
+# Generate VERSION.json from git (source of truth for watchdog)
+if (Test-Path "scripts/gen_version.py") {
+    python scripts/gen_version.py 2>$null
+    if ($LASTEXITCODE -ne 0) { Write-Host "  gen_version failed (watchdog falls back to git)" -ForegroundColor Yellow }
+}
+
 # Check for psmux (required for tmux-equivalent session management on Windows)
 $psmux = Get-Command psmux -ErrorAction SilentlyContinue
 if ($psmux) {
