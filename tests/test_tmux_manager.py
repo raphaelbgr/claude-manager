@@ -979,10 +979,9 @@ class TestCapturePane:
         assert "world" in cleaned
 
     @pytest.mark.asyncio
-    async def test_session_name_is_quoted(self):
-        """Session name with spaces is properly quoted in the command string."""
+    async def test_session_name_is_passed_as_arg(self):
+        """Session name with spaces is passed as a separate arg (no shell splitting)."""
         from src.tmux_manager import capture_pane
-        import shlex
 
         proc = _make_proc(0, stdout=b"output\n")
         with patch("src.tmux_manager.asyncio.create_subprocess_exec", return_value=proc) as mock_exec, \
@@ -992,9 +991,8 @@ class TestCapturePane:
             await capture_pane("mac-mini", "my session with spaces")
 
         args = mock_exec.call_args[0]
-        args_str = " ".join(str(a) for a in args)
-        # shlex.quote wraps in single quotes when there are spaces
-        assert shlex.quote("my session with spaces") in args_str
+        # Session name passed as individual arg, not shell-quoted in a string
+        assert "my session with spaces" in args
 
     @pytest.mark.asyncio
     async def test_returns_empty_on_nonzero_returncode(self):

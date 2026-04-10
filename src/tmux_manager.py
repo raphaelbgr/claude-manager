@@ -284,50 +284,102 @@ def _clean_pane_output(text: str) -> str:
 async def capture_pane(machine: str, session_name: str, lines: int = 50) -> str:
     """Capture current pane content without TTY allocation.
 
-    Works for both tmux (capture-pane -p -S -N) and psmux (capture-pane -p).
-    Executes locally or via SSH depending on machine.
+    Strategy: API-first (dispatch daemon), SSH fallback, local exec for local machine.
+    API runs locally on the target machine so it has full PATH and -e flag support.
     """
-    adapter = get_adapter(machine)
     local_machine = detect_local_machine()
     is_local = (machine == local_machine)
+
+    # --- Local machine: direct exec ---
+    if is_local:
+        return await _capture_pane_local(machine, session_name, lines)
+
+    # --- Remote machine: try API first (dispatch daemon) ---
+    info = FLEET_MACHINES.get(machine, {})
+    dispatch_port = info.get("dispatch_port")
+    ip = info.get("ip", "")
+
+    if dispatch_port and ip:
+        result = await _capture_pane_via_api(ip, dispatch_port, session_name, lines)
+        if result:
+            return result
+        log.debug("capture_pane(%s, %s): API failed, trying SSH", machine, session_name)
+
+    # --- SSH fallback ---
+    return await _capture_pane_via_ssh(machine, session_name, lines)
+
+
+async def _capture_pane_via_api(ip: str, port: int, session_name: str, lines: int) -> str:
+    """Capture pane via dispatch daemon API (POST /tmux/capture-pane)."""
+    import aiohttp
+    url = f"http://{ip}:{port}/tmux/capture-pane"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url,
+                json={"session_name": session_name, "lines": lines},
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if data.get("ok") and data.get("content"):
+                        return _clean_pane_output(data["content"])
+    except Exception as exc:
+        log.debug("_capture_pane_via_api(%s:%d, %s): %s", ip, port, session_name, exc)
+    return ""
+
+
+async def _capture_pane_local(machine: str, session_name: str, lines: int) -> str:
+    """Capture pane on the local machine via direct exec."""
+    adapter = get_adapter(machine)
+    if adapter.mux_type == "tmux":
+        cmd = ["tmux", "capture-pane", "-t", session_name, "-e", "-p", "-S", f"-{lines}"]
+    else:
+        cmd = ["psmux", "capture-pane", "-t", session_name, "-p"]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+        if proc.returncode == 0:
+            return _clean_pane_output(stdout.decode("utf-8", errors="replace"))
+    except (asyncio.TimeoutError, OSError) as exc:
+        log.warning("_capture_pane_local(%s, %s): %s", machine, session_name, exc)
+    return ""
+
+
+async def _capture_pane_via_ssh(machine: str, session_name: str, lines: int) -> str:
+    """Capture pane via SSH (fallback when API unavailable)."""
+    adapter = get_adapter(machine)
+    info = FLEET_MACHINES.get(machine, {})
+    ssh_alias = info.get("ssh_alias", machine)
 
     if adapter.mux_type == "tmux":
         cmd_str = f"tmux capture-pane -t {shlex.quote(session_name)} -e -p -S -{lines}"
     else:
         cmd_str = f"psmux capture-pane -t {shlex.quote(session_name)} -p"
 
+    ssh_cmd = [
+        "ssh",
+        "-o", f"ConnectTimeout={SSH_TIMEOUT}",
+        "-o", "BatchMode=yes",
+        "-o", "StrictHostKeyChecking=no",
+        ssh_alias,
+        _SSH_PATH_PREFIX + cmd_str,
+    ]
     try:
-        if is_local:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd_str.split(),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
-        else:
-            info = FLEET_MACHINES.get(machine, {})
-            ssh_alias = info.get("ssh_alias", machine)
-            remote_cmd = _SSH_PATH_PREFIX + cmd_str
-            ssh_cmd = [
-                "ssh",
-                "-o", f"ConnectTimeout={SSH_TIMEOUT}",
-                "-o", "BatchMode=yes",
-                "-o", "StrictHostKeyChecking=no",
-                ssh_alias,
-                remote_cmd,
-            ]
-            proc = await asyncio.create_subprocess_exec(
-                *ssh_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
-
+        proc = await asyncio.create_subprocess_exec(
+            *ssh_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
         if proc.returncode == 0:
             return _clean_pane_output(stdout.decode("utf-8", errors="replace"))
     except (asyncio.TimeoutError, OSError) as exc:
-        log.warning("capture_pane(%s, %s): %s", machine, session_name, exc)
-
+        log.warning("_capture_pane_via_ssh(%s, %s): %s", machine, session_name, exc)
     return ""
 
 
