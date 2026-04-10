@@ -9,9 +9,18 @@ from .mux_parser import parse_mux_output
 
 log = logging.getLogger("claude_manager.tmux_manager")
 
-# PATH prefix for SSH commands — ensures tmux/psmux are found in non-interactive shells
-# (macOS Homebrew at /opt/homebrew/bin, Linux snap at /snap/bin, etc.)
-_SSH_PATH_PREFIX = "export PATH=/opt/homebrew/bin:/usr/local/bin:/snap/bin:$PATH; "
+# PATH prefix for SSH commands to Unix machines — ensures tmux is found in
+# non-interactive shells (macOS Homebrew at /opt/homebrew/bin, etc.)
+# NOT used for Windows targets (PowerShell doesn't understand 'export').
+_SSH_PATH_PREFIX_UNIX = "export PATH=/opt/homebrew/bin:/usr/local/bin:/snap/bin:$PATH; "
+
+
+def _ssh_path_prefix(machine: str) -> str:
+    """Return PATH prefix for SSH commands, empty for Windows targets."""
+    info = FLEET_MACHINES.get(machine, {})
+    if info.get("os") == "win32":
+        return ""
+    return _SSH_PATH_PREFIX_UNIX
 
 
 @dataclass
@@ -102,7 +111,7 @@ async def list_remote_tmux(machine_name: str, ssh_alias: str, mux: str) -> list[
     async def _run_remote(cmd_str: str) -> tuple[int, str]:
         try:
             proc = await asyncio.create_subprocess_exec(
-                *ssh_base, _SSH_PATH_PREFIX + cmd_str,
+                *ssh_base, _ssh_path_prefix(machine_name) + cmd_str,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -225,7 +234,7 @@ async def create_tmux_session(
             ]
 
             # Step 1: Create empty detached session
-            create_cmd = _SSH_PATH_PREFIX + adapter.mux_create_session(name)
+            create_cmd = _ssh_path_prefix(machine) + adapter.mux_create_session(name)
             proc = await asyncio.create_subprocess_exec(
                 *ssh_base, create_cmd,
                 stdout=asyncio.subprocess.PIPE,
@@ -243,7 +252,7 @@ async def create_tmux_session(
             # are expected to use adapter.build_session_command() before passing it
             # here.  If a raw command string arrives we send it as-is.
             if command:
-                keys_cmd = _SSH_PATH_PREFIX + adapter.mux_send_keys(name, command)
+                keys_cmd = _ssh_path_prefix(machine) + adapter.mux_send_keys(name, command)
                 proc = await asyncio.create_subprocess_exec(
                     *ssh_base, keys_cmd,
                     stdout=asyncio.subprocess.PIPE,
@@ -367,7 +376,7 @@ async def _capture_pane_via_ssh(machine: str, session_name: str, lines: int) -> 
         "-o", "BatchMode=yes",
         "-o", "StrictHostKeyChecking=no",
         ssh_alias,
-        _SSH_PATH_PREFIX + cmd_str,
+        _ssh_path_prefix(machine) + cmd_str,
     ]
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -451,7 +460,7 @@ async def kill_tmux_session(machine: str, name: str) -> dict:
             return {"ok": True}
         else:
             adapter = get_adapter(machine)
-            remote_cmd = _SSH_PATH_PREFIX + adapter.mux_kill_session(name)
+            remote_cmd = _ssh_path_prefix(machine) + adapter.mux_kill_session(name)
             ssh_cmd = [
                 "ssh",
                 "-o", f"ConnectTimeout={SSH_TIMEOUT}",
