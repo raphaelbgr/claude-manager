@@ -596,6 +596,7 @@ class TestCreateTmuxSession:
 
     @pytest.mark.asyncio
     async def test_local_create_with_cwd(self):
+        """cwd is sent via send-keys cd command (not -c flag)."""
         from src.tmux_manager import create_tmux_session
 
         proc = _make_proc(0)
@@ -604,9 +605,12 @@ class TestCreateTmuxSession:
             result = await create_tmux_session("mac-mini", "my-session", cwd="/home/user/project")
 
         assert result == {"ok": True}
-        args = mock_exec.call_args[0]
-        assert "-c" in args
-        assert "/home/user/project" in args
+        # Second call should be send-keys with cd command
+        calls = mock_exec.call_args_list
+        assert len(calls) >= 2, "Expected at least 2 subprocess calls (create + cd)"
+        cd_call_args = calls[1][0]
+        assert "send-keys" in cd_call_args
+        assert any("/home/user/project" in str(a) for a in cd_call_args)
 
     @pytest.mark.asyncio
     async def test_local_create_with_command(self):
@@ -623,6 +627,7 @@ class TestCreateTmuxSession:
 
     @pytest.mark.asyncio
     async def test_local_create_with_cwd_and_command(self):
+        """cwd + command: sends cd via send-keys then command via send-keys."""
         from src.tmux_manager import create_tmux_session
 
         proc = _make_proc(0)
@@ -635,10 +640,15 @@ class TestCreateTmuxSession:
             )
 
         assert result == {"ok": True}
-        args = mock_exec.call_args[0]
-        assert "-c" in args
-        assert "/tmp/work" in args
-        assert "bash run.sh" in args
+        calls = mock_exec.call_args_list
+        # 3 calls: create, cd, command
+        assert len(calls) >= 3, f"Expected 3 calls, got {len(calls)}"
+        cd_args = calls[1][0]
+        cmd_args = calls[2][0]
+        assert "send-keys" in cd_args
+        assert any("/tmp/work" in str(a) for a in cd_args)
+        assert "send-keys" in cmd_args
+        assert "bash run.sh" in cmd_args
 
     @pytest.mark.asyncio
     async def test_local_create_failure_returns_error(self):
@@ -692,11 +702,14 @@ class TestCreateTmuxSession:
              patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"):
             result = await create_tmux_session("ubuntu-desktop", "sess", cwd="/remote/path", command="echo hello")
 
-        # Should make 2 SSH calls: create session + send-keys with command
-        assert mock_exec.call_count == 2
-        second_call_args = mock_exec.call_args_list[1][0]
-        remote_cmd = second_call_args[-1]
-        assert "send-keys" in remote_cmd
+        # Should make 3 SSH calls: create session + cd send-keys + command send-keys
+        assert mock_exec.call_count == 3
+        cd_call = mock_exec.call_args_list[1][0][-1]
+        cmd_call = mock_exec.call_args_list[2][0][-1]
+        assert "send-keys" in cd_call
+        assert "/remote/path" in cd_call
+        assert "send-keys" in cmd_call
+        assert "echo hello" in cmd_call
 
     @pytest.mark.asyncio
     async def test_timeout_returns_error(self):

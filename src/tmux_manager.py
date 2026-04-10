@@ -202,14 +202,12 @@ async def create_tmux_session(
     local_machine = detect_local_machine()
     is_local = (machine == local_machine)
 
+    adapter = get_adapter(machine)
+
     try:
         if is_local:
-            # Local: create session with -c and command as exec args
+            # Step 1: Create detached session (no -c, psmux doesn't support it)
             cmd_parts = [mux, "new-session", "-d", "-s", name]
-            if cwd:
-                cmd_parts += ["-c", cwd]
-            if command:
-                cmd_parts.append(command)
             proc = await asyncio.create_subprocess_exec(
                 *cmd_parts,
                 stdout=asyncio.subprocess.PIPE,
@@ -220,11 +218,28 @@ async def create_tmux_session(
                 err = stderr.decode().strip()
                 log.error("create_tmux_session(%s, %s): %s", machine, name, err)
                 return {"ok": False, "error": err}
-            log.info("create_tmux_session(%s, %s): ok", machine, name)
+
+            # Step 2: cd into the working directory via send-keys
+            if cwd:
+                cd_cmd = adapter.cd_command(cwd)
+                sk = [mux, "send-keys", "-t", name, cd_cmd, "Enter"]
+                proc = await asyncio.create_subprocess_exec(
+                    *sk, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                )
+                await asyncio.wait_for(proc.communicate(), timeout=10)
+
+            # Step 3: Send the command via send-keys
+            if command:
+                sk = [mux, "send-keys", "-t", name, command, "Enter"]
+                proc = await asyncio.create_subprocess_exec(
+                    *sk, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                )
+                await asyncio.wait_for(proc.communicate(), timeout=10)
+
+            log.info("create_tmux_session(%s, %s): ok (local, cwd=%s)", machine, name, cwd)
             return {"ok": True}
         else:
             # Remote: use create + send-keys approach (avoids quoting hell over SSH).
-            adapter = get_adapter(machine)
             ssh_base = [
                 "ssh",
                 "-o", f"ConnectTimeout={SSH_TIMEOUT}",
@@ -233,34 +248,30 @@ async def create_tmux_session(
                 ssh_alias,
             ]
 
-            # Step 1: Create empty detached session
-            create_cmd = _ssh_path_prefix(machine) + adapter.mux_create_session(name)
-            proc = await asyncio.create_subprocess_exec(
-                *ssh_base, create_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
-            if proc.returncode != 0:
-                err = stderr.decode().strip()
-                if err:
-                    log.error("create_tmux_session(%s, %s): %s", machine, name, err)
-                    return {"ok": False, "error": err}
-
-            # Step 2: Send the command via send-keys (reliable, no quoting issues).
-            # The command must already be in the target shell's syntax — callers
-            # are expected to use adapter.build_session_command() before passing it
-            # here.  If a raw command string arrives we send it as-is.
-            if command:
-                keys_cmd = _ssh_path_prefix(machine) + adapter.mux_send_keys(name, command)
-                proc = await asyncio.create_subprocess_exec(
-                    *ssh_base, keys_cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
+            async def _ssh_run(cmd_str: str) -> tuple[int, str]:
+                p = await asyncio.create_subprocess_exec(
+                    *ssh_base, _ssh_path_prefix(machine) + cmd_str,
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 )
-                await asyncio.wait_for(proc.communicate(), timeout=15)
+                _, se = await asyncio.wait_for(p.communicate(), timeout=15)
+                return p.returncode, se.decode().strip()
 
-            log.info("create_tmux_session(%s, %s): ok", machine, name)
+            # Step 1: Create empty detached session
+            rc, err = await _ssh_run(adapter.mux_create_session(name))
+            if rc != 0 and err:
+                log.error("create_tmux_session(%s, %s): %s", machine, name, err)
+                return {"ok": False, "error": err}
+
+            # Step 2: cd into working directory via send-keys
+            if cwd:
+                cd_cmd = adapter.cd_command(cwd)
+                await _ssh_run(adapter.mux_send_keys(name, cd_cmd))
+
+            # Step 3: Send the command via send-keys
+            if command:
+                await _ssh_run(adapter.mux_send_keys(name, command))
+
+            log.info("create_tmux_session(%s, %s): ok (remote, cwd=%s)", machine, name, cwd)
             return {"ok": True, "machine": machine, "session": name}
     except asyncio.TimeoutError:
         log.error("create_tmux_session(%s, %s): timed out", machine, name)
