@@ -158,42 +158,47 @@ class TestLaunchRemoteTerminal:
 
     @pytest.mark.asyncio
     async def test_darwin_uses_osascript(self):
+        """macOS: ssh <alias> osascript - with AppleScript piped via stdin."""
         from src.launcher import launch_remote_terminal
 
         proc = _make_proc(0)
-        with patch("src.launcher.asyncio.create_subprocess_shell", return_value=proc) as mock_shell:
+        with patch("src.launcher.asyncio.create_subprocess_exec", return_value=proc) as mock_exec:
             result = await launch_remote_terminal("echo hello", "mac-mini")
 
         assert result["ok"] is True
-        cmd = mock_shell.call_args[0][0]
-        assert "osascript" in cmd
-        assert "mac-mini" in cmd  # ssh target
+        args = mock_exec.call_args[0]
+        assert any("osascript" in str(a) for a in args)
+        assert any("mac-mini" in str(a) for a in args)
 
     @pytest.mark.asyncio
     async def test_linux_uses_display_and_terminal_emulator(self):
         from src.launcher import launch_remote_terminal
 
         proc = _make_proc(0)
-        with patch("src.launcher.asyncio.create_subprocess_shell", return_value=proc) as mock_shell:
+        with patch("src.launcher.asyncio.create_subprocess_exec", return_value=proc) as mock_exec:
             result = await launch_remote_terminal("echo hello", "ubuntu-desktop")
 
         assert result["ok"] is True
-        cmd = mock_shell.call_args[0][0]
-        assert "DISPLAY" in cmd
-        assert "ubuntu-desktop" in cmd
+        args = mock_exec.call_args[0]
+        assert any("ubuntu-desktop" in str(a) for a in args)
+        # DISPLAY is in the bash script piped via stdin
+        stdin_input = proc.communicate.call_args[1]["input"]
+        assert b"DISPLAY" in stdin_input
 
     @pytest.mark.asyncio
     async def test_windows_uses_powershell_start_process(self):
         from src.launcher import launch_remote_terminal
 
         proc = _make_proc(0)
-        with patch("src.launcher.asyncio.create_subprocess_shell", return_value=proc) as mock_shell:
+        with patch("src.launcher.asyncio.create_subprocess_exec", return_value=proc) as mock_exec:
             result = await launch_remote_terminal("echo hello", "avell-i7")
 
         assert result["ok"] is True
-        cmd = mock_shell.call_args[0][0]
-        assert "powershell" in cmd.lower() or "Start-Process" in cmd
-        assert "avell-i7" in cmd
+        args = mock_exec.call_args[0]
+        assert any("powershell" in str(a).lower() for a in args)
+        assert any("avell-i7" in str(a) for a in args)
+        stdin_input = proc.communicate.call_args[1]["input"]
+        assert b"Start-Process" in stdin_input
 
     @pytest.mark.asyncio
     async def test_unknown_os_returns_error(self):
@@ -208,7 +213,7 @@ class TestLaunchRemoteTerminal:
         from src.launcher import launch_remote_terminal
 
         proc = _make_proc(0)
-        with patch("src.launcher.asyncio.create_subprocess_shell", return_value=proc), \
+        with patch("src.launcher.asyncio.create_subprocess_exec", return_value=proc), \
              patch("src.launcher.asyncio.wait_for", side_effect=asyncio.TimeoutError()):
             result = await launch_remote_terminal("echo hello", "mac-mini")
 
@@ -220,28 +225,28 @@ class TestLaunchRemoteTerminal:
         from src.launcher import launch_remote_terminal
 
         proc = _make_proc(0)
-        with patch("src.launcher.asyncio.create_subprocess_shell", return_value=proc) as mock_shell:
+        with patch("src.launcher.asyncio.create_subprocess_exec", return_value=proc):
             await launch_remote_terminal("my-command", "mac-mini")
 
-        cmd = mock_shell.call_args[0][0]
-        assert "Terminal" in cmd
+        stdin_input = proc.communicate.call_args[1]["input"]
+        assert b"Terminal" in stdin_input
 
     @pytest.mark.asyncio
     async def test_linux_command_contains_exec_bash(self):
         from src.launcher import launch_remote_terminal
 
         proc = _make_proc(0)
-        with patch("src.launcher.asyncio.create_subprocess_shell", return_value=proc) as mock_shell:
+        with patch("src.launcher.asyncio.create_subprocess_exec", return_value=proc):
             await launch_remote_terminal("my-command", "ubuntu-desktop")
 
-        cmd = mock_shell.call_args[0][0]
-        assert "exec bash" in cmd
+        stdin_input = proc.communicate.call_args[1]["input"]
+        assert b"exec bash" in stdin_input
 
     @pytest.mark.asyncio
     async def test_exception_returns_error(self):
         from src.launcher import launch_remote_terminal
 
-        with patch("src.launcher.asyncio.create_subprocess_shell", side_effect=OSError("fail")):
+        with patch("src.launcher.asyncio.create_subprocess_exec", side_effect=OSError("fail")):
             result = await launch_remote_terminal("echo hello", "mac-mini")
 
         assert result["ok"] is False

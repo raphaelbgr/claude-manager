@@ -946,46 +946,57 @@ class TestLaunchRemoteTerminal:
 
     @pytest.mark.asyncio
     async def test_darwin_remote_uses_osascript(self):
+        """macOS: ssh <alias> osascript - with AppleScript piped via stdin."""
         from src.launcher import launch_remote_terminal
 
         proc = _make_proc(0)
-        with patch("src.launcher.asyncio.create_subprocess_shell", return_value=proc) as mock_shell, \
-             patch("src.launcher.asyncio.create_subprocess_exec", return_value=proc):
+        with patch("src.launcher.asyncio.create_subprocess_exec", return_value=proc) as mock_exec:
             result = await launch_remote_terminal("echo hi", "mac-mini")
 
         assert result == {"ok": True}
-        # The SSH command should include osascript for macOS
-        cmd = mock_shell.call_args[0][0]
-        assert "ssh" in cmd
-        assert "osascript" in cmd
+        args = mock_exec.call_args[0]
+        assert "ssh" in args
+        assert any("osascript" in str(a) for a in args)
+        # stdin should contain the AppleScript
+        stdin_input = mock_exec.call_args[1].get("stdin")
+        assert stdin_input == asyncio.subprocess.PIPE
+        # Verify communicate was called with the applescript
+        comm_call = proc.communicate.call_args
+        assert b"Terminal" in comm_call[1]["input"]
+        assert b"echo hi" in comm_call[1]["input"]
 
     @pytest.mark.asyncio
     async def test_linux_remote_uses_display0(self):
+        """Linux: ssh <alias> bash -s with DISPLAY=:0 bash script piped via stdin."""
         from src.launcher import launch_remote_terminal
 
         proc = _make_proc(0)
-        with patch("src.launcher.asyncio.create_subprocess_shell", return_value=proc) as mock_shell, \
-             patch("src.launcher.asyncio.create_subprocess_exec", return_value=proc):
+        with patch("src.launcher.asyncio.create_subprocess_exec", return_value=proc) as mock_exec:
             result = await launch_remote_terminal("htop", "ubuntu-desktop")
 
         assert result == {"ok": True}
-        cmd = mock_shell.call_args[0][0]
-        assert "ssh" in cmd
-        assert "DISPLAY=:0" in cmd
+        args = mock_exec.call_args[0]
+        assert "ssh" in args
+        assert any("bash" in str(a) for a in args)
+        comm_call = proc.communicate.call_args
+        assert b"DISPLAY=:0" in comm_call[1]["input"]
+        assert b"htop" in comm_call[1]["input"]
 
     @pytest.mark.asyncio
     async def test_win32_remote_uses_powershell(self):
+        """Windows: ssh <alias> powershell -Command - with Start-Process piped via stdin."""
         from src.launcher import launch_remote_terminal
 
         proc = _make_proc(0)
-        with patch("src.launcher.asyncio.create_subprocess_shell", return_value=proc) as mock_shell, \
-             patch("src.launcher.asyncio.create_subprocess_exec", return_value=proc):
+        with patch("src.launcher.asyncio.create_subprocess_exec", return_value=proc) as mock_exec:
             result = await launch_remote_terminal("dir", "avell-i7")
 
         assert result == {"ok": True}
-        cmd = mock_shell.call_args[0][0]
-        assert "ssh" in cmd
-        assert "powershell" in cmd.lower()
+        args = mock_exec.call_args[0]
+        assert "ssh" in args
+        assert any("powershell" in str(a).lower() for a in args)
+        comm_call = proc.communicate.call_args
+        assert b"Start-Process" in comm_call[1]["input"]
 
     @pytest.mark.asyncio
     async def test_unknown_os_returns_error(self):

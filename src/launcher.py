@@ -5,7 +5,7 @@ import shlex
 import shutil
 import sys
 from .command_adapter import get_adapter
-from .config import FLEET_MACHINES, detect_local_machine
+from .config import FLEET_MACHINES, detect_local_machine, SSH_TIMEOUT
 
 log = logging.getLogger("claude_manager.launcher")
 
@@ -284,58 +284,87 @@ async def launch_remote_terminal(command: str, machine: str) -> dict:
     """
     Open a terminal ON THE REMOTE MACHINE's own display (not locally via SSH).
 
-    Uses SSH to trigger a terminal launch on the remote machine's desktop:
-    - macOS: osascript to open Terminal.app/iTerm2
-    - Linux: DISPLAY=:0 x-terminal-emulator
-    - Windows: powershell Start-Process
+    Strategy: pipe a shell/AppleScript/PowerShell script via stdin to SSH
+    (avoids all quoting hell). Each OS gets a tailored script that:
+    - Includes the PATH so tmux/psmux are found
+    - Spawns a terminal on the machine's own display
+    - Runs the command inside that terminal
     """
     info = FLEET_MACHINES.get(machine, {})
     alias = info.get("ssh_alias", machine)
     remote_os = info.get("os", "")
-    escaped = command.replace("'", "'\\''")
+
+    ssh_args = [
+        "ssh",
+        "-o", f"ConnectTimeout={SSH_TIMEOUT}",
+        "-o", "BatchMode=yes",
+        "-o", "StrictHostKeyChecking=no",
+        alias,
+    ]
 
     if remote_os == "darwin":
-        # Open Terminal.app on the remote Mac's display
-        applescript = (
-            f'tell application "Terminal"\n'
-            f'  activate\n'
-            f'  do script "{escaped}"\n'
-            f'end tell'
-        )
-        ssh_cmd = f"ssh {shlex.quote(alias)} osascript -e {shlex.quote(applescript)}"
-    elif remote_os in ("linux",):
-        # Open terminal on remote Linux's X display
-        inner = shlex.quote(escaped + "; exec bash")
-        ssh_cmd = f"ssh {shlex.quote(alias)} 'DISPLAY=:0 nohup x-terminal-emulator -e bash -c {inner} &>/dev/null &'"
+        # macOS: osascript read from stdin via "osascript -"
+        # Add Homebrew PATH so tmux is found when Terminal.app runs the command
+        applescript = f'''
+tell application "Terminal"
+    activate
+    do script "export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH; {command}"
+end tell
+'''
+        ssh_args.append("osascript -")
+        stdin_input = applescript.encode()
+    elif remote_os == "linux":
+        # Linux: bash script piped in, opens x-terminal-emulator on DISPLAY=:0
+        bash_script = f'''
+export DISPLAY=:0
+export PATH=/opt/homebrew/bin:/usr/local/bin:/snap/bin:$PATH
+for t in x-terminal-emulator gnome-terminal konsole xfce4-terminal xterm; do
+    if command -v "$t" >/dev/null 2>&1; then
+        if [ "$t" = "gnome-terminal" ]; then
+            nohup "$t" -- bash -c "{command}; exec bash" >/dev/null 2>&1 &
+        else
+            nohup "$t" -e bash -c "{command}; exec bash" >/dev/null 2>&1 &
+        fi
+        exit 0
+    fi
+done
+echo "No terminal emulator found on remote" >&2
+exit 1
+'''
+        ssh_args.append("bash -s")
+        stdin_input = bash_script.encode()
     elif remote_os == "win32":
-        # Open PowerShell window on remote Windows
-        ps_escaped = command.replace('"', '`"')
-        ssh_cmd = f"ssh {shlex.quote(alias)} \"powershell -Command Start-Process powershell -ArgumentList '-NoExit','-Command','{ps_escaped}'\""
+        # Windows: PowerShell script via stdin (SSH default shell is PowerShell)
+        # Start-Process opens a new PowerShell window running the command
+        # Use single quotes around command to avoid escape issues, escape any internal '
+        cmd_escaped = command.replace("'", "''")
+        ps_script = f"Start-Process powershell -ArgumentList '-NoExit','-Command',\"{cmd_escaped}\"\n"
+        ssh_args.append("powershell -Command -")
+        stdin_input = ps_script.encode()
     else:
         return {"ok": False, "error": f"Unknown remote OS for {machine}: {remote_os}"}
 
     try:
         proc = await asyncio.create_subprocess_exec(
-            *ssh_cmd.split()[:3],  # don't split — use shell
+            *ssh_args,
+            stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        # Actually, we need shell=True for the complex quoting
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(input=stdin_input), timeout=10
+            )
+            if proc.returncode != 0:
+                err = stderr.decode(errors="replace").strip()
+                log.error("launch_remote_terminal(%s): %s", machine, err)
+                return {"ok": False, "error": err or f"exit code {proc.returncode}"}
+            return {"ok": True}
+        except asyncio.TimeoutError:
+            # Fire-and-forget is OK for terminal launches
+            return {"ok": True}
     except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-    # Use shell execution for the complex SSH command
-    try:
-        proc = await asyncio.create_subprocess_shell(
-            ssh_cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        await asyncio.wait_for(proc.communicate(), timeout=10)
-        return {"ok": True}
-    except asyncio.TimeoutError:
-        return {"ok": True}  # fire-and-forget, timeout is OK
-    except Exception as e:
+        log.error("launch_remote_terminal(%s): %s", machine, e)
         return {"ok": False, "error": str(e)}
 
 
