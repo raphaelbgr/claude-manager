@@ -1183,6 +1183,10 @@ class TestBackgroundScanTask:
         """
         The background scan's first iteration should populate state with the
         data returned by the mocked functions.
+
+        The bg task now waits for the first WS client before starting (so the
+        UI sees the initial scan_progress events). We simulate that by adding
+        a fake WS client to the state right after app creation.
         """
         with (
             patch("src.server.discover_fleet", new_callable=AsyncMock, return_value=fake_fleet),
@@ -1196,8 +1200,11 @@ class TestBackgroundScanTask:
             client = TestClient(server)
             await client.start_server()
             try:
+                # Inject a fake WS client so the bg task's "wait for first WS"
+                # gate releases immediately
+                app["state"]["ws_clients"].add(object())
                 # Yield control so the bg task can complete its first pass
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.5)
                 state = client.app["state"]
                 assert state["sessions"] == fake_sessions
                 assert state["fleet"] == fake_fleet

@@ -243,8 +243,25 @@ async def _background_scan(app: web.Application) -> None:
     """
     Periodically refresh fleet + session data.
     Pushes snapshots to all connected WebSocket clients on each refresh.
+
+    First-scan behavior: waits up to 30s for the first WS client to connect
+    BEFORE running. This ensures the initial scan_progress messages are
+    actually delivered to the UI (otherwise the scan would complete before
+    the desktop window is even open, and the UI would only see the snapshot).
     """
     local_machine = app["local_machine"]
+
+    # Wait for first WS client (or 30s timeout) so the user sees first-scan progress
+    log.info("background_scan: waiting for first WS client...")
+    waited = 0.0
+    while not app["state"]["ws_clients"] and waited < 30.0:
+        await asyncio.sleep(0.2)
+        waited += 0.2
+    if app["state"]["ws_clients"]:
+        log.info("background_scan: WS client connected after %.1fs, starting first scan", waited)
+    else:
+        log.info("background_scan: 30s timeout reached, scanning anyway")
+
     while True:
         t0 = time.monotonic()
         try:
