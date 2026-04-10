@@ -33,10 +33,12 @@ def _save_prefs(prefs: dict) -> None:
 
 from aiohttp import web
 
+import shlex
+
 from .command_adapter import get_adapter
 from .config import DEFAULT_BIND, DEFAULT_PORT, FLEET_MACHINES, SCAN_INTERVAL, detect_local_machine
 from .fleet import discover_fleet
-from .launcher import launch_claude_session, launch_tmux_attach, launch_tmux_attach_remote, launch_new_tmux_and_attach, launch_terminal
+from .launcher import launch_claude_session, launch_tmux_attach, launch_tmux_attach_remote, launch_new_tmux_and_attach, launch_terminal, _ssh_path_prefix
 from .scanner import ClaudeSession, scan_all
 from .tmux_manager import TmuxSession, list_all_tmux, create_tmux_session, kill_tmux_session
 
@@ -302,11 +304,36 @@ async def handle_sessions_launch(request: web.Request) -> web.Response:
     machine = body.get("machine", "")
     session_id = body.get("session_id", "")
     cwd = body.get("cwd", "")
-    if not session_id or not cwd:
-        return web.json_response({"ok": False, "error": "session_id and cwd required"}, status=400)
+    if not cwd:
+        return web.json_response({"ok": False, "error": "cwd required"}, status=400)
     skip = body.get("skip_permissions", False)
     mode = body.get("mode", "terminal")
     t0 = time.monotonic()
+
+    # New session (no session_id): cd to cwd and start a fresh claude
+    if not session_id:
+        local_machine = request.app["local_machine"]
+        adapter = get_adapter(machine or local_machine)
+        if not machine:
+            machine = local_machine
+        cd_cmd = adapter.cd_command(cwd)
+        claude_cmd = "claude"
+        if skip:
+            claude_cmd += " --dangerously-skip-permissions"
+        full_cmd = adapter.chain_commands(cd_cmd, claude_cmd)
+        if machine == local_machine:
+            result = await launch_terminal(full_cmd)
+        else:
+            from .config import FLEET_MACHINES as _FM
+            info = _FM.get(machine, {})
+            alias = info.get("ssh_alias", machine)
+            ssh_cmd = _ssh_path_prefix(machine) + full_cmd
+            terminal_cmd = f"ssh {shlex.quote(alias)} -t {shlex.quote(ssh_cmd)}"
+            result = await launch_terminal(terminal_cmd)
+        status = 200 if result.get("ok") else 500
+        log.info("POST /api/sessions/launch NEW machine=%s %d", machine, status)
+        return web.json_response(result, status=status)
+
     if mode == "tmux":
         import re
         adapter = get_adapter(machine)
@@ -397,6 +424,8 @@ async def handle_tmux_create(request: web.Request) -> web.Response:
     name = body.get("name", "")
     if not machine or not name:
         return web.json_response({"ok": False, "error": "machine and name required"}, status=400)
+    # Sanitize: tmux/psmux reject / and \ in session names
+    name = name.replace("/", "_").replace("\\", "_")
     result = await create_tmux_session(machine, name, body.get("cwd"), body.get("command"))
     status = 200 if result.get("ok") else 500
     if result.get("ok"):

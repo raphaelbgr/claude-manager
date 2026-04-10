@@ -513,14 +513,14 @@ class TestSessionsLaunchEndpoint:
             data = await resp.json()
             assert data["ok"] is True
 
-    async def test_missing_session_id_returns_400(self, cli):
-        resp = await cli.post(
-            "/api/sessions/launch",
-            json={"machine": "mac-mini", "cwd": "/tmp/project"},
-        )
-        assert resp.status == 400
-        data = await resp.json()
-        assert data["ok"] is False
+    async def test_missing_session_id_creates_new_session(self, cli):
+        """No session_id = new session (cd + claude). Should attempt launch, not 400."""
+        with patch("src.server.launch_terminal", new_callable=AsyncMock, return_value={"ok": True}):
+            resp = await cli.post(
+                "/api/sessions/launch",
+                json={"machine": "mac-mini", "cwd": "/tmp/project"},
+            )
+            assert resp.status == 200
 
     async def test_missing_cwd_returns_400(self, cli):
         resp = await cli.post(
@@ -531,12 +531,14 @@ class TestSessionsLaunchEndpoint:
         data = await resp.json()
         assert data["ok"] is False
 
-    async def test_empty_session_id_returns_400(self, cli):
-        resp = await cli.post(
-            "/api/sessions/launch",
-            json={"machine": "mac-mini", "session_id": "", "cwd": "/tmp"},
-        )
-        assert resp.status == 400
+    async def test_empty_session_id_creates_new_session(self, cli):
+        """Empty session_id = new session (cd + claude)."""
+        with patch("src.server.launch_terminal", new_callable=AsyncMock, return_value={"ok": True}):
+            resp = await cli.post(
+                "/api/sessions/launch",
+                json={"machine": "mac-mini", "session_id": "", "cwd": "/tmp"},
+            )
+            assert resp.status == 200
 
     async def test_empty_cwd_returns_400(self, cli):
         resp = await cli.post(

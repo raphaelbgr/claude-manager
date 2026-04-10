@@ -1309,7 +1309,7 @@ function MachineSection({ machine, children, count, collapseKey, collapseState, 
 
 const PROJECT_SECTION_MAX = 20; // max cards before showing "Show all N" button
 
-function ProjectSection({ projectPath, children, count, defaultOpen: defOpen = true, collapseKey, collapseState, setCollapseState }) {
+function ProjectSection({ projectPath, machine, children, count, defaultOpen: defOpen = true, collapseKey, collapseState, setCollapseState, onNewSessionInProject, onNewTmuxInProject }) {
   const shortPath = shortenPath(projectPath) || projectPath || '(unknown)';
   const [showAll, setShowAll] = useState(false);
 
@@ -1334,6 +1334,9 @@ function ProjectSection({ projectPath, children, count, defaultOpen: defOpen = t
   const needsTruncation = totalChildren > PROJECT_SECTION_MAX && !showAll;
   const visibleChildren = needsTruncation ? childArray.slice(0, PROJECT_SECTION_MAX) : childArray;
   const hiddenCount = totalChildren - PROJECT_SECTION_MAX;
+
+  const local = isLocalMachine(machine);
+  const muxName = (MACHINE_INFO[machine] || {}).os === 'Windows' ? 'psmux' : 'tmux';
 
   return h('div', { style: { marginLeft: 8, marginBottom: 4 } },
     h('div', {
@@ -1374,6 +1377,39 @@ function ProjectSection({ projectPath, children, count, defaultOpen: defOpen = t
           textDecoration: 'underline', display: 'block',
         },
       }, `Show ${hiddenCount} more…`),
+      // New session buttons row
+      machine && onNewSessionInProject && h('div', {
+        style: { display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6, paddingLeft: 4 }
+      },
+        h('button', {
+          className: 'compact-action-btn btn',
+          onClick: (e) => { e.stopPropagation(); onNewSessionInProject(machine, projectPath); },
+          title: local
+            ? `Open a new terminal in ${shortPath} and start claude`
+            : `SSH into ${machine} and start a new claude session in ${shortPath}`,
+          style: {
+            borderColor: '#2a4a2a', color: '#3fb950', fontSize: '0.65rem',
+            padding: '3px 8px', display: 'flex', alignItems: 'center', gap: 4,
+          },
+        },
+          h('span', { className: 'material-icons-round', style: { fontSize: '12px' } }, 'add'),
+          local ? 'New session' : 'SSH + New session',
+        ),
+        h('button', {
+          className: 'compact-action-btn btn',
+          onClick: (e) => { e.stopPropagation(); onNewTmuxInProject(machine, projectPath); },
+          title: local
+            ? `Create a new ${muxName} session in ${shortPath}`
+            : `Create a new ${muxName} session on ${machine} in ${shortPath}`,
+          style: {
+            borderColor: '#1f3a5f', color: '#58a6ff', fontSize: '0.65rem',
+            padding: '3px 8px', display: 'flex', alignItems: 'center', gap: 4,
+          },
+        },
+          h('span', { className: 'material-icons-round', style: { fontSize: '12px' } }, 'add'),
+          local ? `New ${muxName}` : `SSH + New ${muxName}`,
+        ),
+      ),
     ),
   );
 }
@@ -1570,7 +1606,7 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
             placeholder: 'e.g. dev-session',
             title: 'Name for the new tmux/psmux session',
             value: name,
-            onChange: e => setName(e.target.value),
+            onChange: e => setName(e.target.value.replace(/[/\\]/g, '_')),
             onKeyDown: e => { if (e.key === 'Enter') handleCreate(); },
           }),
         ),
@@ -1933,7 +1969,7 @@ function PinnedSection({ sessions, pinnedIds, onLaunch, launchingId, onTmuxLaunc
 
 // ─── Sessions Panel ───────────────────────────────────────────────────────────
 
-function SessionsPanel({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaunchingId, skipPermissions, scanning, collapseState, setCollapseState, pinnedIds, onPin, onUnpin, onArchive, onUnarchive, archivedIds, expandedCards, onToggleExpand, hwCache, fetchHardware }) {
+function SessionsPanel({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaunchingId, skipPermissions, scanning, collapseState, setCollapseState, pinnedIds, onPin, onUnpin, onArchive, onUnarchive, archivedIds, expandedCards, onToggleExpand, hwCache, fetchHardware, onNewSessionInProject, onNewTmuxInProject }) {
   // sessions is already filtered/sorted by App; just group by machine then by project
   const byMachine = useMemo(() => groupBy(sessions, 'machine'), [sessions]);
 
@@ -2031,11 +2067,14 @@ function SessionsPanel({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaun
           return h(ProjectSection, {
             key: projectPath,
             projectPath,
+            machine,
             count: projectSessions.length,
             defaultOpen: projectSessions.length <= 3,
             collapseKey: projKey,
             collapseState,
             setCollapseState,
+            onNewSessionInProject,
+            onNewTmuxInProject,
           },
             projectSessions.map(s =>
               h(SessionCardMemo, {
@@ -3362,6 +3401,36 @@ function App() {
     }
   }, [skipPermissions]);
 
+  // ── New session in project folder ────────────────────────────────────────
+  const handleNewSessionInProject = useCallback(async (machine, cwd) => {
+    try {
+      const res = await fetch('/api/sessions/launch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ machine, cwd, mode: 'terminal' }),
+      });
+      const data = await res.json();
+      if (data.ok) toast('Terminal opened', 'success');
+      else toast(data.error || 'Failed', 'error');
+    } catch (e) { toast('Network error', 'error'); }
+  }, []);
+
+  const handleNewTmuxInProject = useCallback(async (machine, cwd) => {
+    const muxName = (MACHINE_INFO[machine] || {}).os === 'Windows' ? 'psmux' : 'tmux';
+    const projectFolder = (cwd || '').replace(/\\/g, '/').split('/').filter(Boolean).pop() || 'default';
+    const name = `${machine}_${projectFolder}`;
+    try {
+      const res = await fetch('/api/tmux/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ machine, name, cwd }),
+      });
+      const data = await res.json();
+      if (data.ok) toast(`${muxName} session created in ${projectFolder}`, 'success');
+      else toast(data.error || 'Failed', 'error');
+    } catch (e) { toast('Network error', 'error'); }
+  }, []);
+
   // ── Collapse / Expand All ────────────────────────────────────────────────
   const handleExpandAll = useCallback(() => {
     // Collect all known machine and project keys from current data
@@ -3607,6 +3676,8 @@ function App() {
                   onToggleExpand: handleToggleExpand,
                   hwCache,
                   fetchHardware,
+                  onNewSessionInProject: handleNewSessionInProject,
+                  onNewTmuxInProject: handleNewTmuxInProject,
                 }),
           ),
         ),
