@@ -211,6 +211,7 @@ async def handle_health(request: web.Request) -> web.Response:
         {
             "status": "ok",
             "port": request.app["port"],
+            "local_machine": request.app.get("local_machine"),
             "machines": len(fleet),
             "sessions": len(sessions),
             "last_scan": state["last_scan"],

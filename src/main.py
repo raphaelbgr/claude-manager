@@ -56,6 +56,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run API server only (no GUI, no web UI)",
     )
+    parser.add_argument(
+        "--daemon",
+        action="store_true",
+        help="Run as background daemon (detach from terminal)",
+    )
     return parser
 
 
@@ -89,9 +94,67 @@ def print_banner(bind: str, port: int) -> None:
     print("\n".join(lines))
 
 
+def _daemonize(bind: str, port: int) -> None:
+    """Fork to background and run the API server as a daemon (no terminal needed).
+
+    On Windows, re-launches with pythonw.exe (no console window).
+    On Unix, double-forks to detach from the terminal.
+    """
+    import os
+    pid_file = os.path.join(os.path.expanduser("~"), ".claude-manager.pid")
+
+    if sys.platform == "win32":
+        # Re-launch with pythonw.exe (no console) if not already
+        pythonw = sys.executable.replace("python.exe", "pythonw.exe")
+        if not os.path.exists(pythonw):
+            pythonw = sys.executable
+        import subprocess
+        proc = subprocess.Popen(
+            [pythonw, "-m", "src", "--api-only", "--bind", bind, "--port", str(port)],
+            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW,
+            close_fds=True,
+        )
+        with open(pid_file, "w") as f:
+            f.write(str(proc.pid))
+        print(f"claude-manager daemon started (PID {proc.pid})")
+        print(f"  Web: http://localhost:{port}")
+        print(f"  Stop: claude-manager --stop")
+        return
+
+    # Unix: double-fork to detach from terminal
+    pid = os.fork()
+    if pid > 0:
+        # Parent — wait briefly for child to be ready, then exit
+        print(f"claude-manager daemon started (PID {pid})")
+        print(f"  Web: http://localhost:{port}")
+        print(f"  Stop: kill $(cat {pid_file})")
+        return
+
+    # Child: new session, second fork
+    os.setsid()
+    pid2 = os.fork()
+    if pid2 > 0:
+        os._exit(0)
+
+    # Grandchild: redirect stdio, write PID, run server
+    sys.stdin = open(os.devnull, "r")
+    sys.stdout = open(os.devnull, "w")
+    sys.stderr = open(os.devnull, "w")
+
+    with open(pid_file, "w") as f:
+        f.write(str(os.getpid()))
+
+    from .server import run_server
+    run_server(port=port, bind=bind)
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if args.daemon:
+        _daemonize(args.bind, args.port)
+        return
 
     if args.tui:
         from .tui.app import ClaudeManagerApp

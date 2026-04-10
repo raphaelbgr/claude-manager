@@ -97,6 +97,7 @@ class TestMain:
 
         with patch("src.main.build_parser") as mock_parser:
             mock_args = MagicMock()
+            mock_args.daemon = False
             mock_args.tui = True
             mock_args.api_only = False
             mock_parser.return_value.parse_args.return_value = mock_args
@@ -121,6 +122,7 @@ class TestMain:
         mock_run_server = MagicMock()
         with patch("src.main.build_parser") as mock_parser:
             mock_args = MagicMock()
+            mock_args.daemon = False
             mock_args.tui = False
             mock_args.api_only = True
             mock_args.bind = "0.0.0.0"
@@ -138,6 +140,7 @@ class TestMain:
         mock_run_desktop = MagicMock()
         with patch("src.main.build_parser") as mock_parser:
             mock_args = MagicMock()
+            mock_args.daemon = False
             mock_args.tui = False
             mock_args.api_only = False
             mock_args.bind = "0.0.0.0"
@@ -156,6 +159,7 @@ class TestMain:
 
         with patch("src.main.build_parser") as mock_parser:
             mock_args = MagicMock()
+            mock_args.daemon = False
             mock_args.tui = False
             mock_args.api_only = False
             mock_args.bind = "127.0.0.1"

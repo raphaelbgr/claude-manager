@@ -73,25 +73,24 @@ if ($LASTEXITCODE -ne 0) {
 # Try system tray extras (pystray)
 pip install pystray Pillow 2>$null
 
-# Desktop shortcut — uses cmd /k to keep window open
+# Desktop shortcut — pythonw.exe (no console window)
 $WshShell = New-Object -ComObject WScript.Shell
 $Shortcut = $WshShell.CreateShortcut("$env:USERPROFILE\Desktop\Claude Manager.lnk")
-$Shortcut.TargetPath = "cmd.exe"
-$Shortcut.Arguments = "/k cd /d `"$installDir`" && .venv\Scripts\python.exe -m src --enable-gui"
+$Shortcut.TargetPath = "$installDir\.venv\Scripts\pythonw.exe"
+$Shortcut.Arguments = "-m src --enable-gui"
 $Shortcut.WorkingDirectory = $installDir
 $Shortcut.Description = "Claude Manager - Fleet Session Manager"
-# Set icon if available
 if (Test-Path "$installDir\assets\icon.ico") {
     $Shortcut.IconLocation = "$installDir\assets\icon.ico"
 }
 $Shortcut.Save()
 
-# Also create a headless service shortcut (API only, no window)
+# API-only shortcut (headless daemon, no window)
 $Shortcut2 = $WshShell.CreateShortcut("$env:USERPROFILE\Desktop\Claude Manager (API).lnk")
 $Shortcut2.TargetPath = "$installDir\.venv\Scripts\pythonw.exe"
-$Shortcut2.Arguments = "-m src --api-only"
+$Shortcut2.Arguments = "-m src --daemon"
 $Shortcut2.WorkingDirectory = $installDir
-$Shortcut2.Description = "Claude Manager - API Server (headless)"
+$Shortcut2.Description = "Claude Manager - API Server (background daemon)"
 if (Test-Path "$installDir\assets\icon.ico") {
     $Shortcut2.IconLocation = "$installDir\assets\icon.ico"
 }
@@ -99,6 +98,11 @@ $Shortcut2.Save()
 
 Write-Host ""
 Write-Host "claude-manager installed!" -ForegroundColor Green
-Write-Host "  Desktop shortcut: ~/Desktop/Claude Manager.lnk"
-Write-Host "  API-only shortcut: ~/Desktop/Claude Manager (API).lnk"
+Write-Host "  Desktop shortcut: ~/Desktop/Claude Manager.lnk (GUI, no console)"
+Write-Host "  API-only shortcut: ~/Desktop/Claude Manager (API).lnk (background daemon)"
 Write-Host "  Web: http://localhost:44740"
+Write-Host ""
+Write-Host "  CLI usage:" -ForegroundColor Yellow
+Write-Host "    claude-manager --daemon     Start as background service"
+Write-Host "    claude-manager --enable-gui  Start with native window"
+Write-Host "    claude-manager --tui        Start terminal UI"

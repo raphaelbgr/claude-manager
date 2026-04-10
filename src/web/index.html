@@ -495,21 +495,14 @@ const MACHINE_INFO = {
   'windows-desktop': { ip: '192.168.7.101', os: 'Windows', osIcon: 'desktop_windows' },
 };
 
-// Detect local machine from the page's hostname (API host).
-// If served from one of the known IPs, map it back to a machine name.
-function detectLocalMachine() {
-  const h = location.hostname;
-  for (const [name, info] of Object.entries(MACHINE_INFO)) {
-    if (h === info.ip || h === name || h === 'localhost' || h === '127.0.0.1') {
-      // localhost / 127.0.0.1 → assume mac-mini (the primary orchestrator)
-      if (h === 'localhost' || h === '127.0.0.1') return 'mac-mini';
-      return name;
-    }
-  }
-  return 'mac-mini'; // fallback
-}
+// LOCAL_MACHINE is fetched from the server's /health endpoint.
+// The server runs detect_local_machine() (IP-based) at startup — authoritative.
+let LOCAL_MACHINE = null;
 
-const LOCAL_MACHINE = detectLocalMachine();
+// Eager fetch on page load — updates before first render in most cases.
+fetch('/health').then(r => r.json()).then(d => {
+  if (d.local_machine) LOCAL_MACHINE = d.local_machine;
+}).catch(() => {});
 
 function isLocalMachine(machine) {
   return machine === LOCAL_MACHINE;
@@ -2998,7 +2991,7 @@ function App() {
   useEffect(() => {
     const p1 = fetch('/health')
       .then(r => r.json())
-      .then(d => { setHealth(d); setLastScan(d.last_scan); })
+      .then(d => { setHealth(d); setLastScan(d.last_scan); if (d.local_machine) LOCAL_MACHINE = d.local_machine; })
       .catch(() => {});
 
     const p2 = fetch('/api/sessions')
