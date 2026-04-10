@@ -1213,33 +1213,46 @@ function HardwareInfo({ machine, hwCache, fetchHardware }) {
 
   const { cpu, gpus, memory } = cached.data || {};
 
-  const cpuColor = cpu && cpu.percent > 70 ? '#f85149' : cpu && cpu.percent > 40 ? '#e3b341' : '#8b949e';
-  const ramColor = memory && (memory.used / memory.total) > 0.85 ? '#f85149' : memory && (memory.used / memory.total) > 0.7 ? '#e3b341' : '#8b949e';
+  const usageColor = (pct) => pct > 70 ? '#f85149' : pct > 40 ? '#e3b341' : '#8b949e';
+  const tempColor = (t) => t > 80 ? '#f85149' : t > 60 ? '#e3b341' : '#8b949e';
+  const ramColor = memory && memory.percent != null
+    ? (memory.percent > 85 ? '#f85149' : memory.percent > 70 ? '#e3b341' : '#8b949e')
+    : '#8b949e';
 
   return h('div', {
-    style: { fontSize: '0.7rem', color: '#6e7681', fontFamily: 'monospace', marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }
+    style: { fontSize: '0.7rem', color: '#6e7681', fontFamily: 'monospace', marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 0, alignItems: 'center' }
   },
     cpu && h('span', null,
       h('span', { style: { color: '#484f58' } }, 'CPU: '),
       h('span', { style: { color: '#8b949e' } }, `${cpu.name || 'CPU'}${cpu.cores ? ` (${cpu.cores} cores)` : ''}`),
-      cpu.percent != null && h('span', { style: { color: cpuColor } }, ` ${cpu.percent}%`),
+      cpu.usage_percent != null && h('span', { style: { color: usageColor(cpu.usage_percent) } }, ` ${cpu.usage_percent.toFixed(1)}%`),
+      cpu.temp_c != null && h('span', null,
+        h('span', { className: 'material-icons', style: { fontSize: '0.65rem', verticalAlign: 'middle', color: tempColor(cpu.temp_c), marginLeft: 3 } }, 'thermostat'),
+        h('span', { style: { color: tempColor(cpu.temp_c) } }, `${cpu.temp_c.toFixed(0)}°C`),
+      ),
     ),
 
     gpus && gpus.length > 0 && gpus.map((gpu, i) => {
-      const tempColor = gpu.temp > 80 ? '#f85149' : gpu.temp > 60 ? '#e3b341' : '#8b949e';
+      const vram = (gpu.memory_used_mb != null && gpu.memory_total_mb != null)
+        ? `${gpu.memory_used_mb}/${gpu.memory_total_mb} MB`
+        : null;
+      const tc = gpu.temp_c != null ? tempColor(gpu.temp_c) : '#8b949e';
       return h('span', { key: i },
         h('span', { style: { color: '#484f58' } }, i === 0 ? ' | GPU: ' : ' | '),
         h('span', { style: { color: '#8b949e' } }, gpu.name || 'GPU'),
-        gpu.vram && h('span', { style: { color: '#6e7681' } }, ` ${gpu.vram}`),
-        gpu.temp != null && h('span', { style: { color: tempColor } }, ` ${gpu.temp}°C`),
-        gpu.percent != null && h('span', { style: { color: '#8b949e' } }, ` ${gpu.percent}%`),
+        gpu.usage_percent != null && h('span', { style: { color: usageColor(gpu.usage_percent) } }, ` ${gpu.usage_percent.toFixed(1)}%`),
+        gpu.temp_c != null && h('span', null,
+          h('span', { className: 'material-icons', style: { fontSize: '0.65rem', verticalAlign: 'middle', color: tc, marginLeft: 3 } }, 'thermostat'),
+          h('span', { style: { color: tc } }, `${gpu.temp_c.toFixed(0)}°C`),
+        ),
+        vram && h('span', { style: { color: '#6e7681' } }, ` ${vram}`),
       );
     }),
 
     memory && h('span', null,
       h('span', { style: { color: '#484f58' } }, ' | RAM: '),
-      h('span', { style: { color: ramColor } }, `${memory.used != null ? memory.used.toFixed(1) : '?'}/${memory.total != null ? memory.total.toFixed(1) : '?'} GB`),
-      memory.total > 0 && h('span', { style: { color: '#484f58' } }, ` (${Math.round(memory.used / memory.total * 100)}%)`),
+      h('span', { style: { color: ramColor } }, `${memory.used_gb != null ? memory.used_gb.toFixed(1) : '?'}/${memory.total_gb != null ? memory.total_gb.toFixed(1) : '?'} GB`),
+      memory.percent != null && h('span', { style: { color: ramColor } }, ` (${Math.round(memory.percent)}%)`),
     ),
   );
 }
@@ -2820,7 +2833,7 @@ function App() {
       });
       const data = await res.json();
       if (data.ok) {
-        setHwCache(prev => ({ ...prev, [machine]: { data: data.hardware, timestamp: Date.now() } }));
+        setHwCache(prev => ({ ...prev, [machine]: { data, timestamp: Date.now() } }));
       } else {
         setHwCache(prev => ({ ...prev, [machine]: { error: data.error || 'unavailable', timestamp: Date.now() } }));
       }
