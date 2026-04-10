@@ -49,25 +49,24 @@ def detect_local_machine() -> str | None:
     """
     Detect which fleet machine this process is running on.
 
-    Checks hostname against known fleet names, then falls back to
-    comparing local IP addresses against fleet IPs.
+    Strategy (in order):
+    1. Compare local IP addresses against fleet IPs (most reliable)
+    2. Check hostname / COMPUTERNAME against fleet names (partial match)
 
     Returns the fleet machine name (key in FLEET_MACHINES) or None
     if the local host is not a recognised fleet member.
     """
-    try:
-        hostname = socket.gethostname().lower()
-    except OSError:
-        hostname = ""
-
-    # Direct hostname match (case-insensitive, allow partial)
-    for name in FLEET_MACHINES:
-        if name in hostname or hostname in name:
-            return name
-
-    # Fallback: compare local IPs against fleet IPs
+    # ── Step 1: IP-based detection (most reliable) ──────────────────────────
     try:
         local_addrs: set[str] = set()
+        # UDP connect trick — gets the LAN IP without actually sending data
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("192.168.7.1", 80))
+            local_addrs.add(s.getsockname()[0])
+            s.close()
+        except OSError:
+            pass
         # gethostbyname gives primary IP
         try:
             local_addrs.add(socket.gethostbyname(socket.gethostname()))
@@ -87,5 +86,25 @@ def detect_local_machine() -> str | None:
                 return name
     except Exception:
         pass
+
+    # ── Step 2: Hostname-based detection (fallback) ─────────────────────────
+    hostnames: set[str] = set()
+    try:
+        hostnames.add(socket.gethostname().lower())
+    except OSError:
+        pass
+    # Windows COMPUTERNAME (often different from socket.gethostname)
+    for env_var in ("COMPUTERNAME", "HOSTNAME"):
+        val = os.environ.get(env_var, "").lower()
+        if val:
+            hostnames.add(val)
+
+    for name in FLEET_MACHINES:
+        for h in hostnames:
+            # Exact match or fleet name appears as a word boundary in hostname
+            # e.g. "avell-i7" matches hostname "avell-i7", "AVELL-C62MOB" won't
+            #       match "mac-mini"
+            if name == h or name in h:
+                return name
 
     return None

@@ -35,9 +35,9 @@ class StatusBar(Static):
         self.set_interval(1, self.refresh_display)
 
     def refresh_display(self) -> None:
-        self.update(self._render())
+        self.update(self._build_status())
 
-    def _render(self) -> str:
+    def _build_status(self) -> str:
         fleet_str = f"[cyan]Fleet:[/] {self.fleet_online}/{self.fleet_total} online"
         sessions_str = f"[cyan]Sessions:[/] [yellow]{self.session_count}[/]"
         tmux_str = f"[cyan]Tmux:[/] [yellow]{self.tmux_count}[/]"
@@ -70,4 +70,4 @@ class StatusBar(Static):
         self.session_count = session_count
         self.tmux_count = tmux_count
         self.last_scan = datetime.now().astimezone()
-        self.update(self._render())
+        self.update(self._build_status())

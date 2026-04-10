@@ -42,6 +42,7 @@ KNOWN_SERVER_API_ROUTES = {
     "/api/tmux/connect",
     "/api/tmux/connect-remote",
     "/api/tmux/kill",
+    "/api/tmux/capture",
     "/api/browse",
     "/api/drives",
     "/api/mkdir",

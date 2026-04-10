@@ -149,6 +149,16 @@ class TestConfigConstants:
 # detect_local_machine()
 # ---------------------------------------------------------------------------
 
+def _mock_no_ip():
+    """Context manager that blocks the UDP connect trick and IP-based detection."""
+    mock_sock = MagicMock()
+    mock_sock.__enter__ = MagicMock(return_value=mock_sock)
+    mock_sock.__exit__ = MagicMock(return_value=False)
+    mock_sock.connect.side_effect = OSError("mocked")
+    mock_sock.getsockname.return_value = ("0.0.0.0", 0)
+    return patch("socket.socket", return_value=mock_sock)
+
+
 class TestDetectLocalMachine:
     """Tests for the hostname / IP matching logic."""
 
@@ -158,38 +168,39 @@ class TestDetectLocalMachine:
         assert result is None or result in FLEET_MACHINES
 
     def test_returns_mac_mini_on_matching_hostname(self):
-        with patch("socket.gethostname", return_value="mac-mini"):
+        with _mock_no_ip(), patch("socket.gethostname", return_value="mac-mini"):
             result = detect_local_machine()
         assert result == "mac-mini"
 
     def test_returns_ubuntu_desktop_on_matching_hostname(self):
-        with patch("socket.gethostname", return_value="ubuntu-desktop"):
+        with _mock_no_ip(), patch("socket.gethostname", return_value="ubuntu-desktop"):
             result = detect_local_machine()
         assert result == "ubuntu-desktop"
 
     def test_returns_avell_i7_on_matching_hostname(self):
-        with patch("socket.gethostname", return_value="avell-i7"):
+        with _mock_no_ip(), patch("socket.gethostname", return_value="avell-i7"):
             result = detect_local_machine()
         assert result == "avell-i7"
 
     def test_returns_windows_desktop_on_matching_hostname(self):
-        with patch("socket.gethostname", return_value="windows-desktop"):
+        with _mock_no_ip(), patch("socket.gethostname", return_value="windows-desktop"):
             result = detect_local_machine()
         assert result == "windows-desktop"
 
     def test_hostname_match_is_case_insensitive(self):
-        with patch("socket.gethostname", return_value="MAC-MINI"):
+        with _mock_no_ip(), patch("socket.gethostname", return_value="MAC-MINI"):
             result = detect_local_machine()
         assert result == "mac-mini"
 
     def test_partial_hostname_match(self):
         # Fleet name contained within a longer hostname
-        with patch("socket.gethostname", return_value="my-mac-mini-host"):
+        with _mock_no_ip(), patch("socket.gethostname", return_value="my-mac-mini-host"):
             result = detect_local_machine()
         assert result == "mac-mini"
 
     def test_returns_none_for_unknown_hostname_and_ip(self):
         with (
+            _mock_no_ip(),
             patch("socket.gethostname", return_value="some-random-box"),
             patch("socket.gethostbyname", return_value="10.0.0.99"),
             patch("socket.getaddrinfo", return_value=[]),
@@ -197,9 +208,24 @@ class TestDetectLocalMachine:
             result = detect_local_machine()
         assert result is None
 
+    def test_ip_via_udp_connect_matches_mac_mini(self):
+        """The UDP connect trick resolves the LAN IP which matches a fleet machine."""
+        mac_mini_ip = FLEET_MACHINES["mac-mini"]["ip"]
+        mock_sock = MagicMock()
+        mock_sock.__enter__ = MagicMock(return_value=mock_sock)
+        mock_sock.__exit__ = MagicMock(return_value=False)
+        mock_sock.getsockname.return_value = (mac_mini_ip, 0)
+        with (
+            patch("socket.socket", return_value=mock_sock),
+            patch("socket.gethostname", return_value="some-random-box"),
+        ):
+            result = detect_local_machine()
+        assert result == "mac-mini"
+
     def test_ip_fallback_matches_mac_mini(self):
         mac_mini_ip = FLEET_MACHINES["mac-mini"]["ip"]
         with (
+            _mock_no_ip(),
             patch("socket.gethostname", return_value="some-random-box"),
             patch("socket.gethostbyname", return_value=mac_mini_ip),
             patch("socket.getaddrinfo", return_value=[]),
@@ -210,6 +236,7 @@ class TestDetectLocalMachine:
     def test_ip_fallback_matches_ubuntu_desktop(self):
         ubuntu_ip = FLEET_MACHINES["ubuntu-desktop"]["ip"]
         with (
+            _mock_no_ip(),
             patch("socket.gethostname", return_value="some-random-box"),
             patch("socket.gethostbyname", return_value=ubuntu_ip),
             patch("socket.getaddrinfo", return_value=[]),
@@ -218,11 +245,8 @@ class TestDetectLocalMachine:
         assert result == "ubuntu-desktop"
 
     def test_returns_none_when_gethostname_raises(self):
-        # When gethostname() raises, hostname becomes "".
-        # "" is a substring of every fleet name (Python string semantics),
-        # so detect_local_machine() returns the first fleet machine rather
-        # than None. The valid contract is: result is None *or* a fleet name.
         with (
+            _mock_no_ip(),
             patch("socket.gethostname", side_effect=OSError("no hostname")),
         ):
             result = detect_local_machine()
@@ -233,6 +257,7 @@ class TestDetectLocalMachine:
         avell_ip = FLEET_MACHINES["avell-i7"]["ip"]
         fake_addrinfo = [(None, None, None, None, (avell_ip, 0))]
         with (
+            _mock_no_ip(),
             patch("socket.gethostname", return_value="some-random-box"),
             patch("socket.gethostbyname", side_effect=OSError),
             patch("socket.getaddrinfo", return_value=fake_addrinfo),

@@ -163,16 +163,20 @@ def _run_tray(base_url: str):
         return
 
     # ── Tray icon image ──────────────────────────────────────────────────────
-    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    draw.ellipse([4, 4, 60, 60], fill=(88, 166, 255, 255))
-    try:
-        from PIL import ImageFont
-        font = ImageFont.load_default()
-    except Exception:
-        from PIL import ImageFont
-        font = ImageFont.load_default()
-    draw.text((14, 16), "CM", fill=(13, 17, 23, 255), font=font)
+    _icon_png = Path(__file__).parent.parent / "assets" / "icon.png"
+    if _icon_png.exists():
+        img = Image.open(_icon_png).convert("RGBA").resize((64, 64), Image.LANCZOS)
+    else:
+        img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        draw.ellipse([4, 4, 60, 60], fill=(88, 166, 255, 255))
+        try:
+            from PIL import ImageFont
+            font = ImageFont.load_default()
+        except Exception:
+            from PIL import ImageFont
+            font = ImageFont.load_default()
+        draw.text((14, 16), "CM", fill=(13, 17, 23, 255), font=font)
 
     # ── Shared state for dynamic menu ────────────────────────────────────────
     _state = {"sessions": [], "tmux": []}

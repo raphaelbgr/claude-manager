@@ -1,17 +1,21 @@
 [project]
 name = "claude-manager"
-version = "1.0.0"
+version = "1.0.1"
 description = "Manage Claude Code sessions and tmux sessions across fleet machines"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.14"
 dependencies = ["aiohttp>=3.9", "psutil>=5.9"]
 
 [project.optional-dependencies]
 tui = ["textual>=3.0"]
-desktop = ["pystray>=0.19", "pywebview>=5.0", "Pillow>=10.0"]
+desktop = ["pywebview>=5.0", "Pillow>=10.0"]
+desktop-tray = ["pystray>=0.19", "Pillow>=10.0"]
 all = ["claude-manager[tui,desktop]"]
 
 [project.scripts]
 claude-manager = "src.main:main"
+
+[tool.setuptools.packages.find]
+include = ["src*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

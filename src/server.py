@@ -1358,6 +1358,149 @@ print(json.dumps({{'ok': True, 'name': name}}))
 
 
 # ---------------------------------------------------------------------------
+# Pane streaming helpers
+# ---------------------------------------------------------------------------
+
+def _remove_pane_subscriber(state: dict, machine: str, session_name: str, ws) -> None:
+    """Remove a WS client from pane stream subscribers. Stop stream if no subscribers left."""
+    key = (machine, session_name)
+    info = state["pane_streams"].get(key)
+    if not info:
+        return
+    info["subscribers"].discard(ws)
+    if not info["subscribers"]:
+        if info["task"] and not info["task"].done():
+            info["task"].cancel()
+        del state["pane_streams"][key]
+
+
+async def _push_pane_output(state: dict, key: tuple, content: str) -> None:
+    """Push pane output to all subscribers of this stream."""
+    info = state["pane_streams"].get(key)
+    if not info or not info["subscribers"]:
+        return
+    info["last_content"] = content
+    machine, session_name = key
+    payload = json.dumps({
+        "type": "pane_output",
+        "machine": machine,
+        "session_name": session_name,
+        "content": content,
+    })
+    dead = set()
+    for ws in list(info["subscribers"]):
+        try:
+            await ws.send_str(payload)
+        except Exception:
+            dead.add(ws)
+    info["subscribers"] -= dead
+
+
+async def _pane_poll_loop(app: web.Application, machine: str, session_name: str) -> None:
+    """Poll capture-pane at intervals and push changes to subscribers."""
+    from .tmux_manager import capture_pane
+
+    state = app["state"]
+    key = (machine, session_name)
+    last_content = ""
+
+    while key in state["pane_streams"] and state["pane_streams"][key]["subscribers"]:
+        content = await capture_pane(machine, session_name)
+        if content != last_content:
+            await _push_pane_output(state, key, content)
+            last_content = content
+        await asyncio.sleep(2.0)
+
+
+async def _pane_stream_loop(app: web.Application, machine: str, session_name: str) -> None:
+    """Background task that streams pane content to subscribers.
+
+    For local tmux: uses pipe-pane (real-time streaming via temp file).
+    For remote tmux / all psmux: polls capture-pane every 2s.
+    """
+    from .tmux_manager import capture_pane, start_pipe_pane, stop_pipe_pane
+
+    state = app["state"]
+    key = (machine, session_name)
+    local_machine = app.get("local_machine", "")
+    adapter = get_adapter(machine)
+    is_local_tmux = (machine == local_machine and adapter.mux_type == "tmux")
+
+    pipe_file = None
+
+    try:
+        if is_local_tmux:
+            import os
+            safe_name = session_name.replace("/", "_").replace(" ", "_")
+            pipe_file = f"/tmp/claude-manager-pane-{safe_name}.log"
+
+            # Get initial content
+            initial = await capture_pane(machine, session_name)
+            await _push_pane_output(state, key, initial)
+
+            # Start pipe-pane
+            ok = await start_pipe_pane(session_name, pipe_file)
+            if not ok:
+                log.warning("pipe-pane failed for %s, falling back to polling", session_name)
+                await _pane_poll_loop(app, machine, session_name)
+                return
+
+            # Tail the file
+            last_size = 0
+            while key in state["pane_streams"] and state["pane_streams"][key]["subscribers"]:
+                try:
+                    if os.path.exists(pipe_file):
+                        current_size = os.path.getsize(pipe_file)
+                        if current_size > last_size:
+                            with open(pipe_file, "r", errors="replace") as f:
+                                f.seek(last_size)
+                                new_data = f.read()
+                            if new_data:
+                                content = await capture_pane(machine, session_name)
+                                await _push_pane_output(state, key, content)
+                            last_size = current_size
+                            # Truncate if file gets too large (>1MB)
+                            if current_size > 1_000_000:
+                                open(pipe_file, "w").close()
+                                last_size = 0
+                except OSError:
+                    pass
+                await asyncio.sleep(0.5)
+        else:
+            # Polling mode for remote or psmux
+            await _pane_poll_loop(app, machine, session_name)
+    except asyncio.CancelledError:
+        pass
+    finally:
+        if is_local_tmux:
+            try:
+                await stop_pipe_pane(session_name)
+            except Exception:
+                pass
+            if pipe_file:
+                import os
+                try:
+                    os.unlink(pipe_file)
+                except OSError:
+                    pass
+
+
+async def handle_tmux_capture(request: web.Request) -> web.Response:
+    """Capture current pane content (one-shot, no streaming)."""
+    from .tmux_manager import capture_pane
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid JSON body"}, status=400)
+    machine = body.get("machine", "")
+    session_name = body.get("session_name", "")
+    if not machine or not session_name:
+        return web.json_response({"ok": False, "error": "machine and session_name required"}, status=400)
+    content = await capture_pane(machine, session_name)
+    return web.json_response({"ok": True, "content": content})
+
+
+# ---------------------------------------------------------------------------
 # WebSocket handler
 # ---------------------------------------------------------------------------
 
@@ -1402,10 +1545,54 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
                 elif msg_type == "unsubscribe":
                     ws._subscribed_channels.discard(channel)  # type: ignore[attr-defined]
 
+                elif msg_type == "subscribe_pane":
+                    machine = data.get("machine", "")
+                    session_name = data.get("session_name", "")
+                    if machine and session_name:
+                        key = (machine, session_name)
+                        streams = state["pane_streams"]
+                        if key not in streams:
+                            streams[key] = {
+                                "subscribers": set(),
+                                "last_content": "",
+                                "task": None,
+                            }
+                        streams[key]["subscribers"].add(ws)
+                        # Start stream task if not running
+                        if streams[key]["task"] is None or streams[key]["task"].done():
+                            streams[key]["task"] = asyncio.ensure_future(
+                                _pane_stream_loop(request.app, machine, session_name)
+                            )
+                        # Send initial capture immediately
+                        from .tmux_manager import capture_pane
+                        content = await capture_pane(machine, session_name)
+                        if content:
+                            await ws.send_str(json.dumps({
+                                "type": "pane_output",
+                                "machine": machine,
+                                "session_name": session_name,
+                                "content": content,
+                            }))
+
+                elif msg_type == "unsubscribe_pane":
+                    machine = data.get("machine", "")
+                    session_name = data.get("session_name", "")
+                    if machine and session_name:
+                        _remove_pane_subscriber(state, machine, session_name, ws)
+
             elif msg.type in (web.WSMsgType.ERROR, web.WSMsgType.CLOSE):
                 break
     finally:
         request.app["state"]["ws_clients"].discard(ws)
+        # Clean up pane stream subscriptions for this client
+        for key in list(state["pane_streams"]):
+            info = state["pane_streams"].get(key)
+            if info:
+                info["subscribers"].discard(ws)
+                if not info["subscribers"]:
+                    if info["task"] and not info["task"].done():
+                        info["task"].cancel()
+                    del state["pane_streams"][key]
         log.info("WS disconnect: %s (total: %d)", client_addr, len(request.app["state"]["ws_clients"]))
 
     return ws
@@ -1444,6 +1631,7 @@ def create_app(
         "tmux": [],
         "last_scan": None,
         "ws_clients": set(),
+        "pane_streams": {},  # {(machine, session_name): {"task": Task, "subscribers": set(ws), "last_content": str}}
     }
 
     # Lifecycle hooks
@@ -1470,6 +1658,7 @@ def create_app(
     app.router.add_post("/api/tmux/connect", handle_tmux_connect)
     app.router.add_post("/api/tmux/connect-remote", handle_tmux_connect_remote)
     app.router.add_post("/api/tmux/kill", handle_tmux_kill)
+    app.router.add_post("/api/tmux/capture", handle_tmux_capture)
     app.router.add_post("/api/browse", handle_browse)
     app.router.add_post("/api/drives", handle_drives)
     app.router.add_post("/api/mkdir", handle_mkdir)

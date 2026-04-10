@@ -336,6 +336,109 @@ import { createRoot } from 'react-dom/client';
 
 // ─── Utility functions ────────────────────────────────────────────────────────
 
+// ANSI SGR color code → HTML span converter
+const ANSI_COLORS_16 = {
+  30: '#484f58', 31: '#f85149', 32: '#56d364', 33: '#e3b341',
+  34: '#58a6ff', 35: '#bc8cff', 36: '#76e3ea', 37: '#c9d1d9',
+  90: '#6e7681', 91: '#ff7b72', 92: '#7ee787', 93: '#f2cc60',
+  94: '#79c0ff', 95: '#d2a8ff', 96: '#a5d6ff', 97: '#f0f6fc',
+};
+const ANSI_COLORS_16_BG = {
+  40: '#484f58', 41: '#5a1e1e', 42: '#1e3a1e', 43: '#3a3520',
+  44: '#1e2d4a', 45: '#2d1e4a', 46: '#1e3a3a', 47: '#3b4048',
+  100: '#6e7681', 101: '#7a2a2a', 102: '#2a5a2a', 103: '#5a5030',
+  104: '#2a3d5a', 105: '#4a2d6a', 106: '#2a5a5a', 107: '#484f58',
+};
+
+function ansiToHtml(text) {
+  if (!text) return '';
+  const parts = [];
+  let i = 0;
+  let fg = null, bg = null, bold = false, dim = false, italic = false, underline = false;
+
+  function styleStr() {
+    const s = [];
+    if (fg) s.push('color:' + fg);
+    if (bg) s.push('background:' + bg);
+    if (bold) s.push('font-weight:700');
+    if (dim) s.push('opacity:0.6');
+    if (italic) s.push('font-style:italic');
+    if (underline) s.push('text-decoration:underline');
+    return s.join(';');
+  }
+
+  function escapeHtml(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  while (i < text.length) {
+    const esc = text.indexOf('\x1b[', i);
+    if (esc === -1) {
+      parts.push(escapeHtml(text.slice(i)));
+      break;
+    }
+    if (esc > i) parts.push(escapeHtml(text.slice(i, esc)));
+
+    const end = text.indexOf('m', esc + 2);
+    if (end === -1) { parts.push(escapeHtml(text.slice(esc))); break; }
+
+    const codes = text.slice(esc + 2, end).split(';').map(Number);
+    let ci = 0;
+    while (ci < codes.length) {
+      const c = codes[ci];
+      if (c === 0) { fg = null; bg = null; bold = false; dim = false; italic = false; underline = false; }
+      else if (c === 1) bold = true;
+      else if (c === 2) dim = true;
+      else if (c === 3) italic = true;
+      else if (c === 4) underline = true;
+      else if (c === 22) { bold = false; dim = false; }
+      else if (c === 23) italic = false;
+      else if (c === 24) underline = false;
+      else if (c === 39) fg = null;
+      else if (c === 49) bg = null;
+      else if (c >= 30 && c <= 37) fg = ANSI_COLORS_16[bold ? c + 60 : c] || ANSI_COLORS_16[c];
+      else if (c >= 90 && c <= 97) fg = ANSI_COLORS_16[c];
+      else if (c >= 40 && c <= 47) bg = ANSI_COLORS_16_BG[c];
+      else if (c >= 100 && c <= 107) bg = ANSI_COLORS_16_BG[c];
+      else if (c === 38 && codes[ci + 1] === 5) { // 256-color fg
+        const idx = codes[ci + 2] || 0;
+        fg = ansi256ToHex(idx); ci += 2;
+      } else if (c === 48 && codes[ci + 1] === 5) { // 256-color bg
+        const idx = codes[ci + 2] || 0;
+        bg = ansi256ToHex(idx); ci += 2;
+      }
+      ci++;
+    }
+
+    const st = styleStr();
+    if (st) parts.push('</span><span style="' + st + '">');
+    else parts.push('</span><span>');
+
+    i = end + 1;
+  }
+
+  return '<span>' + parts.join('') + '</span>';
+}
+
+function ansi256ToHex(n) {
+  if (n < 16) {
+    const basic = [
+      '#000000','#aa0000','#00aa00','#aa5500','#0000aa','#aa00aa','#00aaaa','#aaaaaa',
+      '#555555','#ff5555','#55ff55','#ffff55','#5555ff','#ff55ff','#55ffff','#ffffff',
+    ];
+    return basic[n] || '#c9d1d9';
+  }
+  if (n < 232) {
+    const i = n - 16;
+    const r = Math.floor(i / 36) * 51;
+    const g = Math.floor((i % 36) / 6) * 51;
+    const b = (i % 6) * 51;
+    return '#' + [r,g,b].map(v => v.toString(16).padStart(2,'0')).join('');
+  }
+  const gray = (n - 232) * 10 + 8;
+  return '#' + gray.toString(16).padStart(2,'0').repeat(3);
+}
+
 function relativeTime(isoStr) {
   if (!isoStr) return '—';
   const diff = Math.floor((Date.now() - new Date(isoStr).getTime()) / 1000);
@@ -499,11 +602,13 @@ function Toaster() {
 
 // ─── WebSocket hook ───────────────────────────────────────────────────────────
 
-function useWebSocket(onMessage) {
+function useWebSocket(onMessage, onReconnect) {
   const wsRef = useRef(null);
   const reconnectTimer = useRef(null);
   const retryCount = useRef(0);
   const [connected, setConnected] = useState(false);
+  const onReconnectRef = useRef(onReconnect);
+  onReconnectRef.current = onReconnect;
 
   const connect = useCallback(() => {
     if (wsRef.current && wsRef.current.readyState < 2) return;
@@ -517,6 +622,8 @@ function useWebSocket(onMessage) {
       ['sessions', 'tmux', 'fleet'].forEach(ch =>
         ws.send(JSON.stringify({ type: 'subscribe', channel: ch }))
       );
+      // Re-subscribe to active pane streams after reconnect
+      if (onReconnectRef.current) onReconnectRef.current(ws);
     };
 
     ws.onmessage = evt => {
@@ -541,7 +648,7 @@ function useWebSocket(onMessage) {
     };
   }, [connect]);
 
-  return connected;
+  return { connected, wsRef };
 }
 
 // ─── Status Dot ──────────────────────────────────────────────────────────────
@@ -895,12 +1002,50 @@ const SessionCardMemo = memo(SessionCard);
 
 // ─── Tmux Card ────────────────────────────────────────────────────────────────
 
-function TmuxCard({ session, onConnect, connecting, onKill, killing, onRemoteAttach, remoteAttaching, confirmKill }) {
+function TmuxCard({ session, onConnect, connecting, onKill, killing, onRemoteAttach, remoteAttaching, confirmKill, paneContent, streamOn, onToggleStream }) {
   const isAttached = session.attached;
   const local = isLocalMachine(session.machine);
   const muxOS = (MACHINE_INFO[session.machine] || {}).os || 'macOS';
   const muxName = muxOS === 'Windows' ? 'psmux' : 'tmux';
   const sessionName = session.session_name || session.name || '(unnamed)';
+
+  const containerRef = useRef(null);
+  const innerRef = useRef(null);
+  useEffect(() => {
+    const container = containerRef.current;
+    const inner = innerRef.current;
+    if (!container || !inner) return;
+    // Reset scale to measure natural size
+    inner.style.transform = 'none';
+    const cw = container.clientWidth - 20; // account for padding
+    const ch = container.clientHeight - 16;
+    const sw = inner.scrollWidth;
+    const sh = inner.scrollHeight;
+    if (sw > 0 && sh > 0) {
+      const scale = Math.min(1, cw / sw, ch / sh);
+      inner.style.transform = `scale(${scale})`;
+    }
+  }, [paneContent]);
+
+  // Recalculate scale on container resize (user drags handle)
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => {
+      const inner = innerRef.current;
+      if (!inner) return;
+      inner.style.transform = 'none';
+      const cw = container.clientWidth - 20;
+      const ch = container.clientHeight - 16;
+      const sw = inner.scrollWidth;
+      const sh = inner.scrollHeight;
+      if (sw > 0 && sh > 0) {
+        inner.style.transform = `scale(${Math.min(1, cw / sw, ch / sh)})`;
+      }
+    });
+    ro.observe(container);
+    return () => ro.disconnect();
+  }, []);
 
   return h('div', { className: 'tmux-card' },
     h('div', { style: { flex: 1, minWidth: 0 } },
@@ -977,6 +1122,72 @@ function TmuxCard({ session, onConnect, connecting, onKill, killing, onRemoteAtt
             : `Open a local terminal and attach to this ${muxName} session on ${session.machine}`,
           style: { opacity: connecting ? 0.6 : 1 },
         }, connecting ? 'Attaching…' : 'Attach'),
+      ),
+
+      // Stream toggle + terminal preview
+      h('div', { style: { marginTop: 8 } },
+        // Checkbox row
+        h('label', {
+          style: {
+            display: 'flex', alignItems: 'center', gap: 6,
+            fontSize: '0.72rem', color: '#8b949e', cursor: 'pointer',
+            userSelect: 'none',
+          },
+          title: 'Enable live streaming of this session\'s terminal output',
+        },
+          h('input', {
+            type: 'checkbox',
+            checked: streamOn,
+            onChange: () => onToggleStream(session.machine, session.session_name || session.name),
+            style: { accentColor: '#58a6ff', cursor: 'pointer' },
+          }),
+          h('span', { className: 'material-icons-round', style: { fontSize: '0.85rem', color: streamOn ? '#58a6ff' : '#484f58' } }, 'cast'),
+          'Stream session',
+        ),
+
+        // Terminal preview (only when streaming is on and content exists)
+        streamOn && paneContent && h('div', {
+          ref: containerRef,
+          style: {
+            marginTop: 6,
+            background: '#0d1117',
+            border: '1px solid #21262d',
+            borderRadius: 6,
+            padding: '8px 10px',
+            height: 160,
+            minHeight: 80,
+            maxHeight: 600,
+            resize: 'vertical',
+            overflow: 'hidden',
+            position: 'relative',
+          },
+          title: 'Live terminal output (read-only, no TTY attached) — drag bottom edge to resize',
+        },
+          h('div', {
+            ref: innerRef,
+            style: {
+              fontFamily: '"SF Mono", "Fira Code", "Cascadia Code", Consolas, monospace',
+              fontSize: '0.7rem',
+              lineHeight: 1.4,
+              color: '#c9d1d9',
+              whiteSpace: 'pre',
+              wordBreak: 'normal',
+              transformOrigin: 'top left',
+            },
+            dangerouslySetInnerHTML: { __html: ansiToHtml(paneContent) },
+          }),
+        ),
+
+        // Loading indicator when streaming but no content yet
+        streamOn && !paneContent && h('div', {
+          style: {
+            marginTop: 6, fontSize: '0.65rem', color: '#484f58',
+            display: 'flex', alignItems: 'center', gap: 4,
+          }
+        },
+          h('span', { style: { display: 'inline-block', animation: 'spin 0.8s linear infinite', fontSize: '0.7rem' } }, '\u21bb'),
+          'Waiting for stream\u2026',
+        ),
       ),
     ),
   );
@@ -1844,7 +2055,7 @@ function SessionsPanel({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaun
 
 // ─── Tmux Panel ───────────────────────────────────────────────────────────────
 
-function TmuxPanel({ tmuxSessions, fleet, onConnectTmux, connectingId, onKillTmux, killingId, killConfirm, onRemoteAttach, remoteAttachingId, onNewSession, scanning, collapseState, setCollapseState }) {
+function TmuxPanel({ tmuxSessions, fleet, onConnectTmux, connectingId, onKillTmux, killingId, killConfirm, onRemoteAttach, remoteAttachingId, onNewSession, scanning, collapseState, setCollapseState, paneStreams, streamEnabled, onToggleStream }) {
   // tmuxSessions is already machine-filtered by App
   const byMachine = useMemo(() => groupBy(tmuxSessions, s => s.machine || 'unknown'), [tmuxSessions]);
 
@@ -1892,6 +2103,9 @@ function TmuxPanel({ tmuxSessions, fleet, onConnectTmux, connectingId, onKillTmu
                   confirmKill: !!(killConfirm && killConfirm[`${s.machine}-${s.session_name || s.name}`]),
                   onRemoteAttach: onRemoteAttach,
                   remoteAttaching: remoteAttachingId === `${s.machine}-${s.session_name || s.name}`,
+                  paneContent: (paneStreams || {})[s.machine + ':' + (s.session_name || s.name)] || '',
+                  streamOn: (streamEnabled || {})[s.machine + ':' + (s.session_name || s.name)] !== false,
+                  onToggleStream,
                 })
               )
             );
@@ -2556,6 +2770,13 @@ function App() {
   const [archivedIds, setArchivedIds]     = useState(new Set());
   const [showLogs, setShowLogs]           = useState(false);
 
+  // Pane stream state: { "machine:session_name": "content string" }
+  const [paneStreams, setPaneStreams] = useState({});
+
+  // Track which sessions have streaming enabled: { "machine:session_name": false }
+  // Default: key absent = enabled (true). Only explicit false = disabled.
+  const [streamEnabled, setStreamEnabled] = useState({});
+
   // Hardware cache: maps machine name → { data, timestamp } or { error, timestamp }
   const [hwCache, setHwCache] = useState({});
 
@@ -2711,10 +2932,67 @@ function App() {
       }
     } else if (msg.channel === 'tmux') {
       if (Array.isArray(msg.data)) setTmuxSessions(msg.data);
+    } else if (msg.type === 'pane_output') {
+      const key = msg.machine + ':' + msg.session_name;
+      setPaneStreams(prev => {
+        if (prev[key] === msg.content) return prev;
+        return { ...prev, [key]: msg.content };
+      });
     }
   }, []);
 
-  const wsConnected = useWebSocket(handleWsMessage);
+  // Refs for pane stream state — used in reconnect callback without stale closure
+  const tmuxSessionsRef = useRef(tmuxSessions);
+  tmuxSessionsRef.current = tmuxSessions;
+  const streamEnabledRef = useRef(streamEnabled);
+  streamEnabledRef.current = streamEnabled;
+
+  const handleWsReconnect = useCallback((ws) => {
+    // Re-subscribe to all pane streams that are enabled after a WS reconnect
+    for (const session of tmuxSessionsRef.current) {
+      const key = session.machine + ':' + (session.session_name || session.name);
+      const sessionName = session.session_name || session.name;
+      if (streamEnabledRef.current[key] !== false) {
+        ws.send(JSON.stringify({ type: 'subscribe_pane', machine: session.machine, session_name: sessionName }));
+      }
+    }
+  }, []);
+
+  const { connected: wsConnected, wsRef } = useWebSocket(handleWsMessage, handleWsReconnect);
+
+  // ── Pane stream toggle ───────────────────────────────────────────────────
+  const toggleStream = useCallback((machine, sessionName) => {
+    const key = machine + ':' + sessionName;
+    setStreamEnabled(prev => {
+      const isCurrentlyOn = prev[key] !== false;
+      const newEnabled = { ...prev, [key]: isCurrentlyOn ? false : true };
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        if (isCurrentlyOn) {
+          // turning off
+          ws.send(JSON.stringify({ type: 'unsubscribe_pane', machine, session_name: sessionName }));
+          setPaneStreams(p => { const n = { ...p }; delete n[key]; return n; });
+        } else {
+          // turning on
+          ws.send(JSON.stringify({ type: 'subscribe_pane', machine, session_name: sessionName }));
+        }
+      }
+      return newEnabled;
+    });
+  }, [wsRef]);
+
+  // ── Auto-subscribe pane streams when tmux sessions load/change ───────────
+  useEffect(() => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    for (const session of tmuxSessions) {
+      const key = session.machine + ':' + (session.session_name || session.name);
+      const sessionName = session.session_name || session.name;
+      if (streamEnabled[key] !== false) {
+        ws.send(JSON.stringify({ type: 'subscribe_pane', machine: session.machine, session_name: sessionName }));
+      }
+    }
+  }, [tmuxSessions, streamEnabled, wsRef]);
 
   // ── Initial data load ────────────────────────────────────────────────────
   useEffect(() => {
@@ -3218,6 +3496,9 @@ function App() {
                   scanning,
                   collapseState,
                   setCollapseState,
+                  paneStreams,
+                  streamEnabled,
+                  onToggleStream: toggleStream,
                 }),
           ),
         ),

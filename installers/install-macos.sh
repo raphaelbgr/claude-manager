@@ -5,9 +5,19 @@ set -euo pipefail
 
 echo "Installing claude-manager..."
 
-# Check/install Python 3.11+
-if ! command -v python3 &>/dev/null || [[ $(python3 -c 'import sys;print(sys.version_info >= (3,11))') != "True" ]]; then
-    echo "Python 3.11+ required. Installing via Homebrew..."
+# Check/install Python 3.11+ (but not 3.14+)
+NEED_PYTHON=false
+if ! command -v python3 &>/dev/null; then
+    NEED_PYTHON=true
+else
+    PY_VER=$(python3 -c 'import sys; print(f"{sys.version_info.minor}")')
+    if [ "$PY_VER" -lt 11 ] || [ "$PY_VER" -ge 14 ]; then
+        NEED_PYTHON=true
+    fi
+fi
+
+if $NEED_PYTHON; then
+    echo "Python 3.11-3.13 required. Installing via Homebrew..."
     if ! command -v brew &>/dev/null; then
         /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
     fi
@@ -27,12 +37,34 @@ cd "$INSTALL_DIR"
 python3 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
-pip install -e ".[all]"
+
+# Base dependencies (always works)
+pip install -e "."
+echo "  Base dependencies installed."
+
+# Desktop extras (pywebview + Pillow)
+if pip install -e ".[desktop]" 2>/dev/null; then
+    echo "  Desktop extras installed (native GUI available)."
+else
+    echo "  Desktop extras failed — GUI will fall back to browser mode."
+fi
+
+# TUI extras
+if pip install -e ".[tui]" 2>/dev/null; then
+    echo "  TUI extras installed (--tui mode available)."
+else
+    echo "  TUI extras failed — --tui mode unavailable."
+fi
 
 # Create .app bundle
 APP_DIR="$INSTALL_DIR/shortcuts/Claude Manager.app/Contents/MacOS"
-mkdir -p "$APP_DIR"
-mkdir -p "$INSTALL_DIR/shortcuts/Claude Manager.app/Contents/Resources"
+RES_DIR="$INSTALL_DIR/shortcuts/Claude Manager.app/Contents/Resources"
+mkdir -p "$APP_DIR" "$RES_DIR"
+
+# Copy icon if available
+if [ -f "$INSTALL_DIR/assets/icon.icns" ]; then
+    cp "$INSTALL_DIR/assets/icon.icns" "$RES_DIR/AppIcon.icns"
+fi
 
 cat > "$APP_DIR/launch" << 'SCRIPT'
 #!/bin/bash
@@ -50,7 +82,8 @@ cat > "$INSTALL_DIR/shortcuts/Claude Manager.app/Contents/Info.plist" << 'PLIST'
     <key>CFBundleExecutable</key><string>launch</string>
     <key>CFBundleName</key><string>Claude Manager</string>
     <key>CFBundleIdentifier</key><string>com.raphaelbgr.claude-manager</string>
-    <key>CFBundleVersion</key><string>1.0.0</string>
+    <key>CFBundleVersion</key><string>1.0.1</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>LSUIElement</key><true/>
     <key>CFBundlePackageType</key><string>APPL</string>
 </dict>
@@ -75,3 +108,4 @@ echo "  CLI: claude-manager (restart terminal first)"
 echo "  Web: http://$(hostname -I 2>/dev/null || echo localhost):44740"
 echo ""
 echo "  Double-click 'Claude Manager' on your Desktop to start."
+echo "  Note: System tray is available on Linux/Windows only."

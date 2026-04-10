@@ -257,6 +257,113 @@ async def create_tmux_session(
         return {"ok": False, "error": str(exc)}
 
 
+import re as _re
+
+# Matches non-color ANSI: cursor movement, OSC, charset switching — but NOT SGR (color) codes
+_ANSI_CONTROL_RE = _re.compile(
+    r'\x1b\[[0-9;]*[A-HJKSTfhln]'   # cursor movement, erase, scroll (NOT 'm' = SGR/color)
+    r'|\x1b\].*?\x07'                # OSC sequences (title, etc.)
+    r'|\x1b[()][A-Z0-9]'             # charset switching
+    r'|\x1b\[[\?][0-9;]*[hl]'        # DEC private mode set/reset
+)
+
+
+def _clean_pane_output(text: str) -> str:
+    """Remove non-color control codes, keep SGR (color) sequences. Trim trailing blanks."""
+    cleaned = _ANSI_CONTROL_RE.sub('', text)
+    lines = [line.rstrip() for line in cleaned.splitlines()]
+    while lines and not lines[-1]:
+        lines.pop()
+    return '\n'.join(lines)
+
+
+async def capture_pane(machine: str, session_name: str, lines: int = 50) -> str:
+    """Capture current pane content without TTY allocation.
+
+    Works for both tmux (capture-pane -p -S -N) and psmux (capture-pane -p).
+    Executes locally or via SSH depending on machine.
+    """
+    adapter = get_adapter(machine)
+    local_machine = detect_local_machine()
+    is_local = (machine == local_machine)
+
+    if adapter.mux_type == "tmux":
+        cmd_str = f"tmux capture-pane -t {shlex.quote(session_name)} -e -p -S -{lines}"
+    else:
+        cmd_str = f"psmux capture-pane -t {shlex.quote(session_name)} -p"
+
+    try:
+        if is_local:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd_str.split(),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+        else:
+            info = FLEET_MACHINES.get(machine, {})
+            ssh_alias = info.get("ssh_alias", machine)
+            ssh_cmd = [
+                "ssh",
+                "-o", f"ConnectTimeout={SSH_TIMEOUT}",
+                "-o", "BatchMode=yes",
+                "-o", "StrictHostKeyChecking=no",
+                ssh_alias,
+                cmd_str,
+            ]
+            proc = await asyncio.create_subprocess_exec(
+                *ssh_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+
+        if proc.returncode == 0:
+            return _clean_pane_output(stdout.decode("utf-8", errors="replace"))
+    except (asyncio.TimeoutError, OSError) as exc:
+        log.warning("capture_pane(%s, %s): %s", machine, session_name, exc)
+
+    return ""
+
+
+async def start_pipe_pane(session_name: str, output_path: str) -> bool:
+    """Start tmux pipe-pane for LOCAL tmux session only.
+
+    Pipes pane output to a file for real-time streaming.
+    Returns True on success.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "tmux", "pipe-pane", "-t", session_name,
+            f"cat >> {shlex.quote(output_path)}",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await asyncio.wait_for(proc.communicate(), timeout=5)
+        return proc.returncode == 0
+    except (asyncio.TimeoutError, OSError) as exc:
+        log.warning("start_pipe_pane(%s): %s", session_name, exc)
+        return False
+
+
+async def stop_pipe_pane(session_name: str) -> bool:
+    """Stop tmux pipe-pane for LOCAL tmux session.
+
+    Running pipe-pane with no command stops the pipe.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "tmux", "pipe-pane", "-t", session_name,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await asyncio.wait_for(proc.communicate(), timeout=5)
+        return proc.returncode == 0
+    except (asyncio.TimeoutError, OSError) as exc:
+        log.warning("stop_pipe_pane(%s): %s", session_name, exc)
+        return False
+
+
 async def kill_tmux_session(machine: str, name: str) -> dict:
     """
     Kill a tmux/psmux session by name.
