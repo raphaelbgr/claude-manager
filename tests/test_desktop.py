@@ -256,7 +256,10 @@ class TestRunDesktop:
             except Exception:
                 pass  # webview.start may fail in test env
 
-        mock_check.assert_called_once_with(44740)
+        # Called at least once — now called twice: once to decide if we start our own
+        # server, once to decide whether to open url= directly or show loading page
+        assert mock_check.call_count >= 1
+        mock_check.assert_any_call(44740)
 
     def test_run_desktop_starts_server_thread_when_no_existing_server(self):
         """When no server is running, run_desktop starts a background thread."""

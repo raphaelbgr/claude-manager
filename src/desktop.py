@@ -61,45 +61,77 @@ def run_desktop(bind: str = "0.0.0.0", port: int = 44740):
     # --- Open native window ---
     print(f"claude-manager — {local_url}")
 
-    loading_html = f"""
-    <html style="background:#0d1117;color:#e6edf3;font-family:-apple-system,system-ui,sans-serif">
-    <body style="display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
-    <div style="text-align:center">
-        <div style="font-size:2rem;margin-bottom:16px;animation:spin 1s linear infinite;display:inline-block">↻</div>
-        <div style="font-size:1.1rem;font-weight:600">claude-manager</div>
-        <div style="font-size:0.8rem;color:#8b949e;margin-top:8px">Loading...</div>
-    </div>
-    <style>@keyframes spin{{from{{transform:rotate(0)}}to{{transform:rotate(360deg)}}}}</style>
-    <script>
-        (async function() {{
-            for (let i = 0; i < 40; i++) {{
-                try {{
-                    const r = await fetch('{local_url}/health');
-                    if (r.ok) {{ window.location = '{local_url}'; return; }}
-                }} catch(e) {{}}
-                await new Promise(r => setTimeout(r, 500));
-            }}
-            document.body.innerHTML = '<div style="text-align:center;margin-top:40vh;color:#f85149">Server failed to start on port {port}<br><span style="font-size:0.8rem;color:#8b949e;margin-top:8px;display:block">Try: kill $(lsof -ti:{port})</span></div>';
-        }})();
-    </script>
-    </body></html>
-    """
+    # If the server is already responding, open the URL directly.
+    # Avoids the loading-page → redirect two-step that kills macOS window focus
+    # (every navigation resets AppKit first-responder, making you click 10x to interact).
+    server_ready = _server_is_ours(port) or _wait_for_server(port, timeout=1)
+    window_kwargs = {
+        "title": "claude-manager",
+        "width": 1320,
+        "height": 880,
+        "min_size": (900, 600),
+        "text_select": True,
+        "zoomable": True,
+        "background_color": "#0d1117",
+    }
+    if server_ready:
+        window_kwargs["url"] = local_url
+    else:
+        window_kwargs["html"] = f"""
+        <html style="background:#0d1117;color:#e6edf3;font-family:-apple-system,system-ui,sans-serif">
+        <body style="display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
+        <div style="text-align:center">
+            <div style="font-size:2rem;margin-bottom:16px;animation:spin 1s linear infinite;display:inline-block">↻</div>
+            <div style="font-size:1.1rem;font-weight:600">claude-manager</div>
+            <div style="font-size:0.8rem;color:#8b949e;margin-top:8px">Loading...</div>
+        </div>
+        <style>@keyframes spin{{from{{transform:rotate(0)}}to{{transform:rotate(360deg)}}}}</style>
+        <script>
+            (async function() {{
+                for (let i = 0; i < 40; i++) {{
+                    try {{
+                        const r = await fetch('{local_url}/health');
+                        if (r.ok) {{ window.location = '{local_url}'; return; }}
+                    }} catch(e) {{}}
+                    await new Promise(r => setTimeout(r, 500));
+                }}
+                document.body.innerHTML = '<div style="text-align:center;margin-top:40vh;color:#f85149">Server failed to start on port {port}<br><span style="font-size:0.8rem;color:#8b949e;margin-top:8px;display:block">Try: kill $(lsof -ti:{port})</span></div>';
+            }})();
+        </script>
+        </body></html>
+        """
 
-    window = webview.create_window(
-        title="claude-manager",
-        html=loading_html,
-        width=1320,
-        height=880,
-        min_size=(900, 600),
-        text_select=True,
-        zoomable=True,
-        background_color="#0d1117",
-    )
+    window = webview.create_window(**window_kwargs)
 
     window.events.closed += lambda: os._exit(0)
 
     import warnings
     warnings.filterwarnings("ignore", category=RuntimeWarning)
+
+    # macOS fix for click-to-focus: force the Python process to become frontmost
+    # immediately after the window is shown. Without this, AppKit consumes the
+    # first ~10 clicks as window activation events instead of forwarding to WebKit.
+    def _activate_macos():
+        if sys.platform != "darwin":
+            return
+        import subprocess
+        # Give the window a moment to render, then force activation via AppleScript
+        time.sleep(0.4)
+        try:
+            subprocess.run(
+                [
+                    "osascript", "-e",
+                    f'tell application "System Events" to set frontmost of '
+                    f'(first process whose unix id is {os.getpid()}) to true',
+                ],
+                capture_output=True,
+                timeout=2,
+            )
+        except Exception:
+            pass
+
+    if sys.platform == "darwin":
+        threading.Thread(target=_activate_macos, daemon=True).start()
 
     webview.start(
         debug=("--debug" in sys.argv),
@@ -137,17 +169,18 @@ def _run_server(bind: str, port: int):
     loop.run_forever()
 
 
-def _wait_for_server(port: int, timeout: int = 15):
-    """Poll localhost health endpoint until the server responds."""
+def _wait_for_server(port: int, timeout: int = 15) -> bool:
+    """Poll localhost health endpoint until the server responds. Returns True on success."""
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
             resp = urllib.request.urlopen(f"http://localhost:{port}/health", timeout=2)
             if resp.status == 200:
-                return
+                return True
         except Exception:
             pass
         time.sleep(0.3)
+    return False
 
 
 def _run_tray(base_url: str):
