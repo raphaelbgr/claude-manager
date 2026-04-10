@@ -224,31 +224,13 @@ async def launch_claude_session(cwd: str, session_id: str, machine: str, skip_pe
     info = FLEET_MACHINES.get(machine, {})
     alias = info.get("ssh_alias", machine)
 
-    if adapter.is_windows and sys.platform == "darwin":
-        # Windows via SSH: ConPTY breaks PowerShell -Command with SSH -t,
-        # and without -t claude has no TTY. Clean solution: use iTerm2's
-        # native SSH command feature to get a proper TTY, then type
-        # powershell + cd + claude as separate commands with delays.
-        skip_flag = " --dangerously-skip-permissions" if skip_permissions else ""
-        return await _launch_macos_multi(
-            [
-                f"ssh {alias}",          # SSH into Windows (Git Bash)
-                "powershell",             # Start PowerShell (gets proper TTY)
-                f"cd '{cwd}'",            # Navigate to project directory
-                f"claude --resume {session_id}{skip_flag}",  # Resume session
-            ],
-            delays=[0, 2, 1, 0.5],  # 2s for SSH connect, 1s for PS startup
-        )
-    elif adapter.is_windows:
-        # Non-macOS client to Windows — best effort
-        cmd = f"ssh {alias}"
-        return await launch_terminal(cmd)
-    else:
-        # Linux/macOS target: SSH -t with full command works perfectly
-        session_cmd = adapter.build_session_command_ssh(cwd, session_id, skip_permissions)
-        terminal_cmd = adapter.for_terminal(session_cmd, keep_open=True)
-        cmd = f"ssh {shlex.quote(alias)} -t {shlex.quote(terminal_cmd)}"
-        return await launch_terminal(cmd)
+    # Same approach for ALL platforms: SSH -t with single command.
+    # Windows: build_session_command_ssh converts C:\path to /c/path for Git Bash.
+    # Linux/macOS: uses native paths. Both use bash syntax with SSH -t.
+    session_cmd = adapter.build_session_command_ssh(cwd, session_id, skip_permissions)
+    terminal_cmd = adapter.for_terminal(session_cmd, keep_open=True)
+    cmd = f"ssh {shlex.quote(alias)} -t {shlex.quote(terminal_cmd)}"
+    return await launch_terminal(cmd)
 
 
 async def launch_tmux_attach(session_name: str, machine: str) -> dict:

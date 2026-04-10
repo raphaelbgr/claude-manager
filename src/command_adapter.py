@@ -68,24 +68,36 @@ class CommandAdapter:
         The returned string is meant to be wrapped in SINGLE QUOTES by the
         caller for the SSH argument: ssh host -t '<this string>'
 
-        On Windows: PowerShell command with Set-Location (no single quotes
-        inside — they'd break the outer single-quote SSH wrapper).
+        On Windows: SSH lands in Git Bash, so use Git Bash paths (/c/path)
+        and bash syntax — same as Linux/macOS. Works with SSH -t.
         """
-        skip_flag = " --dangerously-skip-permissions" if skip_permissions else ""
-
         if self.is_windows:
-            # PowerShell -NoExit keeps the session open.
-            # No single quotes inside — the caller wraps in single quotes for SSH.
-            # PowerShell Set-Location doesn't need quotes unless path has spaces.
-            if " " in cwd:
-                set_loc = f"Set-Location \"{cwd}\""
-            else:
-                set_loc = f"Set-Location {cwd}"
-            return f'powershell -NoExit -Command "{set_loc}; claude --resume {session_id}{skip_flag}"'
+            # SSH into Windows lands in the DefaultShell (Git Bash, PowerShell, or cmd).
+            # Git Bash: cd /c/Users/path && claude ... (bash syntax)
+            # PowerShell: cd 'C:\path'; claude ... (PS syntax, not chained with &&)
+            # cmd.exe: cd /d C:\path && claude ... (cmd syntax)
+            # We try Git Bash first (most common for dev machines with Git installed).
+            # The for_terminal method adds '; exec bash' for Git Bash (no-op if not bash).
+            bash_cwd = self._win_path_to_bash(cwd)
+            cd = f"cd {shlex.quote(bash_cwd)}"
         else:
-            cd = self.cd_command_ssh(cwd)
-            resume = self.claude_resume_command(session_id, skip_permissions)
-            return self.chain_commands(cd, resume)
+            cd = f"cd {shlex.quote(cwd)}"
+
+        resume = self.claude_resume_command(session_id, skip_permissions)
+        return self.chain_commands(cd, resume)
+
+    @staticmethod
+    def _win_path_to_bash(path: str) -> str:
+        """Convert C:\\Users\\path to /c/Users/path for Git Bash."""
+        import re
+        # Match drive letter: C:\ or C:/
+        m = re.match(r'^([A-Za-z]):[/\\](.*)$', path)
+        if m:
+            drive = m.group(1).lower()
+            rest = m.group(2).replace('\\', '/')
+            return f"/{drive}/{rest}"
+        # Already a Unix path or no drive letter
+        return path.replace('\\', '/')
 
     def quote_arg(self, arg: str) -> str:
         """Quote a shell argument for the target shell."""
