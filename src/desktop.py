@@ -87,6 +87,15 @@ def _setup_mac_tray(window, base_url: str) -> None:
                 except Exception:
                     pass
 
+            def applyUpdate_(self, sender):
+                try:
+                    req = urllib.request.Request(
+                        f"{base_url}/api/update/apply", method="POST"
+                    )
+                    urllib.request.urlopen(req, timeout=120)
+                except Exception:
+                    pass
+
             def quitApp_(self, sender):
                 try:
                     req = urllib.request.Request(
@@ -131,17 +140,31 @@ def _setup_mac_tray(window, base_url: str) -> None:
                 ("Open in Browser",    "openBrowser:", ""),
                 ("Force Scan",         "forceScan:",   "r"),
                 (None,                 None,           None),
+                ("Up to date",         "applyUpdate:", ""),  # rebuilt by poller
+                (None,                 None,           None),
                 ("Quit claude-manager", "quitApp:",    "q"),
             ]
+            built_items = []
             for label, action, key in items:
                 if label is None:
-                    menu.addItem_(NSMenuItem.separatorItem())
+                    sep = NSMenuItem.separatorItem()
+                    menu.addItem_(sep)
+                    built_items.append(None)
                     continue
                 mi = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
                     label, action, key
                 )
                 mi.setTarget_(delegate)
                 menu.addItem_(mi)
+                built_items.append(mi)
+
+            # Index of the "Update" menu item so the poller can retitle it.
+            update_index = next(
+                i for i, entry in enumerate(items)
+                if entry[0] and entry[1] == "applyUpdate:"
+            )
+            update_item = built_items[update_index]
+            update_item.setEnabled_(False)
 
             status_item.setMenu_(menu)
 
@@ -149,8 +172,54 @@ def _setup_mac_tray(window, base_url: str) -> None:
             _mac_tray_state["delegate"] = delegate
             _mac_tray_state["status_item"] = status_item
             _mac_tray_state["menu"] = menu
+            _mac_tray_state["update_item"] = update_item
+            _mac_tray_state["status_button"] = status_item.button()
 
         NSOperationQueue.mainQueue().addOperationWithBlock_(_install)
+
+        # Background poller — refreshes the "Update" menu item title + enabled
+        # state from /api/update/check every 60s. Touching AppKit objects must
+        # happen on the main queue, so the body is dispatched there.
+        def _poll_updates():
+            while True:
+                try:
+                    resp = urllib.request.urlopen(
+                        f"{base_url}/api/update/check", timeout=6
+                    )
+                    data = json.loads(resp.read())
+                except Exception:
+                    data = None
+
+                def _apply_on_main():
+                    mi = _mac_tray_state.get("update_item")
+                    btn = _mac_tray_state.get("status_button")
+                    if mi is None:
+                        return
+                    available = bool(data and data.get("update_available"))
+                    if available:
+                        latest = (data.get("latest") or {}).get("commit", "")[:7]
+                        title = (
+                            f"Update & Restart  ({latest})" if latest else "Update & Restart"
+                        )
+                    else:
+                        title = "Up to date"
+                    mi.setTitle_(title)
+                    mi.setEnabled_(available)
+                    if btn is not None:
+                        try:
+                            btn.setToolTip_(
+                                "claude-manager — update available"
+                                if available else "claude-manager"
+                            )
+                        except Exception:
+                            pass
+
+                NSOperationQueue.mainQueue().addOperationWithBlock_(_apply_on_main)
+                time.sleep(60)
+
+        poller = threading.Thread(target=_poll_updates, daemon=True)
+        poller.start()
+        _mac_tray_state["poller"] = poller
     except Exception as exc:
         print(f"macOS tray setup failed: {exc}")
 
@@ -366,10 +435,10 @@ def _run_tray(base_url: str):
         draw.text((14, 16), "CM", fill=(13, 17, 23, 255), font=font)
 
     # ── Shared state for dynamic menu ────────────────────────────────────────
-    _state = {"sessions": [], "tmux": []}
+    _state = {"sessions": [], "tmux": [], "update": None}
 
     def _fetch_state():
-        """Fetch /api/sessions and /api/tmux; update _state."""
+        """Fetch /api/sessions, /api/tmux, /api/update/check; update _state."""
         try:
             resp = urllib.request.urlopen(f"{base_url}/api/sessions", timeout=5)
             _state["sessions"] = json.loads(resp.read())
@@ -378,6 +447,11 @@ def _run_tray(base_url: str):
         try:
             resp = urllib.request.urlopen(f"{base_url}/api/tmux", timeout=5)
             _state["tmux"] = json.loads(resp.read())
+        except Exception:
+            pass
+        try:
+            resp = urllib.request.urlopen(f"{base_url}/api/update/check", timeout=6)
+            _state["update"] = json.loads(resp.read())
         except Exception:
             pass
 
@@ -400,6 +474,24 @@ def _run_tray(base_url: str):
         except Exception:
             pass
         icon.stop()
+
+    def apply_update(icon, item):
+        try:
+            req = urllib.request.Request(f"{base_url}/api/update/apply", method="POST")
+            urllib.request.urlopen(req, timeout=120)
+        except Exception:
+            pass
+
+    def _update_available() -> bool:
+        u = _state.get("update") or {}
+        return bool(u.get("update_available"))
+
+    def _update_label() -> str:
+        u = _state.get("update") or {}
+        if u.get("update_available"):
+            latest = (u.get("latest") or {}).get("commit", "")[:7]
+            return f"Update & Restart  ({latest})" if latest else "Update & Restart"
+        return "Up to date"
 
     def _make_session_callback(session_id: str, machine: str):
         def _attach(icon, item):
@@ -473,6 +565,11 @@ def _run_tray(base_url: str):
 
         # ── Footer actions ───────────────────────────────────────────────────
         items.append(pystray.MenuItem("Force Scan", force_scan))
+        items.append(pystray.MenuItem(
+            _update_label(),
+            apply_update,
+            enabled=_update_available(),
+        ))
         items.append(pystray.MenuItem(f"API: {base_url}", None, enabled=False))
         items.append(pystray.Menu.SEPARATOR)
         items.append(pystray.MenuItem("Exit", exit_app))
