@@ -863,6 +863,20 @@ async def handle_restart(request: web.Request) -> web.Response:
         return web.json_response({"ok": False, "error": str(exc)}, status=500)
 
 
+async def handle_exit(request: web.Request) -> web.Response:
+    """POST /api/exit — gracefully shut down the server and exit."""
+    import os
+
+    log.info("Exit requested — shutting down")
+
+    async def _shutdown():
+        await asyncio.sleep(0.5)
+        os._exit(0)
+
+    asyncio.ensure_future(_shutdown())
+    return web.json_response({"ok": True, "message": "Shutting down..."})
+
+
 async def handle_preferences_get(request: web.Request) -> web.Response:
     return web.json_response(_load_prefs())
 
@@ -1462,6 +1476,7 @@ def create_app(
     app.router.add_get("/api/preferences", handle_preferences_get)
     app.router.add_post("/api/preferences", handle_preferences_post)
     app.router.add_post("/api/restart", handle_restart)
+    app.router.add_post("/api/exit", handle_exit)
 
     # WebSocket
     app.router.add_get("/ws", handle_ws)

@@ -1,6 +1,6 @@
 [project]
 name = "claude-manager"
-version = "0.1.0"
+version = "1.0.0"
 description = "Manage Claude Code sessions and tmux sessions across fleet machines"
 requires-python = ">=3.11"
 dependencies = ["aiohttp>=3.9", "psutil>=5.9"]

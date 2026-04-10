@@ -2184,6 +2184,9 @@ function Header({ health, sessions, tmuxSessions, fleet, onScan, scanning, skipP
       h('span', {
         style: { fontSize: '1rem', fontWeight: 700, color: '#e6edf3', letterSpacing: '-0.3px' }
       }, 'claude-manager'),
+      h('span', {
+        style: { fontSize: '0.7rem', color: '#8b949e', fontWeight: 400, letterSpacing: '0.2px', marginLeft: 2, alignSelf: 'flex-end', paddingBottom: '1px' }
+      }, 'v1.0.0'),
     ),
 
     // Stat pills
@@ -2321,6 +2324,29 @@ function Header({ health, sessions, tmuxSessions, fleet, onScan, scanning, skipP
     },
       h('span', { className: 'material-icons-round', style: { fontSize: '14px' } }, 'restart_alt'),
       restartConfirm ? 'Confirm?' : 'Restart',
+    ),
+
+    // Exit button — stops server and closes window
+    h('button', {
+      className: 'btn',
+      onClick: async () => {
+        if (!confirm('Exit claude-manager? This will stop the server.')) return;
+        try {
+          await fetch('/api/exit', { method: 'POST' });
+        } catch {}
+        window.close();
+      },
+      title: 'Stop the server and close claude-manager',
+      style: {
+        background: '#3a0d0d',
+        border: '1px solid #6e1a1a', borderRadius: 8,
+        color: '#f85149', padding: '6px 10px', fontSize: '0.75rem', fontWeight: 600,
+        display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer',
+        transition: 'all 0.15s', whiteSpace: 'nowrap',
+      },
+    },
+      h('span', { className: 'material-icons-round', style: { fontSize: '14px' } }, 'power_settings_new'),
+      'Exit',
     ),
   );
 }

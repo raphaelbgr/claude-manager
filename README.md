@@ -1,45 +1,103 @@
 # claude-manager
 
-> Manage Claude Code sessions and tmux/psmux sessions across multiple machines from a single interface.
+> Never lose track of a Claude Code session again.
 
-![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue) ![License: MIT](https://img.shields.io/badge/License-MIT-green)
+![Screenshot](docs/screenshot.png)
+
+![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue) ![License: MIT](https://img.shields.io/badge/License-MIT-green) ![Version](https://img.shields.io/badge/version-1.0.0-blue)
+
+**claude-manager** is a fleet session manager that discovers, organizes, and resumes Claude Code sessions across all your machines from a single interface.
+
+## The Problem
+
+You have 5 machines. 300+ Claude Code sessions. Dozens of tmux/psmux multiplexer sessions. You can't remember:
+
+- Which machine has the session for that urgent bug fix?
+- What folder were you in when you started that refactoring?
+- Is that session still running or did it idle out?
+- How do you resume a session on a remote Windows machine from your Mac?
+
+**claude-manager** solves this in one click.
 
 ## Features
 
-- **Session Scanner** — Discover all Claude Code sessions across your fleet (local + remote via daemon API or SSH fallback). Detects working/active/idle status using PID tracking and CPU sampling.
-- **Tmux/Psmux Manager** — List, create, attach, and kill tmux (Linux/macOS) and psmux (Windows) sessions across every machine in your fleet.
-- **Three Interfaces** — Terminal UI (Textual), Web UI (React SPA served by the API), Native Desktop (pywebview window with embedded API).
+- **Fleet Session Discovery** — Scans all your machines simultaneously and shows every Claude Code session in one view. Detects Working / Active / Idle status using PID tracking and CPU sampling so you know what's live at a glance.
+- **One-Click Resume** — Click any session card to open it in a terminal window (iTerm2, Terminal.app, gnome-terminal, PowerShell — whatever is native to the target OS).
+- **tmux & psmux Management** — List, create, attach, and kill tmux sessions (Linux/macOS) and psmux sessions (Windows) across every machine, locally or remotely.
+- **Three Interfaces** — Terminal UI (Textual TUI), Web UI (React SPA), and Native Desktop window (pywebview). Pick whichever suits your workflow.
 - **API-First** — A REST + WebSocket server drives all three interfaces. Any tool that speaks HTTP can integrate.
-- **Fleet Integration** — Primary scanning path uses the [claude-dispatch](https://github.com/raphaelbgr/claude-dispatch) daemon HTTP API; SSH is the automatic fallback for machines without a daemon.
-- **Cross-Platform** — macOS (iTerm2 / Terminal.app), Linux (common terminal emulators), Windows (PowerShell).
-- **Live Status** — Polling background task pushes session/tmux/fleet diffs to all WebSocket subscribers every 30 seconds.
-- **Universal Mux Parser** — Single parser handles both tmux pipe-delimited format and psmux plain-text output automatically.
+- **Fleet Integration** — Primary scanning uses the [claude-dispatch](https://github.com/raphaelbgr/claude-dispatch) daemon API for speed. SSH is the automatic fallback for machines without a daemon.
+- **Cross-Platform** — macOS, Linux, and Windows. Handles both Unix tmux and Windows psmux in the same unified view.
+- **Live Updates** — WebSocket streaming pushes session and fleet diffs to all connected clients every 30 seconds, no manual refresh needed.
+- **Rich Session Cards** — Git branch, message count, file size, first message summary, working directory, CPU usage, child process count, last modified time.
+- **Session Organization** — Pin sessions to the top, archive sessions to hide them, rename sessions (equivalent to `/rename` in Claude Code), and group by machine or project folder.
+- **Universal Mux Parser** — Single parser handles tmux pipe-delimited format and psmux plain-text output automatically.
+- **Filter Bar** — Live text search across session path, summary, status, machine name, sort by time or status.
+- **Hardware Monitoring** — CPU, GPU, and RAM stats per machine displayed in fleet view and session cards.
+- **Folder Browser** — Integrated folder picker with drive selector (Windows), directory navigation, and mkdir for launching new sessions.
 
 ## Quick Start
 
+### macOS
+
 ```bash
-git clone https://github.com/raphaelbgr/claude-manager
+curl -fsSL https://raw.githubusercontent.com/raphaelbgr/claude-manager/master/installers/install-macos.sh | bash
+```
+
+### Linux
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/raphaelbgr/claude-manager/master/installers/install-linux.sh | bash
+```
+
+### Windows (PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/raphaelbgr/claude-manager/master/installers/install-windows.ps1 | iex
+```
+
+### From Source
+
+```bash
+git clone https://github.com/raphaelbgr/claude-manager.git
 cd claude-manager
 ./setup.sh
 source .venv/bin/activate
+claude-manager
+```
 
-# Terminal UI
+## Usage
+
+```bash
+# Terminal UI (works everywhere, no browser needed)
 claude-manager --tui
 
-# Web UI + API server on localhost
+# Web UI + API server on localhost:44740
 claude-manager --enable-web
 
-# Web UI + API server on LAN (accessible from other machines)
+# Web UI + API server accessible from other machines on your LAN
 claude-manager --enable-web --bind 0.0.0.0
 
 # Native desktop window (pywebview)
 claude-manager --enable-gui
 
-# API server only (no GUI)
+# API server only (headless, integrate with your own tools)
 claude-manager --api-only
 ```
 
 After starting with `--enable-web`, open **http://localhost:44740** in your browser. When bound to `0.0.0.0`, the startup banner prints your LAN URL (e.g. `http://192.168.1.10:44740`).
+
+### TUI Keybindings
+
+| Key | Action |
+|-----|--------|
+| `r` | Force rescan |
+| `n` | New tmux session (Tmux tab) |
+| `/` | Open filter bar |
+| `Esc` | Clear filter / close filter bar |
+| `Enter` | Launch session / attach tmux |
+| `Tab` | Switch between Sessions / Tmux / Fleet tabs |
+| `q` | Quit |
 
 ## Architecture
 
@@ -51,44 +109,39 @@ After starting with `--enable-web`, open **http://localhost:44740** in your brow
 │  │  TUI     │  │  Web UI      │  │  Desktop GUI │  │
 │  │(Textual) │  │ (React SPA)  │  │ (pywebview)  │  │
 │  └────┬─────┘  └──────┬───────┘  └──────┬───────┘  │
-│       │               │                 │           │
 │       └───────────────┼─────────────────┘           │
 │                       │                             │
 │          ┌────────────▼────────────┐                │
 │          │  REST + WebSocket API   │                │
 │          │     (aiohttp :44740)    │                │
 │          └────────────┬────────────┘                │
-│                       │                             │
 │       ┌───────────────┼───────────────┐             │
-│       │               │               │             │
 │  ┌────▼────┐   ┌──────▼──────┐  ┌────▼────┐        │
 │  │ Scanner │   │TmuxManager  │  │  Fleet  │        │
-│  │         │   │             │  │Discovery│        │
 │  └────┬────┘   └──────┬──────┘  └────┬────┘        │
-│       │               │               │             │
 └───────┼───────────────┼───────────────┼─────────────┘
-        │               │               │
         ▼               ▼               ▼
    Local FS +      tmux/psmux      HTTP /health
    ~/.claude/      local + SSH     (dispatch daemon)
    SSH remote      SSH remote      SSH fallback
 ```
 
-**Components:**
-
-| File | Role |
-|------|------|
-| `src/server.py` | aiohttp REST + WebSocket API server (port 44740) |
-| `src/scanner.py` | Claude session discovery — local `~/.claude/` scan + SSH remote script |
-| `src/tmux_manager.py` | tmux/psmux session listing, creation, and killing |
-| `src/mux_parser.py` | Universal parser for tmux and psmux output formats |
-| `src/fleet.py` | Fleet health discovery — HTTP ping then SSH fallback |
-| `src/launcher.py` | Cross-platform terminal launcher (iTerm2, gnome-terminal, PowerShell) |
-| `src/config.py` | Fleet machine definitions and global constants |
+| Component | Role |
+|-----------|------|
+| `src/server.py` | aiohttp REST + WebSocket API (port 44740) |
+| `src/scanner.py` | Claude session discovery — local `~/.claude/` scan + SSH remote |
+| `src/tmux_manager.py` | tmux/psmux listing, creation, kill |
+| `src/mux_parser.py` | Universal parser for tmux and psmux output |
+| `src/fleet.py` | Fleet health — HTTP ping then SSH fallback |
+| `src/launcher.py` | Cross-platform terminal launcher |
+| `src/command_adapter.py` | OS-aware command builder (bash/cmd/PowerShell/Git Bash) |
+| `src/config.py` | Fleet machine definitions and constants |
 | `src/main.py` | CLI entry point and argument parsing |
 | `src/tui/` | Textual TUI — 3-tab app (Sessions, Tmux, Fleet) |
 | `src/web/index.html` | React SPA (CDN imports, single file, served at `/`) |
 | `src/desktop.py` | pywebview native window + optional pystray system tray |
+
+Full architecture docs: [docs/architecture.md](docs/architecture.md)
 
 ## Configuration
 
@@ -115,91 +168,65 @@ FLEET_MACHINES: dict[str, dict] = {
 }
 ```
 
-The machine running `claude-manager` is auto-detected by hostname or IP match. Remote machines are scanned in parallel.
+The local machine is auto-detected by hostname. Remote machines are scanned in parallel.
 
 ### Preferences
 
-User preferences are stored in `.claude-manager-prefs.json` (git-ignored) at the project root. Currently supports:
+User preferences are stored in `.claude-manager-prefs.json` (git-ignored) at the project root.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `skip_permissions` | bool | `false` | Skip Claude Code permission prompts when launching sessions |
+| `skip_permissions` | bool | `false` | Pass `--dangerously-skip-permissions` when launching sessions |
 
-Preferences can be updated via the Web UI toggle or the `POST /api/preferences` endpoint.
+Update via the Web UI toggle or `POST /api/preferences`.
 
 ## API Reference
-
-The API server starts automatically with any mode except `--tui`.
 
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/health` | Server health, machine count, session count, last scan time |
-| `GET` | `/api/sessions` | All sessions grouped by machine, then project folder |
+| `GET` | `/api/sessions` | All sessions grouped by machine and project |
 | `GET` | `/api/sessions/{machine}` | Sessions for a specific machine |
-| `POST` | `/api/sessions/scan` | Force immediate rescan; returns fresh data |
-| `POST` | `/api/sessions/launch` | Open terminal and resume a Claude session |
+| `POST` | `/api/sessions/scan` | Force immediate rescan |
+| `POST` | `/api/sessions/launch` | Open terminal and resume a session |
 | `GET` | `/api/tmux` | All tmux/psmux sessions across fleet |
 | `GET` | `/api/tmux/{machine}` | Tmux sessions for a specific machine |
 | `POST` | `/api/tmux/create` | Create a new detached tmux session |
-| `POST` | `/api/tmux/connect` | Open local terminal attached to a tmux session |
-| `POST` | `/api/tmux/connect-remote` | Open terminal on the remote machine's display |
+| `POST` | `/api/tmux/connect` | Attach to a tmux session in local terminal |
+| `POST` | `/api/tmux/connect-remote` | Open terminal on remote machine's display |
 | `POST` | `/api/tmux/kill` | Kill a tmux session by name |
 | `GET` | `/api/preferences` | Get current preferences |
 | `POST` | `/api/preferences` | Update preferences |
-| `WS` | `/ws` | WebSocket — subscribe to live updates |
+| `GET` | `/api/logs` | Recent structured log entries |
+| `WS` | `/ws` | WebSocket — subscribe to live session/tmux/fleet updates |
 
-Full request/response documentation: [docs/api.md](docs/api.md)
-
-## Web UI
-
-The React SPA at `http://localhost:44740` provides:
-
-- **Sessions tab** — Collapsible machine groups, each with collapsible project sections. Session cards show status badge (Working / Active / Idle), project path, first message summary, message count, and last modified time. Click a session to open it in a terminal.
-- **Tmux tab** — Session cards per machine with window count, attached badge, and created time. Create, Attach, Remote Attach (opens on the remote machine's own display), and Kill buttons.
-- **Fleet tab** — Online/offline indicator per machine with OS, IP, connectivity method (HTTP daemon vs SSH), and dispatch daemon status.
-- **Filter bar** — Live text filter on session path, summary, status, or machine name.
-- **Scan button** — Force a rescan from the UI at any time.
-- **Live updates** — WebSocket keeps the UI in sync without manual refreshes.
-
-## TUI
-
-Launch with `claude-manager --tui`.
-
-| Key | Action |
-|-----|--------|
-| `r` | Force rescan |
-| `n` | New tmux session (Tmux tab only) |
-| `/` | Show filter bar |
-| `Esc` | Clear filter / close filter bar |
-| `Enter` | Launch session / attach tmux session |
-| `q` | Quit |
-| `Tab` | Switch between Sessions / Tmux / Fleet tabs |
-
-The TUI auto-refreshes every 30 seconds in the background.
-
-## Desktop GUI
-
-The native window mode (`--enable-gui`) uses **pywebview** to render the Web UI in a native window (WebKit on macOS, WebView2 on Windows, GTK WebKit on Linux). The API server runs in a background thread.
-
-On Linux and Windows, an optional **system tray icon** (via `pystray` + `Pillow`) provides quick access:
-- Open in browser
-- Open TUI in a terminal
-- Force scan
-- Quit
-
-On macOS, pywebview owns the main thread (AppKit requirement), so the system tray is skipped there.
-
-Install desktop dependencies: `pip install ".[desktop]"`
+Full request/response docs: [docs/api.md](docs/api.md)
 
 ## Integration with claude-dispatch
 
-When a machine in `FLEET_MACHINES` has `dispatch_port` set, claude-manager uses the [claude-dispatch](https://github.com/raphaelbgr/claude-dispatch) daemon's HTTP API for faster, more reliable scanning:
+When a machine has `dispatch_port` set, claude-manager uses the [claude-dispatch](https://github.com/raphaelbgr/claude-dispatch) daemon API for faster scanning:
 
-- **Sessions:** `GET http://<ip>:<port>/sessions` — daemon returns pre-scanned session list
-- **Tmux:** `GET http://<ip>:<port>/tmux` — daemon returns tmux session list
-- **Health:** `GET http://<ip>:<port>/health` — used for fleet online/offline detection
+- **Sessions:** `GET http://<ip>:<port>/sessions`
+- **Tmux:** `GET http://<ip>:<port>/tmux`
+- **Health:** `GET http://<ip>:<port>/health`
 
-If the daemon is unreachable or returns an empty response, claude-manager automatically falls back to running a self-contained Python scan script via SSH. Machines with `dispatch_port: None` always use the SSH path.
+If the daemon is unreachable, claude-manager automatically falls back to a self-contained Python scan script executed over SSH.
+
+## Desktop GUI
+
+The native window mode (`--enable-gui`) uses **pywebview** to render the Web UI in a native OS window (WebKit on macOS, WebView2 on Windows, GTK WebKit on Linux).
+
+On Linux and Windows, an optional **system tray icon** (via `pystray` + `Pillow`) provides:
+
+- Open in browser
+- Force scan
+- Quit
+
+Install desktop dependencies: `pip install ".[desktop]"`
+
+## Screenshots
+
+![Web UI](docs/screenshot.png)
 
 ## Development
 
@@ -210,7 +237,7 @@ python -m src.main --enable-web
 # TUI dev
 python -m src --tui
 
-# Run tests
+# Run tests (588 tests across 12 test files)
 pip install pytest pytest-asyncio
 pytest
 ```

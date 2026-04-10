@@ -7,6 +7,7 @@ background thread. System tray icon provides quick access when minimized.
 
 Launch: python -m src.main --enable-gui
 """
+import json
 import os
 import sys
 import threading
@@ -150,27 +151,46 @@ def _wait_for_server(port: int, timeout: int = 15):
 
 
 def _run_tray(base_url: str):
-    """Run system tray icon (optional, fails silently if deps missing)."""
+    """Run system tray icon with dynamic menu (optional, fails silently if deps missing).
+
+    Only runs on Linux/Windows — macOS needs the main thread for AppKit/webview.
+    Refreshes session/tmux data from the API every 30 seconds.
+    """
     try:
         import pystray
         from PIL import Image, ImageDraw
     except ImportError:
         return
 
+    # ── Tray icon image ──────────────────────────────────────────────────────
     img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     draw.ellipse([4, 4, 60, 60], fill=(88, 166, 255, 255))
     try:
         from PIL import ImageFont
-        if sys.platform == "darwin":
-            font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 24)
-        else:
-            font = ImageFont.load_default()
+        font = ImageFont.load_default()
     except Exception:
         from PIL import ImageFont
         font = ImageFont.load_default()
     draw.text((14, 16), "CM", fill=(13, 17, 23, 255), font=font)
 
+    # ── Shared state for dynamic menu ────────────────────────────────────────
+    _state = {"sessions": [], "tmux": []}
+
+    def _fetch_state():
+        """Fetch /api/sessions and /api/tmux; update _state."""
+        try:
+            resp = urllib.request.urlopen(f"{base_url}/api/sessions", timeout=5)
+            _state["sessions"] = json.loads(resp.read())
+        except Exception:
+            pass
+        try:
+            resp = urllib.request.urlopen(f"{base_url}/api/tmux", timeout=5)
+            _state["tmux"] = json.loads(resp.read())
+        except Exception:
+            pass
+
+    # ── Action callbacks ─────────────────────────────────────────────────────
     def open_browser(icon, item):
         import webbrowser
         webbrowser.open(base_url)
@@ -182,19 +202,113 @@ def _run_tray(base_url: str):
         except Exception:
             pass
 
-    def quit_app(icon, item):
+    def exit_app(icon, item):
+        try:
+            req = urllib.request.Request(f"{base_url}/api/exit", method="POST")
+            urllib.request.urlopen(req, timeout=5)
+        except Exception:
+            pass
         icon.stop()
-        os._exit(0)
 
-    menu = pystray.Menu(
-        pystray.MenuItem("Open in Browser", open_browser, default=True),
-        pystray.Menu.SEPARATOR,
-        pystray.MenuItem("Force Scan", force_scan),
-        pystray.Menu.SEPARATOR,
-        pystray.MenuItem(f"API: {base_url}", None, enabled=False),
-        pystray.Menu.SEPARATOR,
-        pystray.MenuItem("Quit", quit_app),
-    )
+    def _make_session_callback(session_id: str, machine: str):
+        def _attach(icon, item):
+            try:
+                data = json.dumps({"id": session_id, "machine": machine}).encode()
+                req = urllib.request.Request(
+                    f"{base_url}/api/sessions/launch",
+                    data=data,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                urllib.request.urlopen(req, timeout=10)
+            except Exception:
+                pass
+        return _attach
 
-    icon = pystray.Icon("claude-manager", img, "claude-manager", menu)
+    def _make_tmux_callback(session_name: str, machine: str):
+        def _attach(icon, item):
+            try:
+                data = json.dumps({"session": session_name, "machine": machine}).encode()
+                endpoint = "connect-remote" if machine != "local" else "connect"
+                req = urllib.request.Request(
+                    f"{base_url}/api/tmux/{endpoint}",
+                    data=data,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                urllib.request.urlopen(req, timeout=10)
+            except Exception:
+                pass
+        return _attach
+
+    # ── Dynamic menu builder ─────────────────────────────────────────────────
+    def _build_menu():
+        items = []
+
+        # Header + Open Web UI
+        items.append(pystray.MenuItem("claude-manager", None, enabled=False))
+        items.append(pystray.MenuItem("Open Web UI", open_browser, default=True))
+        items.append(pystray.Menu.SEPARATOR)
+
+        # ── Running Sessions grouped by machine ──────────────────────────────
+        sessions = _state.get("sessions", [])
+        by_machine: dict[str, list] = {}
+        for s in sessions:
+            m = s.get("machine", "local")
+            by_machine.setdefault(m, []).append(s)
+
+        if by_machine:
+            items.append(pystray.MenuItem("Running Sessions", None, enabled=False))
+            for machine, machine_sessions in sorted(by_machine.items()):
+                for s in machine_sessions:
+                    name = s.get("name") or s.get("id", "?")
+                    status = (s.get("status") or "idle").upper()
+                    label = f"  {machine}: {name} ({status})"
+                    cb = _make_session_callback(s.get("id", ""), machine)
+                    items.append(pystray.MenuItem(label, cb))
+            items.append(pystray.Menu.SEPARATOR)
+
+        # ── Tmux / Psmux Sessions ────────────────────────────────────────────
+        tmux = _state.get("tmux", [])
+        if tmux:
+            items.append(pystray.MenuItem("Tmux / Psmux Sessions", None, enabled=False))
+            for t in tmux:
+                machine = t.get("machine", "local")
+                name = t.get("name") or t.get("session", "?")
+                label = f"  {machine}: {name}"
+                cb = _make_tmux_callback(name, machine)
+                items.append(pystray.MenuItem(label, cb))
+            items.append(pystray.Menu.SEPARATOR)
+
+        # ── Footer actions ───────────────────────────────────────────────────
+        items.append(pystray.MenuItem("Force Scan", force_scan))
+        items.append(pystray.MenuItem(f"API: {base_url}", None, enabled=False))
+        items.append(pystray.Menu.SEPARATOR)
+        items.append(pystray.MenuItem("Exit", exit_app))
+
+        return pystray.Menu(*items)
+
+    # ── Background refresh loop ──────────────────────────────────────────────
+    icon_ref: list = []  # mutable container so the thread closure can access the icon
+
+    def _refresh_loop():
+        while True:
+            time.sleep(30)
+            _fetch_state()
+            if icon_ref:
+                try:
+                    icon_ref[0].menu = _build_menu()
+                    icon_ref[0].update_menu()
+                except Exception:
+                    pass
+
+    # Initial data fetch before showing the icon
+    _fetch_state()
+
+    icon = pystray.Icon("claude-manager", img, "claude-manager", _build_menu())
+    icon_ref.append(icon)
+
+    refresh_thread = threading.Thread(target=_refresh_loop, daemon=True)
+    refresh_thread.start()
+
     icon.run()
