@@ -1,8 +1,8 @@
 {
-  "version": 102,
-  "commit": "e340df5",
-  "commit_full": "e340df50a072ba5c3e64e395d6f11291a637fd41",
+  "version": 104,
+  "commit": "0f8156b",
+  "commit_full": "0f8156b63b0338d78136ae9fe4e9b685a383b3bb",
   "branch": "master",
-  "date": "2026-04-10T07:40:41-03:00",
-  "message": "feat: smart tmux attach + fleet install scripts + mac dock/menu bar"
+  "date": "2026-04-10T08:44:25-03:00",
+  "message": "fix: pass --dangerously-skip-permissions from project New Session button"
 }
