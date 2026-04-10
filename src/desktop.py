@@ -105,6 +105,25 @@ def run_desktop(bind: str = "0.0.0.0", port: int = 44740):
 
     window.events.closed += lambda: os._exit(0)
 
+    # Inject auth token into localStorage on page load (so the React app
+    # can use it for all fetch() and WS calls). The desktop app runs on
+    # the same machine as the server, so it has filesystem access to the
+    # configured SSH public key.
+    def _inject_token():
+        try:
+            from .auth import load_auth_config
+            cfg = load_auth_config()
+            if cfg.enabled and cfg.token:
+                js = (
+                    f"localStorage.setItem('claude-manager-auth-token', "
+                    f"{json.dumps(cfg.token)});"
+                )
+                window.evaluate_js(js)
+        except Exception as exc:
+            print(f"auth token injection failed: {exc}")
+
+    window.events.loaded += _inject_token
+
     import warnings
     warnings.filterwarnings("ignore", category=RuntimeWarning)
 

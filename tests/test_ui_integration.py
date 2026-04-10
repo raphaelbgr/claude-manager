@@ -50,6 +50,9 @@ KNOWN_SERVER_API_ROUTES = {
     "/api/logs",
     "/api/restart",
     "/api/exit",
+    "/api/auth/config",
+    "/api/auth/token",
+    "/api/auth/update",
 }
 
 # Expected WebSocket channels (from handle_ws in server.py)

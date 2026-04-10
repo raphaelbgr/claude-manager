@@ -588,6 +588,22 @@ function toast(msg, type = 'info') {
   if (_addToast) _addToast(msg, type);
 }
 
+// ─── Auth helpers ─────────────────────────────────────────────────────────────
+
+function authHeaders() {
+  const token = localStorage.getItem('claude-manager-auth-token');
+  return token ? { 'Authorization': 'Bearer ' + token } : {};
+}
+
+async function apiFetch(url, opts = {}) {
+  const headers = { ...(opts.headers || {}), ...authHeaders() };
+  const resp = await fetch(url, { ...opts, headers });
+  if (resp.status === 401) {
+    toast('Authentication required — check Settings', 'error');
+  }
+  return resp;
+}
+
 function Toaster() {
   const [toasts, setToasts] = useState([]);
   useEffect(() => {
@@ -625,6 +641,10 @@ function useWebSocket(onMessage, onReconnect) {
     ws.onopen = () => {
       setConnected(true);
       retryCount.current = 0;
+      const token = localStorage.getItem('claude-manager-auth-token');
+      if (token) {
+        ws.send(JSON.stringify({ type: 'auth', token }));
+      }
       ['sessions', 'tmux', 'fleet'].forEach(ch =>
         ws.send(JSON.stringify({ type: 'subscribe', channel: ch }))
       );
@@ -633,7 +653,15 @@ function useWebSocket(onMessage, onReconnect) {
     };
 
     ws.onmessage = evt => {
-      try { onMessage(JSON.parse(evt.data)); } catch {}
+      try {
+        const msg = JSON.parse(evt.data);
+        if (msg.type === 'auth_error' || msg.type === 'auth_required') {
+          toast('WebSocket auth failed — check Settings', 'error');
+          ws.close();
+          return;
+        }
+        onMessage(msg);
+      } catch {}
     };
 
     ws.onclose = () => {
@@ -699,7 +727,7 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
   };
 
   const handleRename = async () => {
-    const res = await fetch('/api/sessions/rename', {
+    const res = await apiFetch('/api/sessions/rename', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ machine: session.machine, session_id: session.session_id, pid: session.pid, name: renameName }),
@@ -1452,7 +1480,7 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
       return drivesCache[m];
     }
     try {
-      const res = await fetch('/api/drives', {
+      const res = await apiFetch('/api/drives', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ machine: m }),
@@ -1472,7 +1500,7 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
   const fetchDirs = async (path) => {
     setBrowseLoading(true);
     try {
-      const res = await fetch('/api/browse', {
+      const res = await apiFetch('/api/browse', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ machine, path: path || '' }),
@@ -1520,7 +1548,7 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
     const newPath = browsePath + sep + name;
     setNewFolderCreating(true);
     try {
-      const res = await fetch('/api/mkdir', {
+      const res = await apiFetch('/api/mkdir', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ machine, path: newPath }),
@@ -1549,7 +1577,7 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
     }
     setCreating(true);
     try {
-      const res = await fetch('/api/tmux/create', {
+      const res = await apiFetch('/api/tmux/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ machine, name: name.trim(), cwd: cwd.trim() || undefined, command: command.trim() || undefined }),
@@ -2227,7 +2255,7 @@ function LogPanel({ visible, onClose }) {
     if (!visible || !autoRefresh) return;
     const fetchLogs = () => {
       const params = levelFilter ? `?limit=50&level=${levelFilter}` : '?limit=50';
-      fetch('/api/logs' + params)
+      apiFetch('/api/logs' + params)
         .then(r => r.json())
         .then(d => {
           setLogs(d.logs || []);
@@ -2435,9 +2463,187 @@ function FleetBar({ fleet, lastScan, wsConnected }) {
   );
 }
 
+// ─── Security Modal ───────────────────────────────────────────────────────────
+
+function SecurityModal({ authStatus, onClose, onAuthStatusChange }) {
+  const [enabled, setEnabled] = useState(authStatus ? !!authStatus.enabled : false);
+  const [keyPath, setKeyPath] = useState(authStatus ? (authStatus.key_path || '') : '');
+  const [saving, setSaving] = useState(false);
+  const [token, setToken] = useState(null);
+  const [tokenCopied, setTokenCopied] = useState(false);
+  const availableKeys = authStatus ? (authStatus.available_keys || []) : [];
+
+  useEffect(() => {
+    fetch('/api/auth/token').then(r => r.json()).then(d => {
+      if (d.token) setToken(d.token);
+    }).catch(() => {});
+  }, []);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      const res = await fetch('/api/auth/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled, key_path: keyPath }),
+      });
+      const data = await res.json();
+      if (data.ok || res.ok) {
+        toast('Auth updated — restart server to take effect', 'success');
+        if (onAuthStatusChange) onAuthStatusChange({ ...(authStatus || {}), enabled, key_path: keyPath });
+      } else {
+        toast(data.error || 'Save failed', 'error');
+      }
+    } catch {
+      toast('Network error saving auth config', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleCopyToken = () => {
+    if (!token) return;
+    navigator.clipboard.writeText(token).then(() => {
+      setTokenCopied(true);
+      setTimeout(() => setTokenCopied(false), 2000);
+    }).catch(() => { toast('Failed to copy token', 'error'); });
+  };
+
+  const statusEnabled = authStatus ? authStatus.enabled : false;
+
+  return h('div', {
+    className: 'modal-overlay',
+    onClick: e => { if (e.target === e.currentTarget) onClose(); },
+  },
+    h('div', { className: 'modal-box', style: { minWidth: 460, maxWidth: 560 } },
+      // Header
+      h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 } },
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+          h('span', { className: 'material-icons-round', style: { fontSize: '18px', color: '#58a6ff' } }, 'lock'),
+          h('span', { style: { fontSize: '1rem', fontWeight: 700, color: '#e6edf3' } }, 'Security'),
+        ),
+        h('button', {
+          onClick: onClose,
+          style: { background: 'none', border: 'none', color: '#8b949e', cursor: 'pointer', fontSize: '1.2rem', lineHeight: 1 },
+        }, '\u00d7'),
+      ),
+
+      // Current status badge
+      h('div', { style: { marginBottom: 18 } },
+        h('div', { style: { fontSize: '0.75rem', color: '#8b949e', marginBottom: 6 } }, 'Current status'),
+        h('span', {
+          className: 'badge',
+          style: {
+            background: statusEnabled ? '#1a3a2a' : '#21262d',
+            color: statusEnabled ? '#3fb950' : '#8b949e',
+            border: `1px solid ${statusEnabled ? '#2a5a3a' : '#30363d'}`,
+            fontSize: '0.72rem',
+          },
+        }, statusEnabled ? 'Auth enabled' : 'Auth disabled'),
+      ),
+
+      // Enable toggle
+      h('div', { style: { marginBottom: 16 } },
+        h('label', {
+          style: { display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none', fontSize: '0.875rem', color: '#e6edf3' },
+        },
+          h('input', {
+            type: 'checkbox',
+            checked: enabled,
+            onChange: e => setEnabled(e.target.checked),
+            style: { accentColor: '#58a6ff', cursor: 'pointer', width: 14, height: 14 },
+          }),
+          'Enable bearer token authentication',
+        ),
+      ),
+
+      // Key picker
+      h('div', { style: { marginBottom: 16 } },
+        h('div', { style: { fontSize: '0.75rem', color: '#8b949e', marginBottom: 6 } }, 'SSH key for token derivation'),
+        availableKeys.length > 0
+          ? h('select', {
+              className: 'form-input',
+              value: keyPath,
+              onChange: e => setKeyPath(e.target.value),
+            },
+              h('option', { value: '' }, '— select key —'),
+              availableKeys.map(k => h('option', { key: k, value: k }, k)),
+            )
+          : h('input', {
+              className: 'form-input',
+              type: 'text',
+              placeholder: '/path/to/id_rsa',
+              value: keyPath,
+              onChange: e => setKeyPath(e.target.value),
+            }),
+      ),
+
+      // Token display
+      token && h('div', { style: { marginBottom: 16 } },
+        h('div', { style: { fontSize: '0.75rem', color: '#8b949e', marginBottom: 6 } }, 'Current token (loopback only)'),
+        h('div', { style: { display: 'flex', gap: 8, alignItems: 'center' } },
+          h('input', {
+            className: 'form-input',
+            type: 'text',
+            readOnly: true,
+            value: token,
+            style: { fontFamily: 'monospace', fontSize: '0.72rem', flex: 1 },
+          }),
+          h('button', {
+            className: 'btn',
+            onClick: handleCopyToken,
+            style: {
+              background: tokenCopied ? '#1a3a2a' : '#21262d',
+              border: `1px solid ${tokenCopied ? '#2a5a3a' : '#30363d'}`,
+              borderRadius: 6, color: tokenCopied ? '#3fb950' : '#8b949e',
+              padding: '6px 10px', fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer',
+              whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: 4,
+            },
+          },
+            h('span', { className: 'material-icons-round', style: { fontSize: '13px' } }, tokenCopied ? 'check' : 'content_copy'),
+            tokenCopied ? 'Copied' : 'Copy',
+          ),
+        ),
+        h('div', { style: { marginTop: 6, fontSize: '0.7rem', color: '#8b949e', lineHeight: 1.5 } },
+          'To use on another device, open browser console and run: ',
+          h('code', { style: { fontFamily: 'monospace', color: '#58a6ff', wordBreak: 'break-all' } },
+            "localStorage" + ".setItem('claude-manager-auth-token', '<token>')",
+          ),
+        ),
+      ),
+
+      // Save + close
+      h('div', { style: { display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 20 } },
+        h('button', {
+          className: 'btn',
+          onClick: onClose,
+          style: {
+            background: '#21262d', border: '1px solid #30363d', borderRadius: 8,
+            color: '#8b949e', padding: '8px 16px', fontSize: '0.875rem', fontWeight: 600, cursor: 'pointer',
+          },
+        }, 'Cancel'),
+        h('button', {
+          className: 'btn',
+          onClick: handleSave,
+          disabled: saving,
+          style: {
+            background: '#1f3a5f', border: '1px solid #2d4f7a', borderRadius: 8,
+            color: '#58a6ff', padding: '8px 16px', fontSize: '0.875rem', fontWeight: 600,
+            cursor: saving ? 'not-allowed' : 'pointer',
+            display: 'flex', alignItems: 'center', gap: 6,
+          },
+        },
+          h('span', { className: 'material-icons-round', style: { fontSize: '14px' } }, saving ? 'hourglass_empty' : 'save'),
+          saving ? 'Saving…' : 'Save',
+        ),
+      ),
+    ),
+  );
+}
+
 // ─── Header ───────────────────────────────────────────────────────────────────
 
-function Header({ health, sessions, tmuxSessions, fleet, onScan, scanning, scanProgress, skipPermissions, onSkipPermissionsChange, showLogs, onToggleLogs }) {
+function Header({ health, sessions, tmuxSessions, fleet, onScan, scanning, scanProgress, skipPermissions, onSkipPermissionsChange, showLogs, onToggleLogs, authStatus, onToggleSecurity }) {
   const online = Object.values(fleet || {}).filter(m => m.online).length;
   const total = Object.keys(fleet || {}).length;
   const [restartConfirm, setRestartConfirm] = useState(false);
@@ -2615,13 +2821,13 @@ function Header({ health, sessions, tmuxSessions, fleet, onScan, scanning, scanP
         clearTimeout(restartTimerRef.current);
         setRestartConfirm(false);
         try {
-          const res = await fetch('/api/restart', { method: 'POST' });
+          const res = await apiFetch('/api/restart', { method: 'POST' });
           if (res.ok) {
             toast('Server restarted — rescanning fleet...', 'success');
             // Trigger a fresh scan after restart
             setTimeout(async () => {
               try {
-                const scanRes = await fetch('/api/sessions/scan', { method: 'POST' });
+                const scanRes = await apiFetch('/api/sessions/scan', { method: 'POST' });
                 const d = await scanRes.json();
                 if (d.ok) toast(`Scan complete: ${(d.sessions||[]).length} sessions`, 'success');
               } catch {}
@@ -2644,13 +2850,31 @@ function Header({ health, sessions, tmuxSessions, fleet, onScan, scanning, scanP
       restartConfirm ? 'Confirm?' : 'Restart',
     ),
 
+    // Security button
+    h('button', {
+      className: 'btn',
+      onClick: onToggleSecurity,
+      title: authStatus && authStatus.enabled ? 'Auth enabled — click to configure' : 'Configure bearer token authentication',
+      style: {
+        background: authStatus && authStatus.enabled ? '#1f3a5f' : '#21262d',
+        border: `1px solid ${authStatus && authStatus.enabled ? '#2d4f7a' : '#30363d'}`, borderRadius: 8,
+        color: authStatus && authStatus.enabled ? '#58a6ff' : '#8b949e',
+        padding: '6px 10px', fontSize: '0.75rem', fontWeight: 600,
+        display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer',
+        transition: 'all 0.15s', whiteSpace: 'nowrap',
+      },
+    },
+      h('span', { className: 'material-icons-round', style: { fontSize: '14px' } }, 'lock'),
+      'Security',
+    ),
+
     // Exit button — stops server and closes window
     h('button', {
       className: 'btn',
       onClick: async () => {
         if (!confirm('Exit claude-manager? This will stop the server.')) return;
         try {
-          await fetch('/api/exit', { method: 'POST' });
+          await apiFetch('/api/exit', { method: 'POST' });
         } catch {}
         window.close();
       },
@@ -3005,6 +3229,20 @@ function App() {
   const [pinnedIds, setPinnedIds]         = useState([]);
   const [archivedIds, setArchivedIds]     = useState(new Set());
   const [showLogs, setShowLogs]           = useState(false);
+  const [authStatus, setAuthStatus]       = useState(null);
+  const [showSecurity, setShowSecurity]   = useState(false);
+
+  // ── Auth config on startup ────────────────────────────────────────────────
+  useEffect(() => {
+    fetch('/api/auth/config').then(r => r.json()).then(data => {
+      setAuthStatus(data);
+      if (data.enabled && !localStorage.getItem('claude-manager-auth-token') && data.loopback) {
+        fetch('/api/auth/token').then(r => r.json()).then(t => {
+          try { if (t.token) localStorage.setItem('claude-manager-auth-token', t.token); } catch {}
+        }).catch(() => {});
+      }
+    }).catch(() => {});
+  }, []);
 
   // Pane stream state: { "machine:session_name": "content string" }
   const [paneStreams, setPaneStreams] = useState({});
@@ -3018,7 +3256,7 @@ function App() {
 
   const fetchHardware = useCallback(async (machine) => {
     try {
-      const res = await fetch('/api/hardware', {
+      const res = await apiFetch('/api/hardware', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ machine }),
@@ -3258,7 +3496,7 @@ function App() {
       .then(d => { setHealth(d); setLastScan(d.last_scan); if (d.local_machine) LOCAL_MACHINE = d.local_machine; })
       .catch(() => {});
 
-    const p2 = fetch('/api/sessions')
+    const p2 = apiFetch('/api/sessions')
       .then(r => r.json())
       .then(data => {
         if (data && typeof data === 'object' && !Array.isArray(data)) {
@@ -3275,17 +3513,17 @@ function App() {
       })
       .catch(() => {});
 
-    const p3 = fetch('/api/fleet')
+    const p3 = apiFetch('/api/fleet')
       .then(r => r.json())
       .then(d => { if (d && typeof d === 'object') setFleet(d); })
       .catch(() => {});
 
-    const p4 = fetch('/api/tmux')
+    const p4 = apiFetch('/api/tmux')
       .then(r => r.json())
       .then(d => { if (Array.isArray(d)) setTmuxSessions(d); })
       .catch(() => {});
 
-    const p5 = fetch('/api/preferences')
+    const p5 = apiFetch('/api/preferences')
       .then(r => r.json())
       .then(d => {
         if (d && typeof d.skip_permissions === 'boolean') setSkipPermissions(d.skip_permissions);
@@ -3301,7 +3539,7 @@ function App() {
   const handleScan = useCallback(async () => {
     setScanning(true);
     try {
-      const res = await fetch('/api/sessions/scan', { method: 'POST' });
+      const res = await apiFetch('/api/sessions/scan', { method: 'POST' });
       const data = await res.json();
       if (data.ok) {
         toast(`Scan complete · ${(data.sessions || []).length} sessions`, 'success');
@@ -3323,7 +3561,7 @@ function App() {
   const handleSkipPermissionsChange = useCallback(async (val) => {
     setSkipPermissions(val);
     try {
-      await fetch('/api/preferences', {
+      await apiFetch('/api/preferences', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ skip_permissions: val }),
@@ -3337,7 +3575,7 @@ function App() {
   const handlePin = useCallback(async (sessionId) => {
     setPinnedIds(prev => prev.includes(sessionId) ? prev : [...prev, sessionId]);
     try {
-      await fetch('/api/sessions/pin', {
+      await apiFetch('/api/sessions/pin', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: sessionId }),
@@ -3350,7 +3588,7 @@ function App() {
   const handleUnpin = useCallback(async (sessionId) => {
     setPinnedIds(prev => prev.filter(id => id !== sessionId));
     try {
-      await fetch('/api/sessions/unpin', {
+      await apiFetch('/api/sessions/unpin', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: sessionId }),
@@ -3364,7 +3602,7 @@ function App() {
   const handleArchive = useCallback(async (sessionId) => {
     setArchivedIds(prev => { if (prev.has(sessionId)) return prev; const next = new Set(prev); next.add(sessionId); return next; });
     try {
-      await fetch('/api/sessions/archive', {
+      await apiFetch('/api/sessions/archive', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: sessionId }),
@@ -3378,7 +3616,7 @@ function App() {
   const handleUnarchive = useCallback(async (sessionId) => {
     setArchivedIds(prev => { const next = new Set(prev); next.delete(sessionId); return next; });
     try {
-      await fetch('/api/sessions/unarchive', {
+      await apiFetch('/api/sessions/unarchive', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: sessionId }),
@@ -3393,7 +3631,7 @@ function App() {
   const handleLaunch = useCallback(async (session) => {
     setLaunchingId(session.session_id);
     try {
-      const res = await fetch('/api/sessions/launch', {
+      const res = await apiFetch('/api/sessions/launch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -3426,7 +3664,7 @@ function App() {
     const mux = (MACHINE_INFO[session.machine] || {}).os === 'Windows' ? 'psmux' : 'tmux';
     setTmuxLaunchingId(session.session_id);
     try {
-      const res = await fetch('/api/sessions/launch', {
+      const res = await apiFetch('/api/sessions/launch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -3458,7 +3696,7 @@ function App() {
   // ── New session in project folder ────────────────────────────────────────
   const handleNewSessionInProject = useCallback(async (machine, cwd) => {
     try {
-      const res = await fetch('/api/sessions/launch', {
+      const res = await apiFetch('/api/sessions/launch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ machine, cwd, mode: 'terminal' }),
@@ -3474,7 +3712,7 @@ function App() {
     const projectFolder = (cwd || '').replace(/\\/g, '/').split('/').filter(Boolean).pop() || 'default';
     const name = `${machine}_${projectFolder}`;
     try {
-      const res = await fetch('/api/tmux/create', {
+      const res = await apiFetch('/api/tmux/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ machine, name, cwd }),
@@ -3520,7 +3758,7 @@ function App() {
     const key = `${session.machine}-${name}`;
     setConnectingId(key);
     try {
-      const res = await fetch('/api/tmux/connect', {
+      const res = await apiFetch('/api/tmux/connect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ machine: session.machine, session_name: name }),
@@ -3559,7 +3797,7 @@ function App() {
     setKillConfirm(prev => { const n = { ...prev }; delete n[key]; return n; });
     setKillingId(key);
     try {
-      const res = await fetch('/api/tmux/kill', {
+      const res = await apiFetch('/api/tmux/kill', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ machine: session.machine, name }),
@@ -3573,7 +3811,7 @@ function App() {
       if (data.ok) {
         toast(`Killed "${name}" on ${session.machine}`, 'success');
         // Server already pushed tmux update via WS, but also fetch as fallback
-        fetch('/api/tmux').then(r => r.json()).then(d => { if (Array.isArray(d)) setTmuxSessions(d); }).catch(() => {});
+        apiFetch('/api/tmux').then(r => r.json()).then(d => { if (Array.isArray(d)) setTmuxSessions(d); }).catch(() => {});
       } else {
         toast(`Kill error on ${session.machine}: ${data.error || 'Unknown'}`, 'error');
       }
@@ -3591,7 +3829,7 @@ function App() {
     const key = `${session.machine}-${name}`;
     setRemoteAttachingId(key);
     try {
-      const res = await fetch('/api/tmux/connect-remote', {
+      const res = await apiFetch('/api/tmux/connect-remote', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ machine: session.machine, session_name: name }),
@@ -3628,6 +3866,8 @@ function App() {
         onSkipPermissionsChange: handleSkipPermissionsChange,
         showLogs,
         onToggleLogs: () => setShowLogs(v => !v),
+        authStatus,
+        onToggleSecurity: () => setShowSecurity(v => !v),
       }),
 
       // Filter bar
@@ -3809,11 +4049,18 @@ function App() {
       fleet,
       onClose: () => setShowModal(false),
       onCreated: () => {
-        fetch('/api/tmux')
+        apiFetch('/api/tmux')
           .then(r => r.json())
           .then(d => { if (Array.isArray(d)) setTmuxSessions(d); })
           .catch(() => {});
       },
+    }),
+
+    // Security modal
+    showSecurity && h(SecurityModal, {
+      authStatus,
+      onClose: () => setShowSecurity(false),
+      onAuthStatusChange: (updated) => setAuthStatus(updated),
     }),
 
     // Toaster

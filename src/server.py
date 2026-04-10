@@ -97,6 +97,118 @@ async def cors_middleware(request: web.Request, handler) -> web.Response:
 
 
 # ---------------------------------------------------------------------------
+# Auth middleware — SSH-key-derived bearer token
+# ---------------------------------------------------------------------------
+
+# Paths exempt from auth (even when enabled). Public metadata + static files only.
+_AUTH_EXEMPT_PATHS = {
+    "/",
+    "/health",
+    "/api/auth/config",
+}
+_AUTH_EXEMPT_PREFIXES = ("/static/",)
+
+
+def _is_auth_exempt(path: str) -> bool:
+    if path in _AUTH_EXEMPT_PATHS:
+        return True
+    return any(path.startswith(p) for p in _AUTH_EXEMPT_PREFIXES)
+
+
+@web.middleware
+async def auth_middleware(request: web.Request, handler) -> web.Response:
+    """Enforce Bearer-token auth on /api/* routes when auth is enabled.
+
+    Rules:
+      - OPTIONS (CORS preflight): always allowed
+      - Exempt paths (/, /health, /api/auth/config, /static/*): always allowed
+      - Loopback clients (127.0.0.1, ::1): always allowed
+      - Everything else: require 'Authorization: Bearer <token>' matching the
+        configured token
+    """
+    from .auth import extract_bearer_token, is_loopback
+
+    if request.method == "OPTIONS":
+        return await handler(request)
+
+    auth_cfg = request.app.get("auth_config")
+    if not auth_cfg or not auth_cfg.enabled:
+        return await handler(request)
+
+    if _is_auth_exempt(request.path):
+        return await handler(request)
+
+    # Loopback bypass — local clients are trusted
+    if is_loopback(request.remote):
+        return await handler(request)
+
+    # WebSocket auth is handled inside handle_ws (first message must be auth)
+    if request.path == "/ws":
+        return await handler(request)
+
+    provided = extract_bearer_token(request.headers.get("Authorization"))
+    if provided != auth_cfg.token:
+        return web.json_response(
+            {"ok": False, "error": "unauthorized — invalid or missing bearer token"},
+            status=401,
+        )
+
+    return await handler(request)
+
+
+# ---------------------------------------------------------------------------
+# Rate limiting — token bucket per (IP, route)
+# ---------------------------------------------------------------------------
+
+# Per-route limits: (max_requests, window_seconds)
+_RATE_LIMITS: dict[str, tuple[int, float]] = {
+    "/api/sessions/launch": (5, 60.0),
+    "/api/tmux/create": (10, 60.0),
+    "/api/tmux/connect": (10, 60.0),
+    "/api/sessions/scan": (4, 60.0),
+    "/api/exit": (2, 300.0),
+    "/api/restart": (3, 60.0),
+}
+
+
+def _rate_limit_check(app: web.Application, remote: str, path: str) -> tuple[bool, int]:
+    """Return (allowed, retry_after_seconds). Uses a sliding window per (remote, path)."""
+    limit = _RATE_LIMITS.get(path)
+    if not limit:
+        return True, 0
+    max_req, window = limit
+    now = time.monotonic()
+    buckets = app.setdefault("rate_buckets", {})
+    key = (remote or "unknown", path)
+    timestamps: list[float] = buckets.setdefault(key, [])
+    # Drop old entries
+    cutoff = now - window
+    while timestamps and timestamps[0] < cutoff:
+        timestamps.pop(0)
+    if len(timestamps) >= max_req:
+        retry = int(window - (now - timestamps[0])) + 1
+        return False, max(1, retry)
+    timestamps.append(now)
+    return True, 0
+
+
+@web.middleware
+async def rate_limit_middleware(request: web.Request, handler) -> web.Response:
+    if request.method == "OPTIONS":
+        return await handler(request)
+    if request.path not in _RATE_LIMITS:
+        return await handler(request)
+    allowed, retry = _rate_limit_check(request.app, request.remote or "", request.path)
+    if not allowed:
+        return web.json_response(
+            {"ok": False, "error": f"rate limit exceeded, retry in {retry}s"},
+            status=429,
+            headers={"Retry-After": str(retry)},
+        )
+    return await handler(request)
+
+
+# ---------------------------------------------------------------------------
 # State helpers
 # ---------------------------------------------------------------------------
 
@@ -282,6 +394,87 @@ async def handle_health(request: web.Request) -> web.Response:
             "version": _VERSION_METADATA,
         }
     )
+
+
+async def handle_auth_config(request: web.Request) -> web.Response:
+    """GET /api/auth/config — return current auth status (no secret leaked).
+
+    Returns: {enabled, key_path, bind, available_keys}
+    """
+    from .auth import list_available_pubkeys, is_loopback
+    auth_cfg = request.app.get("auth_config")
+    available = [str(p) for p in list_available_pubkeys()]
+    return web.json_response({
+        "enabled": bool(auth_cfg and auth_cfg.enabled),
+        "key_path": str(auth_cfg.key_path) if auth_cfg and auth_cfg.key_path else None,
+        "bind": request.app.get("bind", "127.0.0.1"),
+        "available_keys": available,
+        "loopback": is_loopback(request.remote),
+    })
+
+
+async def handle_auth_update(request: web.Request) -> web.Response:
+    """POST /api/auth/update — enable/disable auth, pick key file.
+
+    Restricted to loopback clients (you must be on the server machine).
+    Body: {"enabled": bool, "key_path": "/path/to/id_rsa.pub"}
+    Returns the new auth status. Requires restart to take effect.
+    """
+    from .auth import is_loopback, save_auth_config, compute_token
+    import pathlib as _pl
+
+    if not is_loopback(request.remote):
+        return web.json_response(
+            {"ok": False, "error": "auth config can only be changed from loopback"},
+            status=403,
+        )
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid JSON body"}, status=400)
+
+    enabled = bool(body.get("enabled", False))
+    key_path_str = body.get("key_path") or ""
+    key_path = _pl.Path(key_path_str).expanduser() if key_path_str else None
+
+    if enabled:
+        if not key_path or not key_path.is_file():
+            return web.json_response(
+                {"ok": False, "error": f"key file not found: {key_path}"},
+                status=400,
+            )
+        try:
+            _ = compute_token(key_path)
+        except Exception as exc:
+            return web.json_response(
+                {"ok": False, "error": f"cannot read key: {exc}"},
+                status=400,
+            )
+
+    new_cfg = save_auth_config(enabled, key_path if enabled else None)
+    # Update in-memory config so the change takes effect immediately
+    request.app["auth_config"] = new_cfg
+    log.info("auth: updated enabled=%s key=%s", new_cfg.enabled, new_cfg.key_path)
+    return web.json_response({
+        "ok": True,
+        "enabled": new_cfg.enabled,
+        "key_path": str(new_cfg.key_path) if new_cfg.key_path else None,
+    })
+
+
+async def handle_auth_token(request: web.Request) -> web.Response:
+    """GET /api/auth/token — return the active token (loopback only).
+
+    Desktop app reads this to inject into localStorage. Never exposed off-machine.
+    """
+    from .auth import is_loopback
+    if not is_loopback(request.remote):
+        return web.json_response({"ok": False, "error": "loopback only"}, status=403)
+    auth_cfg = request.app.get("auth_config")
+    if not auth_cfg or not auth_cfg.enabled or not auth_cfg.token:
+        return web.json_response({"ok": True, "enabled": False, "token": None})
+    return web.json_response({"ok": True, "enabled": True, "token": auth_cfg.token})
 
 
 async def handle_sessions_all(request: web.Request) -> web.Response:
@@ -1596,13 +1789,21 @@ async def handle_tmux_capture(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 
 async def handle_ws(request: web.Request) -> web.WebSocketResponse:
+    from .auth import is_loopback
+
     ws = web.WebSocketResponse()
     await ws.prepare(request)
 
     ws._subscribed_channels: set[str] = set()  # type: ignore[attr-defined]
     request.app["state"]["ws_clients"].add(ws)
     client_addr = request.remote or "unknown"
-    log.info("WS connect: %s (total: %d)", client_addr, len(request.app["state"]["ws_clients"]))
+
+    # Auth gate: if enabled and client is NOT loopback, require first message = auth
+    auth_cfg = request.app.get("auth_config")
+    ws_authed = (not auth_cfg) or (not auth_cfg.enabled) or is_loopback(client_addr)
+
+    log.info("WS connect: %s (authed=%s, total: %d)",
+             client_addr, ws_authed, len(request.app["state"]["ws_clients"]))
 
     state = request.app["state"]
 
@@ -1617,6 +1818,21 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
 
                 msg_type = data.get("type")
                 channel = data.get("channel", "")
+
+                # Enforce auth: first non-auth message is rejected if not yet authed
+                if not ws_authed:
+                    if msg_type == "auth":
+                        if data.get("token") == auth_cfg.token:
+                            ws_authed = True
+                            await ws.send_json({"type": "auth_ok"})
+                        else:
+                            await ws.send_json({"type": "auth_error", "message": "invalid token"})
+                            await ws.close()
+                            break
+                        continue
+                    await ws.send_json({"type": "auth_required"})
+                    await ws.close()
+                    break
 
                 if msg_type == "subscribe":
                     ws._subscribed_channels.add(channel)  # type: ignore[attr-defined]
@@ -1703,7 +1919,7 @@ def create_app(
     Static files under src/web/ are served at /.
     All routes are registered here.
     """
-    app = web.Application(middlewares=[cors_middleware])
+    app = web.Application(middlewares=[cors_middleware, rate_limit_middleware, auth_middleware])
 
     # Install in-memory log handler on the claude_manager logger hierarchy
     mem_handler = MemoryLogHandler(max_entries=500)
@@ -1711,6 +1927,15 @@ def create_app(
     cm_logger = logging.getLogger("claude_manager")
     cm_logger.addHandler(mem_handler)
     app["log_handler"] = mem_handler
+
+    # Load auth config from ~/.claude-manager/auth.json
+    from .auth import load_auth_config
+    auth_cfg = load_auth_config()
+    app["auth_config"] = auth_cfg
+    if auth_cfg.enabled:
+        log.info("auth: enabled (key=%s, token=%s…)", auth_cfg.key_path, (auth_cfg.token or "")[:8])
+    else:
+        log.info("auth: disabled (loopback-only bind recommended)")
 
     # Shared state
     app["port"] = port
@@ -1731,6 +1956,9 @@ def create_app(
 
     # REST routes
     app.router.add_get("/health", handle_health)
+    app.router.add_get("/api/auth/config", handle_auth_config)
+    app.router.add_post("/api/auth/update", handle_auth_update)
+    app.router.add_get("/api/auth/token", handle_auth_token)
     app.router.add_get("/api/logs", handle_logs)
     app.router.add_get("/api/sessions", handle_sessions_all)
     app.router.add_get("/api/sessions/{machine}", handle_sessions_machine)

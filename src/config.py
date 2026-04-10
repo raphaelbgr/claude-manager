@@ -3,6 +3,7 @@ Fleet configuration and local machine detection for claude-manager.
 """
 from __future__ import annotations
 
+import pathlib
 import socket
 import os
 
@@ -40,9 +41,19 @@ FLEET_MACHINES: dict[str, dict] = {
 }
 
 DEFAULT_PORT: int = 44740
-DEFAULT_BIND: str = "0.0.0.0"
+# Default to loopback-only for safety. Use --bind 0.0.0.0 to enable LAN access
+# (and always enable auth when binding to a public interface).
+DEFAULT_BIND: str = "127.0.0.1"
 SCAN_INTERVAL: int = 30
 SSH_TIMEOUT: int = 3
+
+# Auth configuration
+AUTH_CONFIG_DIR = pathlib.Path.home() / ".claude-manager"
+AUTH_CONFIG_FILE = AUTH_CONFIG_DIR / "auth.json"
+DEFAULT_PUBKEY_PATHS = [
+    pathlib.Path.home() / ".ssh" / "id_ed25519.pub",
+    pathlib.Path.home() / ".ssh" / "id_rsa.pub",
+]
 
 
 def detect_local_machine() -> str | None:
