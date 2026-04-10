@@ -3794,17 +3794,22 @@ function App() {
   const handleNewTmuxInProject = useCallback(async (machine, cwd) => {
     const muxName = (MACHINE_INFO[machine] || {}).os === 'Windows' ? 'psmux' : 'tmux';
     const projectFolder = (cwd || '').replace(/\\/g, '/').split('/').filter(Boolean).pop() || 'default';
-    const name = `${machine}_${projectFolder}`;
     try {
+      // Send only machine + cwd; backend auto-generates a unique name
+      // (machine_project-session-NN with auto-incrementing suffix).
       const res = await apiFetch('/api/tmux/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ machine, name, cwd }),
+        body: JSON.stringify({ machine, cwd }),
       });
       const data = await res.json();
-      if (data.ok) toast(`${muxName} session created in ${projectFolder}`, 'success');
-      else toast(data.error || 'Failed', 'error');
-    } catch (e) { toast('Network error', 'error'); }
+      if (data.ok) {
+        const created = data.session || `${machine}_${projectFolder}`;
+        toast(`${muxName} created: ${created}`, 'success');
+      } else {
+        toast(data.error || `Failed to create ${muxName} session`, 'error');
+      }
+    } catch (e) { toast(`Network error: ${e.message || e}`, 'error'); }
   }, []);
 
   // ── Collapse / Expand All ────────────────────────────────────────────────

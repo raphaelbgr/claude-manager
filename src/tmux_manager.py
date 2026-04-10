@@ -256,11 +256,15 @@ async def create_tmux_session(
                 _, se = await asyncio.wait_for(p.communicate(), timeout=15)
                 return p.returncode, se.decode().strip()
 
-            # Step 1: Create empty detached session
+            # Step 1: Create empty detached session.
+            # NOTE: psmux returns rc=0 even when the session already exists
+            # (only writes "session 'name' already exists" to stderr). Detect
+            # that case explicitly and return an error so the UI sees it.
             rc, err = await _ssh_run(adapter.mux_create_session(name))
-            if rc != 0 and err:
-                log.error("create_tmux_session(%s, %s): %s", machine, name, err)
-                return {"ok": False, "error": err}
+            err_lower = err.lower() if err else ""
+            if rc != 0 or "already exists" in err_lower or "duplicate" in err_lower:
+                log.error("create_tmux_session(%s, %s): %s", machine, name, err or "(no stderr)")
+                return {"ok": False, "error": err or f"failed to create session '{name}'"}
 
             # Step 2: cd into working directory via send-keys
             if cwd:

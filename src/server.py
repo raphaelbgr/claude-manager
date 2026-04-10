@@ -782,18 +782,36 @@ async def handle_tmux_machine(request: web.Request) -> web.Response:
 
 
 async def handle_tmux_create(request: web.Request) -> web.Response:
-    """Create a new tmux session."""
+    """Create a new tmux session.
+
+    Body: {machine, cwd?, name?, command?}
+    If 'name' is omitted, auto-generates a unique name from cwd using the
+    adapter's generate_mux_session_name (auto-incrementing -session-NN suffix).
+    """
     try:
         body = await request.json()
     except Exception:
         return web.json_response({"ok": False, "error": "invalid JSON body"}, status=400)
     machine = body.get("machine", "")
     name = body.get("name", "")
-    if not machine or not name:
-        return web.json_response({"ok": False, "error": "machine and name required"}, status=400)
+    cwd = body.get("cwd", "")
+    if not machine:
+        return web.json_response({"ok": False, "error": "machine required"}, status=400)
+
+    # Auto-generate a unique name if none provided (or sanitize the provided one)
+    if not name:
+        if not cwd:
+            return web.json_response({"ok": False, "error": "name or cwd required"}, status=400)
+        adapter = get_adapter(machine)
+        import re as _re
+        project = cwd.replace("\\", "/").rstrip("/").split("/")[-1] or "session"
+        project_safe = _re.sub(r"[^a-zA-Z0-9_-]", "-", project) or "session"
+        existing_names = [t.name for t in request.app["state"]["tmux"] if t.machine == machine]
+        name = adapter.generate_mux_session_name(machine, project_safe, existing_names)
+
     # Sanitize: tmux/psmux reject / and \ in session names
     name = name.replace("/", "_").replace("\\", "_")
-    result = await create_tmux_session(machine, name, body.get("cwd"), body.get("command"))
+    result = await create_tmux_session(machine, name, cwd or None, body.get("command"))
     status = 200 if result.get("ok") else 500
     if result.get("ok"):
         log.info("POST /api/tmux/create machine=%s name=%s %d", machine, name, status)
