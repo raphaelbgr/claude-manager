@@ -16,6 +16,12 @@ import urllib.request
 from pathlib import Path
 
 
+# Kept as module-level so ObjC objects survive past the function scope that
+# created them (otherwise the status item would be garbage-collected and
+# silently disappear from the menu bar).
+_mac_tray_state: dict = {}
+
+
 def _server_is_ours(port: int) -> bool:
     """Check if a claude-manager server is already running on the port."""
     try:
@@ -25,6 +31,128 @@ def _server_is_ours(port: int) -> bool:
         return data.get("status") == "ok"
     except Exception:
         return False
+
+
+def _setup_mac_tray(window, base_url: str) -> None:
+    """Install Dock icon + NSStatusBar menu bar item on macOS.
+
+    Runs alongside pywebview on the same NSApplication by dispatching the
+    setup onto the main operation queue. Works before or after webview.start()
+    — the block executes when the runloop processes the main queue.
+    """
+    if sys.platform != "darwin":
+        return
+    try:
+        from AppKit import (
+            NSApplication,
+            NSImage,
+            NSMenu,
+            NSMenuItem,
+            NSStatusBar,
+        )
+        from Foundation import NSObject, NSOperationQueue
+
+        icon_path = Path(__file__).parent.parent / "assets" / "icon.icns"
+        if not icon_path.exists():
+            icon_path = Path(__file__).parent.parent / "assets" / "icon.png"
+        if not icon_path.exists():
+            print(f"macOS tray: icon not found at {icon_path}")
+            return
+        icon_path_str = str(icon_path)
+
+        class TrayDelegate(NSObject):
+            def showWindow_(self, sender):
+                try:
+                    window.show()
+                    NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+                except Exception:
+                    pass
+
+            def hideWindow_(self, sender):
+                try:
+                    window.hide()
+                except Exception:
+                    pass
+
+            def openBrowser_(self, sender):
+                import webbrowser
+                webbrowser.open(base_url)
+
+            def forceScan_(self, sender):
+                try:
+                    req = urllib.request.Request(
+                        f"{base_url}/api/sessions/scan", method="POST"
+                    )
+                    urllib.request.urlopen(req, timeout=10)
+                except Exception:
+                    pass
+
+            def quitApp_(self, sender):
+                try:
+                    req = urllib.request.Request(
+                        f"{base_url}/api/exit", method="POST"
+                    )
+                    urllib.request.urlopen(req, timeout=2)
+                except Exception:
+                    pass
+                os._exit(0)
+
+        def _install():
+            app = NSApplication.sharedApplication()
+
+            dock_img = NSImage.alloc().initWithContentsOfFile_(icon_path_str)
+            if dock_img is not None:
+                app.setApplicationIconImage_(dock_img)
+
+            sb = NSStatusBar.systemStatusBar()
+            # -1.0 is NSVariableStatusItemLength (not exported in PyObjC as a
+            # bare constant in every version; the literal value is stable).
+            status_item = sb.statusItemWithLength_(-1.0)
+
+            tray_img = NSImage.alloc().initWithContentsOfFile_(icon_path_str)
+            if tray_img is not None:
+                tray_img.setSize_((18, 18))
+                # Non-template so our blue-on-dark icon stays recognizable in
+                # both light and dark menu bars. setTemplate_(True) would
+                # mask-coerce it to monochrome.
+                tray_img.setTemplate_(False)
+                button = status_item.button()
+                if button is not None:
+                    button.setImage_(tray_img)
+                    button.setToolTip_("claude-manager")
+
+            delegate = TrayDelegate.alloc().init()
+            menu = NSMenu.alloc().init()
+
+            items = [
+                ("Open Window",        "showWindow:",  "o"),
+                ("Hide Window",        "hideWindow:",  "h"),
+                (None,                 None,           None),
+                ("Open in Browser",    "openBrowser:", ""),
+                ("Force Scan",         "forceScan:",   "r"),
+                (None,                 None,           None),
+                ("Quit claude-manager", "quitApp:",    "q"),
+            ]
+            for label, action, key in items:
+                if label is None:
+                    menu.addItem_(NSMenuItem.separatorItem())
+                    continue
+                mi = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                    label, action, key
+                )
+                mi.setTarget_(delegate)
+                menu.addItem_(mi)
+
+            status_item.setMenu_(menu)
+
+            # Retain so ObjC refcounts don't drop to zero when _install returns.
+            _mac_tray_state["delegate"] = delegate
+            _mac_tray_state["status_item"] = status_item
+            _mac_tray_state["menu"] = menu
+
+        NSOperationQueue.mainQueue().addOperationWithBlock_(_install)
+    except Exception as exc:
+        print(f"macOS tray setup failed: {exc}")
 
 
 def run_desktop(bind: str = "0.0.0.0", port: int = 44740):
@@ -104,6 +232,13 @@ def run_desktop(bind: str = "0.0.0.0", port: int = 44740):
     window = webview.create_window(**window_kwargs)
 
     window.events.closed += lambda: os._exit(0)
+
+    # macOS: install Dock icon + menu bar (NSStatusBar) item alongside the
+    # webview NSApplication. The old "skip tray on darwin" path used pystray,
+    # which can't share pywebview's main thread — this replacement talks to
+    # AppKit directly via PyObjC and dispatches onto the main queue.
+    if sys.platform == "darwin":
+        _setup_mac_tray(window, local_url)
 
     # Inject auth token into localStorage on page load (so the React app
     # can use it for all fetch() and WS calls). The desktop app runs on

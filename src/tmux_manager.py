@@ -91,6 +91,7 @@ async def list_remote_tmux_via_api(machine_name: str, ip: str, dispatch_port: in
                     windows=item.get("windows", 0),
                     attached=item.get("attached", False),
                     is_local=False,
+                    cwd=item.get("cwd", "") or "",
                 ) for item in data]
     except Exception as exc:
         log.warning("list_remote_tmux(%s): api failed: %s", machine_name, exc)
@@ -130,6 +131,25 @@ async def list_remote_tmux(machine_name: str, ssh_alias: str, mux: str) -> list[
         if rc != 0 or not out.strip():
             return []
         parsed = parse_mux_output(out)
+
+    # psmux ignores -F on list-sessions but honors display-message, so the
+    # cwd field is never populated via the list call. Enrich each session
+    # with a single batched SSH call that runs display-message per session.
+    if parsed and mux == "psmux" and any(not p.get("cwd") for p in parsed):
+        names = [p["name"] for p in parsed]
+        # Sentinel between outputs so we can re-split reliably even if a
+        # path contains unusual characters. display-message prints the path
+        # followed by a newline, so the sentinel ends up on its own line.
+        sentinel = "__PSMUX_CWD_END__"
+        parts = [
+            f"psmux display-message -p -t {shlex.quote(n)} '#{{pane_current_path}}'; echo {sentinel}"
+            for n in names
+        ]
+        rc2, out2 = await _run_remote("; ".join(parts))
+        if rc2 == 0 and out2:
+            chunks = out2.split(sentinel)
+            for sess, chunk in zip(parsed, chunks):
+                sess["cwd"] = chunk.strip().splitlines()[-1].strip() if chunk.strip() else ""
 
     sessions = _dicts_to_sessions(parsed, machine_name, is_local=False)
     log.info("list_remote_tmux(%s): %d sessions", machine_name, len(sessions))

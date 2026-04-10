@@ -685,8 +685,62 @@ async def handle_sessions_launch(request: web.Request) -> web.Response:
     mode = body.get("mode", "terminal")
     t0 = time.monotonic()
 
-    # New session (no session_id): cd to cwd and start a fresh claude
-    if not session_id:
+    # mode='tmux' runs the create-session + auto-claude + attach path for
+    # BOTH existing Claude sessions (session_id set → claude --resume <id>)
+    # and brand-new sessions (session_id empty → plain claude). The same
+    # function handles "Tmux launch" from a session row AND "New <mux> in
+    # project" from a project row — no duplicate code paths.
+    if mode == "tmux":
+        import re
+        local_machine = request.app["local_machine"]
+        if not machine:
+            machine = local_machine
+        adapter = get_adapter(machine)
+        is_remote_windows = (machine != local_machine and adapter.mux_type == "psmux")
+
+        # Build the command that gets typed into the pane after cd. When
+        # session_id is set we resume; otherwise we just run `claude` (fresh
+        # conversation). build_session_command already chains cd && claude.
+        if session_id:
+            claude_cmd = adapter.build_session_command(cwd, session_id, skip)
+        else:
+            cd = adapter.cd_command(cwd)
+            fresh = "claude --dangerously-skip-permissions" if skip else "claude"
+            claude_cmd = adapter.chain_commands(cd, fresh)
+
+        project = cwd.replace("\\", "/").rstrip("/").split("/")[-1] if cwd else "claude"
+        project_safe = re.sub(r"[^a-zA-Z0-9_-]", "-", project) or "claude"
+        existing_names = [t.name for t in request.app["state"]["tmux"] if t.machine == machine]
+        safe_name = adapter.generate_mux_session_name(machine, project_safe, existing_names)
+
+        if is_remote_windows:
+            # Windows: server creates psmux session + sends cd+claude via send-keys.
+            # Then open terminal: SSH -t powershell → psmux attach.
+            from .tmux_manager import create_tmux_session
+            create_result = await create_tmux_session(machine, safe_name, cwd=cwd, command=claude_cmd)
+            if not create_result.get("ok"):
+                result = create_result
+            else:
+                # Open terminal: SSH lands directly in PowerShell (fleet-wide
+                # default, see global CLAUDE.md Windows SSH Shell Policy).
+                # No need for an intermediate 'powershell' step — just SSH
+                # then psmux attach.
+                from .launcher import _launch_macos_multi
+                info = FLEET_MACHINES.get(machine, {})
+                alias = info.get("ssh_alias", machine)
+                attach_cmd = adapter.mux_attach(safe_name)
+                result = await _launch_macos_multi(
+                    [
+                        f"ssh {alias}",    # SSH into Windows → PowerShell
+                        attach_cmd,         # psmux attach -t session-name
+                    ],
+                    delays=[0, 2],
+                )
+        else:
+            # tmux on macOS/Linux: create session + attach works perfectly
+            result = await launch_new_tmux_and_attach(safe_name, machine, cwd=cwd, command=claude_cmd)
+    elif not session_id:
+        # Terminal-mode new session (no tmux): cd to cwd and start a fresh claude
         local_machine = request.app["local_machine"]
         if not machine:
             machine = local_machine
@@ -715,49 +769,6 @@ async def handle_sessions_launch(request: web.Request) -> web.Response:
         status = 200 if result.get("ok") else 500
         log.info("POST /api/sessions/launch NEW machine=%s %d", machine, status)
         return web.json_response(result, status=status)
-
-    if mode == "tmux":
-        import re
-        adapter = get_adapter(machine)
-        local_machine = request.app["local_machine"]
-        is_remote_windows = (machine != local_machine and adapter.mux_type == "psmux")
-
-        if is_remote_windows:
-            # Windows: server creates psmux session + sends cd+claude via send-keys.
-            # Then open terminal: SSH -t powershell → psmux attach.
-            project = cwd.replace("\\", "/").rstrip("/").split("/")[-1] if cwd else "claude"
-            project_safe = re.sub(r"[^a-zA-Z0-9_-]", "-", project) or "claude"
-            existing_names = [t.name for t in request.app["state"]["tmux"] if t.machine == machine]
-            safe_name = adapter.generate_mux_session_name(machine, project_safe, existing_names)
-            claude_cmd = adapter.build_session_command(cwd, session_id, skip)
-            from .tmux_manager import create_tmux_session
-            create_result = await create_tmux_session(machine, safe_name, cwd=cwd, command=claude_cmd)
-            if not create_result.get("ok"):
-                result = create_result
-            else:
-                # Open terminal: SSH lands directly in PowerShell (fleet-wide
-                # default, see global CLAUDE.md Windows SSH Shell Policy).
-                # No need for an intermediate 'powershell' step — just SSH
-                # then psmux attach.
-                from .launcher import _launch_macos_multi
-                info = FLEET_MACHINES.get(machine, {})
-                alias = info.get("ssh_alias", machine)
-                attach_cmd = adapter.mux_attach(safe_name)
-                result = await _launch_macos_multi(
-                    [
-                        f"ssh {alias}",    # SSH into Windows → PowerShell
-                        attach_cmd,         # psmux attach -t session-name
-                    ],
-                    delays=[0, 2],
-                )
-        else:
-            # tmux on macOS/Linux: create session + attach works perfectly
-            project = cwd.replace("\\", "/").rstrip("/").split("/")[-1] if cwd else "claude"
-            project_safe = re.sub(r"[^a-zA-Z0-9_-]", "-", project) or "claude"
-            existing_names = [t.name for t in request.app["state"]["tmux"] if t.machine == machine]
-            safe_name = adapter.generate_mux_session_name(machine, project_safe, existing_names)
-            claude_cmd = adapter.build_session_command(cwd, session_id, skip)
-            result = await launch_new_tmux_and_attach(safe_name, machine, cwd=cwd, command=claude_cmd)
     else:
         result = await launch_claude_session(cwd, session_id, machine, skip_permissions=skip)
     status = 200 if result.get("ok") else 500
@@ -843,16 +854,23 @@ async def handle_tmux_create(request: web.Request) -> web.Response:
 
 
 async def handle_tmux_connect(request: web.Request) -> web.Response:
-    """Connect to an existing tmux session (opens terminal)."""
+    """Connect to an existing tmux session (opens terminal).
+
+    Before attaching, launch_tmux_attach probes the pane and auto-starts
+    `claude` if the session is idle at a shell prompt — so 'Attach' always
+    lands inside a running claude, even for legacy sessions that were
+    created without one.
+    """
     try:
         body = await request.json()
     except Exception:
         return web.json_response({"ok": False, "error": "invalid JSON body"}, status=400)
     machine = body.get("machine", "")
     session_name = body.get("session_name", "")
+    skip_permissions = bool(body.get("skip_permissions", False))
     if not machine or not session_name:
         return web.json_response({"ok": False, "error": "machine and session_name required"}, status=400)
-    result = await launch_tmux_attach(session_name, machine)
+    result = await launch_tmux_attach(session_name, machine, skip_permissions=skip_permissions)
     status = 200 if result.get("ok") else 500
     if result.get("ok"):
         log.info("POST /api/tmux/connect machine=%s session=%s %d", machine, session_name, status)

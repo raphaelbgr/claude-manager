@@ -241,13 +241,108 @@ async def launch_claude_session(cwd: str, session_id: str, machine: str, skip_pe
     return await launch_terminal(cmd)
 
 
-async def launch_tmux_attach(session_name: str, machine: str) -> dict:
+_SHELL_PROMPT_RE = __import__("re").compile(
+    r"(?:"
+    r"[A-Z]:\\[^\n]*>\s*$"      # cmd.exe:    C:\Users\x>
+    r"|PS\s+[A-Z]:\\[^\n]*>\s*$"  # PowerShell: PS C:\Users\x>
+    r"|[^\n]*[\$#]\s*$"          # bash/zsh:   user@host$  or #
+    r")"
+)
+
+
+def _looks_like_shell_prompt(pane_text: str) -> bool:
+    """True if the captured pane ends at what appears to be an idle shell
+    prompt (not inside claude). Conservative: on any uncertainty, returns
+    False so we don't inject stray text into a running claude."""
+    if not pane_text:
+        return False
+    # If we see claude's TUI frame characters or greeting, it's running.
+    for marker in ("Welcome to Claude", "Claude Code", "╭", "╰", "│ >"):
+        if marker in pane_text:
+            return False
+    lines = [ln.rstrip() for ln in pane_text.splitlines() if ln.strip()]
+    if not lines:
+        return False
+    last = lines[-1]
+    return bool(_SHELL_PROMPT_RE.search(last))
+
+
+async def _ensure_claude_running(machine: str, session_name: str, skip_permissions: bool = False) -> None:
+    """If the existing session is sitting at an idle shell prompt, type
+    `claude` into it via mux send-keys before we attach. This recovers
+    legacy/empty sessions so 'Attach' actually lands you inside claude
+    instead of a bare cmd.exe / bash prompt.
+    """
+    from .tmux_manager import capture_pane  # local import to avoid cycle
+    try:
+        pane = await capture_pane(machine, session_name, lines=15)
+    except Exception as exc:
+        log.warning("ensure_claude: capture_pane(%s, %s) failed: %s", machine, session_name, exc)
+        return
+    if not _looks_like_shell_prompt(pane):
+        return
+
+    adapter = get_adapter(machine)
+    claude_cmd = "claude --dangerously-skip-permissions" if skip_permissions else "claude"
+    send_keys = adapter.mux_send_keys(session_name, claude_cmd)
+
+    local_machine = detect_local_machine()
+    if machine == local_machine:
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                send_keys,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await asyncio.wait_for(proc.communicate(), timeout=5)
+        except Exception as exc:
+            log.warning("ensure_claude: local send-keys failed: %s", exc)
+        return
+
+    info = FLEET_MACHINES.get(machine, {})
+    alias = info.get("ssh_alias", machine)
+    ssh_args = [
+        "ssh",
+        "-o", f"ConnectTimeout={SSH_TIMEOUT}",
+        "-o", "BatchMode=yes",
+        "-o", "StrictHostKeyChecking=no",
+        alias,
+        _ssh_path_prefix(machine) + send_keys,
+    ]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *ssh_args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+        if proc.returncode != 0:
+            log.warning(
+                "ensure_claude: remote send-keys failed on %s: %s",
+                machine, stderr.decode(errors="replace").strip(),
+            )
+        else:
+            log.info("ensure_claude: sent `claude` to %s/%s", machine, session_name)
+            # Give claude a moment to spawn before we attach, so the TUI is
+            # already drawing when the user's terminal connects.
+            await asyncio.sleep(0.8)
+    except Exception as exc:
+        log.warning("ensure_claude: remote send-keys exception: %s", exc)
+
+
+async def launch_tmux_attach(session_name: str, machine: str, skip_permissions: bool = False) -> dict:
     """
     Open a terminal and attach to an existing tmux/psmux session.
 
+    If the target session is sitting at a bare shell prompt (legacy session
+    created without claude, or claude crashed/quit), type `claude` into it
+    via send-keys first so the attach lands inside a running claude.
+
     Args:
-        session_name: Name of the tmux session to attach to.
-        machine:      Machine name (key in FLEET_MACHINES).
+        session_name:     Name of the tmux session to attach to.
+        machine:          Machine name (key in FLEET_MACHINES).
+        skip_permissions: Pass --dangerously-skip-permissions when we need
+                          to start claude in the session.
 
     Returns:
         {"ok": True} or {"ok": False, "error": str}.
@@ -257,25 +352,35 @@ async def launch_tmux_attach(session_name: str, machine: str) -> dict:
     alias = info.get("ssh_alias", machine)
     adapter = get_adapter(machine)
 
-    if machine == local_machine:
-        cmd = adapter.mux_attach(session_name)
-    elif adapter.mux_type == "psmux":
-        # psmux attach over SSH -t fails with "Incorrect function (os error 1)".
-        # This is a known psmux limitation — it can't handle PTY from SSH -t.
-        #
-        # Workaround: SSH into the machine with a remote command that runs
-        # bash interactively and immediately executes the attach.
-        # The --rcfile trick sources .bashrc then runs our command.
-        attach = adapter.mux_attach(session_name)
-        # psmux can't forward PTY from SSH. The session IS running (created
-        # via send-keys). SSH in and show the user how to attach manually.
-        cmd = f"ssh {shlex.quote(alias)}"
-    else:
-        # tmux: SSH -t with direct attach works
-        attach_cmd = _ssh_path_prefix(machine) + adapter.mux_attach(session_name)
-        cmd = f"ssh {shlex.quote(alias)} -t {shlex.quote(attach_cmd)}"
+    # Pre-attach probe: if no claude is running inside the session, start one.
+    await _ensure_claude_running(machine, session_name, skip_permissions=skip_permissions)
 
-    return await launch_terminal(cmd)
+    if machine == local_machine:
+        return await launch_terminal(adapter.mux_attach(session_name))
+
+    if adapter.mux_type == "psmux":
+        # psmux attach over SSH -t fails with "Incorrect function (os error 1)"
+        # because psmux can't forward its PTY through a single SSH remote
+        # command. Mirror the strategy handle_sessions_launch uses for fresh
+        # Windows sessions: open a terminal, SSH in (lands in PowerShell),
+        # wait for the login shell to be ready, then type `psmux attach -t`.
+        attach_cmd = adapter.mux_attach(session_name)
+        if sys.platform == "darwin":
+            return await _launch_macos_multi(
+                [f"ssh {alias}", attach_cmd],
+                delays=[0, 2],
+            )
+        # Non-mac orchestrator fallback: open a terminal running SSH, then
+        # let the user press Enter on the attach command we've pre-typed.
+        return await launch_terminal(
+            f"ssh {shlex.quote(alias)} -t {shlex.quote(attach_cmd)}"
+        )
+
+    # tmux: SSH -t with direct attach works
+    attach_cmd = _ssh_path_prefix(machine) + adapter.mux_attach(session_name)
+    return await launch_terminal(
+        f"ssh {shlex.quote(alias)} -t {shlex.quote(attach_cmd)}"
+    )
 
 
 
