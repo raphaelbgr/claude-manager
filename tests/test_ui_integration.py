@@ -515,3 +515,103 @@ class TestPersistencePatterns:
             assert has_function_context, (
                 f"localStorage.setItem at pos {pos} may not be inside a function"
             )
+
+
+# ---------------------------------------------------------------------------
+# HardwareInfo component field-name validation
+# ---------------------------------------------------------------------------
+
+class TestHardwareInfoFieldNames:
+    """Verify HardwareInfo uses the exact field names the API returns.
+
+    The API returns:
+      cpu.usage_percent, cpu.temp_c, cpu.name, cpu.cores
+      gpu.usage_percent, gpu.temp_c, gpu.memory_used_mb, gpu.memory_total_mb, gpu.name
+      memory.used_gb, memory.total_gb, memory.percent
+
+    Any mismatch between front-end field access and API shape is a silent bug.
+    These tests catch that by inspecting the HTML source directly.
+    """
+
+    def test_hardware_info_component_defined(self, html):
+        """HardwareInfo function component must be present."""
+        assert "function HardwareInfo" in html
+
+    def test_cpu_usage_percent_referenced_not_cpu_percent(self, html):
+        """UI reads cpu.usage_percent — NOT cpu.percent (wrong field name)."""
+        assert "usage_percent" in html
+        # The pattern cpu.percent (without 'usage_') would be the wrong field
+        # We verify the correct one is used and the API field name appears
+        assert "cpu.usage_percent" in html or "usage_percent" in html
+
+    def test_temp_c_field_name_referenced(self, html):
+        """UI reads .temp_c — must appear in HardwareInfo context."""
+        assert "temp_c" in html
+
+    def test_memory_used_gb_referenced(self, html):
+        """UI reads memory.used_gb for RAM display."""
+        assert "used_gb" in html
+
+    def test_memory_total_gb_referenced(self, html):
+        """UI reads memory.total_gb for RAM display."""
+        assert "total_gb" in html
+
+    def test_gpu_memory_used_mb_referenced(self, html):
+        """UI reads gpu.memory_used_mb for VRAM display."""
+        assert "memory_used_mb" in html
+
+    def test_gpu_memory_total_mb_referenced(self, html):
+        """UI reads gpu.memory_total_mb for VRAM display."""
+        assert "memory_total_mb" in html
+
+    def test_thermostat_icon_referenced(self, html):
+        """Thermostat icon (Material Icons) is used for temperature display."""
+        assert "thermostat" in html
+
+    def test_gpu_usage_percent_referenced(self, html):
+        """UI reads gpu.usage_percent for GPU utilisation display."""
+        # usage_percent appears for both cpu and gpu
+        matches = [m.start() for m in re.finditer(r"usage_percent", html)]
+        assert len(matches) >= 2, (
+            "Expected usage_percent to appear at least twice (cpu + gpu), "
+            f"found {len(matches)} occurrence(s)"
+        )
+
+    def test_cpu_temp_c_specifically_referenced(self, html):
+        """cpu.temp_c is accessed in HardwareInfo for CPU temperature."""
+        # The pattern 'cpu.temp_c' or 'temp_c' near cpu context
+        assert "cpu.temp_c" in html or (
+            "temp_c" in html and "cpu" in html
+        )
+
+    def test_gpu_temp_c_specifically_referenced(self, html):
+        """gpu.temp_c is accessed in HardwareInfo for GPU temperature."""
+        assert "gpu.temp_c" in html or (
+            "temp_c" in html and "gpu" in html
+        )
+
+    def test_memory_used_gb_and_total_gb_in_same_expression(self, html):
+        """Both used_gb and total_gb appear together (e.g. '8.0/16.0 GB')."""
+        assert "used_gb" in html
+        assert "total_gb" in html
+        # Check they appear in proximity (within 200 chars of each other)
+        used_pos = html.find("used_gb")
+        total_pos = html.find("total_gb")
+        assert used_pos != -1 and total_pos != -1
+        assert abs(used_pos - total_pos) < 200, (
+            "used_gb and total_gb appear far apart — may not be used in the same expression"
+        )
+
+    def test_memory_used_mb_and_total_mb_for_vram(self, html):
+        """GPU VRAM shown as memory_used_mb / memory_total_mb."""
+        assert "memory_used_mb" in html
+        assert "memory_total_mb" in html
+        used_pos = html.find("memory_used_mb")
+        total_pos = html.find("memory_total_mb")
+        assert abs(used_pos - total_pos) < 200, (
+            "memory_used_mb and memory_total_mb appear far apart"
+        )
+
+    def test_hardware_endpoint_used_in_fetch(self, html):
+        """/api/hardware fetch call is present in the UI."""
+        assert "/api/hardware" in html

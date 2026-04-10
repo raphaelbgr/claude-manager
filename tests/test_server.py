@@ -1549,3 +1549,287 @@ class TestGetLocalDrive:
             assert isinstance(result, str)
         except Exception as exc:
             pytest.fail(f"_get_local_drive raised unexpectedly: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# _get_local_hardware() unit tests
+# ---------------------------------------------------------------------------
+
+class TestGetLocalHardware:
+    """Unit tests for _get_local_hardware() in server.py.
+
+    All psutil and subprocess calls are mocked so no real hardware polling
+    occurs.
+    """
+
+    def _make_named_tuple_entry(self, current: float):
+        """Return a minimal object mimicking a psutil temperature entry."""
+        from collections import namedtuple
+        Entry = namedtuple("shwtemp", ["label", "current", "high", "critical"])
+        return Entry(label="", current=current, high=None, critical=None)
+
+    def _patch_psutil(self, monkeypatch, mock_vm, cpu_count=8, cpu_percent=12.5,
+                      sensors_return=None, sensors_raise=None):
+        """
+        Patch the psutil module attributes used by _get_local_hardware.
+
+        sensors_temperatures may not exist on macOS so we always use create=True.
+        sensors_return: dict to return from sensors_temperatures (default: {})
+        sensors_raise: exception to raise from sensors_temperatures (overrides sensors_return)
+        """
+        import psutil as _psutil
+
+        monkeypatch.setattr(_psutil, "cpu_count", lambda logical=True: cpu_count)
+        monkeypatch.setattr(_psutil, "cpu_percent", lambda interval=None: cpu_percent)
+        monkeypatch.setattr(_psutil, "virtual_memory", lambda: mock_vm)
+
+        if sensors_raise is not None:
+            monkeypatch.setattr(_psutil, "sensors_temperatures",
+                                lambda: (_ for _ in ()).throw(sensors_raise),
+                                raising=False)
+        else:
+            ret = sensors_return if sensors_return is not None else {}
+            monkeypatch.setattr(_psutil, "sensors_temperatures",
+                                lambda: ret,
+                                raising=False)
+
+    def _make_vm(self, total_gb=16, used_gb=8, percent=50.0):
+        m = MagicMock()
+        m.total = int(total_gb * 10**9)
+        m.used = int(used_gb * 10**9)
+        m.percent = percent
+        return m
+
+    def test_returns_ok_true_with_all_fields(self, monkeypatch):
+        """Happy-path: returns ok=True with cpu, gpus, memory keys."""
+        import src.server as _srv
+        import platform as _platform
+
+        monkeypatch.setattr(_platform, "system", lambda: "Linux")
+        monkeypatch.setattr(_platform, "processor", lambda: "Intel Core i7")
+
+        self._patch_psutil(monkeypatch, self._make_vm())
+        with patch("src.server.subprocess.check_output", side_effect=FileNotFoundError):
+            result = _srv._get_local_hardware()
+
+        assert result["ok"] is True
+        assert "cpu" in result
+        assert "gpus" in result
+        assert "memory" in result
+
+    def test_cpu_name_darwin_via_sysctl(self, monkeypatch):
+        """On Darwin, CPU name is fetched via sysctl."""
+        import src.server as _srv
+        import platform as _platform
+
+        monkeypatch.setattr(_platform, "system", lambda: "Darwin")
+        self._patch_psutil(monkeypatch, self._make_vm(), cpu_count=12, cpu_percent=5.0)
+
+        def fake_check_output(cmd, *args, **kwargs):
+            if cmd[0] == "sysctl":
+                return "Apple M4 Pro\n"
+            raise FileNotFoundError
+
+        with patch("src.server.subprocess.check_output", side_effect=fake_check_output):
+            result = _srv._get_local_hardware()
+
+        assert result["cpu"]["name"] == "Apple M4 Pro"
+
+    def test_cpu_name_fallback_to_platform_processor(self, monkeypatch):
+        """When sysctl fails (non-Darwin or exception), falls back to platform.processor()."""
+        import src.server as _srv
+        import platform as _platform
+
+        monkeypatch.setattr(_platform, "system", lambda: "Linux")
+        monkeypatch.setattr(_platform, "processor", lambda: "AMD Ryzen 7 5700G")
+
+        self._patch_psutil(monkeypatch, self._make_vm(), cpu_count=8, cpu_percent=3.0)
+        with patch("src.server.subprocess.check_output", side_effect=FileNotFoundError):
+            result = _srv._get_local_hardware()
+
+        assert result["cpu"]["name"] == "AMD Ryzen 7 5700G"
+
+    def test_cpu_temp_from_coretemp(self, monkeypatch):
+        """CPU temperature is read from sensors_temperatures using 'coretemp' key."""
+        import src.server as _srv
+        import platform as _platform
+
+        monkeypatch.setattr(_platform, "system", lambda: "Linux")
+        monkeypatch.setattr(_platform, "processor", lambda: "Intel Core i5")
+
+        entry = self._make_named_tuple_entry(current=72.0)
+        fake_temps = {"coretemp": [entry]}
+
+        self._patch_psutil(monkeypatch, self._make_vm(), cpu_count=4, cpu_percent=20.0,
+                           sensors_return=fake_temps)
+        with patch("src.server.subprocess.check_output", side_effect=FileNotFoundError):
+            result = _srv._get_local_hardware()
+
+        assert result["cpu"]["temp_c"] == 72.0
+
+    def test_cpu_temp_none_when_sensors_temperatures_raises(self, monkeypatch):
+        """temp_c is None when sensors_temperatures raises AttributeError."""
+        import src.server as _srv
+        import platform as _platform
+
+        monkeypatch.setattr(_platform, "system", lambda: "Linux")
+        monkeypatch.setattr(_platform, "processor", lambda: "Intel")
+
+        # Raise exception via the lambda approach that avoids generator tricks
+        import psutil as _psutil
+        monkeypatch.setattr(_psutil, "sensors_temperatures",
+                            MagicMock(side_effect=AttributeError("not supported")),
+                            raising=False)
+        monkeypatch.setattr(_psutil, "cpu_count", lambda logical=True: 4)
+        monkeypatch.setattr(_psutil, "cpu_percent", lambda interval=None: 10.0)
+        monkeypatch.setattr(_psutil, "virtual_memory", lambda: self._make_vm())
+
+        with patch("src.server.subprocess.check_output", side_effect=FileNotFoundError):
+            result = _srv._get_local_hardware()
+
+        assert result["cpu"]["temp_c"] is None
+
+    def test_gpu_detection_via_nvidia_smi(self, monkeypatch):
+        """GPUs are parsed from nvidia-smi CSV output."""
+        import src.server as _srv
+        import platform as _platform
+
+        monkeypatch.setattr(_platform, "system", lambda: "Linux")
+        monkeypatch.setattr(_platform, "processor", lambda: "Intel")
+
+        nvidia_output = "NVIDIA GeForce RTX 3080 Ti, 55, 42, 3500 MiB, 12288 MiB"
+
+        def fake_check_output(cmd, *args, **kwargs):
+            if "nvidia-smi" in cmd[0]:
+                return nvidia_output
+            raise FileNotFoundError
+
+        self._patch_psutil(monkeypatch, self._make_vm(total_gb=32, used_gb=10, percent=31.2),
+                           cpu_count=8, cpu_percent=15.0)
+        with patch("src.server.subprocess.check_output", side_effect=fake_check_output):
+            result = _srv._get_local_hardware()
+
+        assert len(result["gpus"]) == 1
+        gpu = result["gpus"][0]
+        assert gpu["name"] == "NVIDIA GeForce RTX 3080 Ti"
+        assert gpu["temp_c"] == 55.0
+        assert gpu["usage_percent"] == 42.0
+        assert gpu["memory_used_mb"] == 3500.0
+        assert gpu["memory_total_mb"] == 12288.0
+
+    def test_gpu_detection_macos_system_profiler_fallback(self, monkeypatch):
+        """On macOS, falls back to system_profiler when nvidia-smi fails."""
+        import src.server as _srv
+        import platform as _platform
+
+        monkeypatch.setattr(_platform, "system", lambda: "Darwin")
+        self._patch_psutil(monkeypatch, self._make_vm(), cpu_count=10, cpu_percent=5.0)
+
+        sp_json = json.dumps({
+            "SPDisplaysDataType": [
+                {"sppci_model": "Apple M4 GPU", "_name": "M4 GPU"}
+            ]
+        })
+
+        def fake_check_output(cmd, *args, **kwargs):
+            if cmd[0] == "sysctl":
+                return "Apple M4\n"
+            if "nvidia-smi" in str(cmd):
+                raise FileNotFoundError
+            if "system_profiler" in str(cmd):
+                return sp_json
+            raise FileNotFoundError
+
+        with patch("src.server.subprocess.check_output", side_effect=fake_check_output):
+            result = _srv._get_local_hardware()
+
+        assert len(result["gpus"]) == 1
+        assert result["gpus"][0]["name"] == "Apple M4 GPU"
+        assert result["gpus"][0]["temp_c"] is None
+        assert result["gpus"][0]["usage_percent"] is None
+
+    def test_no_gpus_when_nvidia_smi_and_system_profiler_fail(self, monkeypatch):
+        """gpus list is empty when both nvidia-smi and system_profiler fail."""
+        import src.server as _srv
+        import platform as _platform
+
+        monkeypatch.setattr(_platform, "system", lambda: "Linux")
+        monkeypatch.setattr(_platform, "processor", lambda: "AMD")
+
+        self._patch_psutil(monkeypatch, self._make_vm(total_gb=8, used_gb=3, percent=37.5),
+                           cpu_count=16, cpu_percent=8.0)
+        with patch("src.server.subprocess.check_output", side_effect=FileNotFoundError):
+            result = _srv._get_local_hardware()
+
+        assert result["gpus"] == []
+
+    def test_memory_fields_returned(self, monkeypatch):
+        """Memory dict has total_gb, used_gb, percent all derived from psutil."""
+        import src.server as _srv
+        import platform as _platform
+
+        monkeypatch.setattr(_platform, "system", lambda: "Linux")
+        monkeypatch.setattr(_platform, "processor", lambda: "Intel")
+
+        mock_vm = MagicMock()
+        mock_vm.total = 32_000_000_000
+        mock_vm.used = 14_200_000_000
+        mock_vm.percent = 44.3
+
+        self._patch_psutil(monkeypatch, mock_vm, cpu_count=8, cpu_percent=10.0)
+        with patch("src.server.subprocess.check_output", side_effect=FileNotFoundError):
+            result = _srv._get_local_hardware()
+
+        mem = result["memory"]
+        assert "total_gb" in mem
+        assert "used_gb" in mem
+        assert "percent" in mem
+        assert mem["total_gb"] == round(32_000_000_000 / 1e9, 1)
+        assert mem["used_gb"] == round(14_200_000_000 / 1e9, 1)
+        assert mem["percent"] == 44.3
+
+    def test_cpu_usage_percent_is_float(self, monkeypatch):
+        """cpu.usage_percent must be a float (not int or None)."""
+        import src.server as _srv
+        import platform as _platform
+
+        monkeypatch.setattr(_platform, "system", lambda: "Linux")
+        monkeypatch.setattr(_platform, "processor", lambda: "Intel")
+
+        self._patch_psutil(monkeypatch, self._make_vm(), cpu_count=4, cpu_percent=33.3)
+        with patch("src.server.subprocess.check_output", side_effect=FileNotFoundError):
+            result = _srv._get_local_hardware()
+
+        assert isinstance(result["cpu"]["usage_percent"], float)
+
+    def test_cpu_cores_returned(self, monkeypatch):
+        """cpu.cores matches psutil.cpu_count logical value."""
+        import src.server as _srv
+        import platform as _platform
+
+        monkeypatch.setattr(_platform, "system", lambda: "Linux")
+        monkeypatch.setattr(_platform, "processor", lambda: "Intel")
+
+        self._patch_psutil(monkeypatch, self._make_vm(), cpu_count=16, cpu_percent=5.0)
+        with patch("src.server.subprocess.check_output", side_effect=FileNotFoundError):
+            result = _srv._get_local_hardware()
+
+        assert result["cpu"]["cores"] == 16
+
+    def test_cpu_temp_uses_first_available_key_when_no_known_key(self, monkeypatch):
+        """When none of the known temp keys exist, first available entry is used."""
+        import src.server as _srv
+        import platform as _platform
+
+        monkeypatch.setattr(_platform, "system", lambda: "Linux")
+        monkeypatch.setattr(_platform, "processor", lambda: "ARM")
+
+        entry = self._make_named_tuple_entry(current=65.0)
+        fake_temps = {"acpitz": [entry]}  # not in the known-key list
+
+        self._patch_psutil(monkeypatch, self._make_vm(), cpu_count=4, cpu_percent=20.0,
+                           sensors_return=fake_temps)
+        with patch("src.server.subprocess.check_output", side_effect=FileNotFoundError):
+            result = _srv._get_local_hardware()
+
+        assert result["cpu"]["temp_c"] == 65.0

@@ -960,3 +960,269 @@ class TestTmuxConnectRemote:
                     json={"machine": "mac-mini", "session_name": "my-sess"},
                 )
         assert resp.status == 500
+
+
+# ---------------------------------------------------------------------------
+# POST /api/hardware — response structure validation
+# ---------------------------------------------------------------------------
+
+class TestHardwareResponseStructure:
+    """Verify /api/hardware returns the exact shape the frontend expects.
+
+    The response must have ok, cpu, gpus, memory at the top level (NOT wrapped
+    in a 'hardware' key), and each sub-object must contain the fields that
+    HardwareInfo in index.html reads.
+    """
+
+    def _mock_hw(self, **overrides) -> dict:
+        base = {
+            "ok": True,
+            "cpu": {
+                "name": "Intel Core i9-14900K",
+                "cores": 24,
+                "usage_percent": 18.5,
+                "temp_c": 62.0,
+            },
+            "gpus": [
+                {
+                    "name": "NVIDIA GeForce RTX 3080 Ti",
+                    "temp_c": 58.0,
+                    "usage_percent": 35.0,
+                    "memory_used_mb": 4096.0,
+                    "memory_total_mb": 12288.0,
+                }
+            ],
+            "memory": {
+                "total_gb": 64.0,
+                "used_gb": 24.5,
+                "percent": 38.3,
+            },
+        }
+        base.update(overrides)
+        return base
+
+    def _clear_hw_cache(self):
+        """Clear the server-level hardware cache to avoid inter-test pollution."""
+        import src.server as _srv
+        _srv._hw_cache.clear()
+
+    def setup_method(self, method):
+        """Clear the hardware cache before every test to prevent cache pollution."""
+        self._clear_hw_cache()
+
+    @pytest.mark.asyncio
+    async def test_response_has_ok_at_top_level(self, tmp_path):
+        """ok key is at top level, not nested under 'hardware'."""
+        with patch("src.server._get_local_hardware", return_value=self._mock_hw()):
+            async with make_client(tmp_path) as client:
+                resp = await client.post("/api/hardware", json={"machine": "mac-mini"})
+                data = await resp.json()
+
+        assert "ok" in data
+        assert "hardware" not in data, "Response must NOT wrap fields under a 'hardware' key"
+
+    @pytest.mark.asyncio
+    async def test_response_has_cpu_at_top_level(self, tmp_path):
+        with patch("src.server._get_local_hardware", return_value=self._mock_hw()):
+            async with make_client(tmp_path) as client:
+                resp = await client.post("/api/hardware", json={"machine": "mac-mini"})
+                data = await resp.json()
+
+        assert "cpu" in data
+
+    @pytest.mark.asyncio
+    async def test_response_has_gpus_at_top_level(self, tmp_path):
+        with patch("src.server._get_local_hardware", return_value=self._mock_hw()):
+            async with make_client(tmp_path) as client:
+                resp = await client.post("/api/hardware", json={"machine": "mac-mini"})
+                data = await resp.json()
+
+        assert "gpus" in data
+        assert isinstance(data["gpus"], list)
+
+    @pytest.mark.asyncio
+    async def test_response_has_memory_at_top_level(self, tmp_path):
+        with patch("src.server._get_local_hardware", return_value=self._mock_hw()):
+            async with make_client(tmp_path) as client:
+                resp = await client.post("/api/hardware", json={"machine": "mac-mini"})
+                data = await resp.json()
+
+        assert "memory" in data
+
+    @pytest.mark.asyncio
+    async def test_cpu_has_name_field(self, tmp_path):
+        with patch("src.server._get_local_hardware", return_value=self._mock_hw()):
+            async with make_client(tmp_path) as client:
+                resp = await client.post("/api/hardware", json={"machine": "mac-mini"})
+                data = await resp.json()
+
+        assert "name" in data["cpu"]
+
+    @pytest.mark.asyncio
+    async def test_cpu_has_cores_field(self, tmp_path):
+        with patch("src.server._get_local_hardware", return_value=self._mock_hw()):
+            async with make_client(tmp_path) as client:
+                resp = await client.post("/api/hardware", json={"machine": "mac-mini"})
+                data = await resp.json()
+
+        assert "cores" in data["cpu"]
+
+    @pytest.mark.asyncio
+    async def test_cpu_has_usage_percent_field(self, tmp_path):
+        """Frontend reads cpu.usage_percent — must exist with that exact name."""
+        with patch("src.server._get_local_hardware", return_value=self._mock_hw()):
+            async with make_client(tmp_path) as client:
+                resp = await client.post("/api/hardware", json={"machine": "mac-mini"})
+                data = await resp.json()
+
+        assert "usage_percent" in data["cpu"]
+
+    @pytest.mark.asyncio
+    async def test_cpu_has_temp_c_field(self, tmp_path):
+        """Frontend reads cpu.temp_c — must exist with that exact name."""
+        with patch("src.server._get_local_hardware", return_value=self._mock_hw()):
+            async with make_client(tmp_path) as client:
+                resp = await client.post("/api/hardware", json={"machine": "mac-mini"})
+                data = await resp.json()
+
+        assert "temp_c" in data["cpu"]
+
+    @pytest.mark.asyncio
+    async def test_gpu_entry_has_name_field(self, tmp_path):
+        with patch("src.server._get_local_hardware", return_value=self._mock_hw()):
+            async with make_client(tmp_path) as client:
+                resp = await client.post("/api/hardware", json={"machine": "mac-mini"})
+                data = await resp.json()
+
+        assert len(data["gpus"]) > 0
+        assert "name" in data["gpus"][0]
+
+    @pytest.mark.asyncio
+    async def test_gpu_entry_has_temp_c_field(self, tmp_path):
+        """Frontend reads gpu.temp_c — must exist with that exact name."""
+        with patch("src.server._get_local_hardware", return_value=self._mock_hw()):
+            async with make_client(tmp_path) as client:
+                resp = await client.post("/api/hardware", json={"machine": "mac-mini"})
+                data = await resp.json()
+
+        assert "temp_c" in data["gpus"][0]
+
+    @pytest.mark.asyncio
+    async def test_gpu_entry_has_usage_percent_field(self, tmp_path):
+        """Frontend reads gpu.usage_percent — must exist with that exact name."""
+        with patch("src.server._get_local_hardware", return_value=self._mock_hw()):
+            async with make_client(tmp_path) as client:
+                resp = await client.post("/api/hardware", json={"machine": "mac-mini"})
+                data = await resp.json()
+
+        assert "usage_percent" in data["gpus"][0]
+
+    @pytest.mark.asyncio
+    async def test_gpu_entry_has_memory_used_mb_field(self, tmp_path):
+        """Frontend reads gpu.memory_used_mb — must exist with that exact name."""
+        with patch("src.server._get_local_hardware", return_value=self._mock_hw()):
+            async with make_client(tmp_path) as client:
+                resp = await client.post("/api/hardware", json={"machine": "mac-mini"})
+                data = await resp.json()
+
+        assert "memory_used_mb" in data["gpus"][0]
+
+    @pytest.mark.asyncio
+    async def test_gpu_entry_has_memory_total_mb_field(self, tmp_path):
+        """Frontend reads gpu.memory_total_mb — must exist with that exact name."""
+        with patch("src.server._get_local_hardware", return_value=self._mock_hw()):
+            async with make_client(tmp_path) as client:
+                resp = await client.post("/api/hardware", json={"machine": "mac-mini"})
+                data = await resp.json()
+
+        assert "memory_total_mb" in data["gpus"][0]
+
+    @pytest.mark.asyncio
+    async def test_memory_has_total_gb_field(self, tmp_path):
+        """Frontend reads memory.total_gb — must exist with that exact name."""
+        with patch("src.server._get_local_hardware", return_value=self._mock_hw()):
+            async with make_client(tmp_path) as client:
+                resp = await client.post("/api/hardware", json={"machine": "mac-mini"})
+                data = await resp.json()
+
+        assert "total_gb" in data["memory"]
+
+    @pytest.mark.asyncio
+    async def test_memory_has_used_gb_field(self, tmp_path):
+        """Frontend reads memory.used_gb — must exist with that exact name."""
+        with patch("src.server._get_local_hardware", return_value=self._mock_hw()):
+            async with make_client(tmp_path) as client:
+                resp = await client.post("/api/hardware", json={"machine": "mac-mini"})
+                data = await resp.json()
+
+        assert "used_gb" in data["memory"]
+
+    @pytest.mark.asyncio
+    async def test_memory_has_percent_field(self, tmp_path):
+        with patch("src.server._get_local_hardware", return_value=self._mock_hw()):
+            async with make_client(tmp_path) as client:
+                resp = await client.post("/api/hardware", json={"machine": "mac-mini"})
+                data = await resp.json()
+
+        assert "percent" in data["memory"]
+
+    @pytest.mark.asyncio
+    async def test_cpu_usage_percent_value_matches(self, tmp_path):
+        """usage_percent value round-trips correctly through the API."""
+        with patch("src.server._get_local_hardware", return_value=self._mock_hw()):
+            async with make_client(tmp_path) as client:
+                resp = await client.post("/api/hardware", json={"machine": "mac-mini"})
+                data = await resp.json()
+
+        assert data["cpu"]["usage_percent"] == 18.5
+
+    @pytest.mark.asyncio
+    async def test_cpu_temp_c_value_matches(self, tmp_path):
+        with patch("src.server._get_local_hardware", return_value=self._mock_hw()):
+            async with make_client(tmp_path) as client:
+                resp = await client.post("/api/hardware", json={"machine": "mac-mini"})
+                data = await resp.json()
+
+        assert data["cpu"]["temp_c"] == 62.0
+
+    @pytest.mark.asyncio
+    async def test_memory_used_gb_value_matches(self, tmp_path):
+        with patch("src.server._get_local_hardware", return_value=self._mock_hw()):
+            async with make_client(tmp_path) as client:
+                resp = await client.post("/api/hardware", json={"machine": "mac-mini"})
+                data = await resp.json()
+
+        assert data["memory"]["used_gb"] == 24.5
+
+    @pytest.mark.asyncio
+    async def test_memory_total_gb_value_matches(self, tmp_path):
+        with patch("src.server._get_local_hardware", return_value=self._mock_hw()):
+            async with make_client(tmp_path) as client:
+                resp = await client.post("/api/hardware", json={"machine": "mac-mini"})
+                data = await resp.json()
+
+        assert data["memory"]["total_gb"] == 64.0
+
+    @pytest.mark.asyncio
+    async def test_gpus_empty_list_is_valid(self, tmp_path):
+        """When no GPUs present, gpus is an empty list (not null, not absent)."""
+        hw = self._mock_hw()
+        hw["gpus"] = []
+        with patch("src.server._get_local_hardware", return_value=hw):
+            async with make_client(tmp_path) as client:
+                resp = await client.post("/api/hardware", json={"machine": "mac-mini"})
+                data = await resp.json()
+
+        assert data["gpus"] == []
+
+    @pytest.mark.asyncio
+    async def test_cpu_temp_c_can_be_none(self, tmp_path):
+        """temp_c=None is valid (e.g. macOS with no sensor access)."""
+        hw = self._mock_hw()
+        hw["cpu"]["temp_c"] = None
+        with patch("src.server._get_local_hardware", return_value=hw):
+            async with make_client(tmp_path) as client:
+                resp = await client.post("/api/hardware", json={"machine": "mac-mini"})
+                data = await resp.json()
+
+        assert data["cpu"]["temp_c"] is None
