@@ -1,10 +1,36 @@
 # Deployment
 
+## Version
+
+Current release: **1.0.0**
+
 ## Requirements
 
 - Python 3.11 or 3.12
 - SSH key-based authentication configured for each remote fleet machine (`~/.ssh/config` entries recommended)
 - tmux installed on Linux/macOS machines; psmux on Windows machines
+
+## Quick Install (curl one-liner)
+
+### macOS
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/raphaelbgr/claude-manager/master/installers/install-macos.sh | bash
+```
+
+### Linux
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/raphaelbgr/claude-manager/master/installers/install-linux.sh | bash
+```
+
+### Windows (PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/raphaelbgr/claude-manager/master/installers/install-windows.ps1 | iex
+```
+
+The platform-specific installers in `installers/` clone the repository, run `setup.sh`, and register the system service in one step. For manual control, follow the steps below.
 
 ## setup.sh
 
@@ -112,6 +138,41 @@ Register-ScheduledTask `
     -RunLevel Highest
 ```
 
+## System Tray (Desktop GUI)
+
+The `--enable-gui` flag opens a native desktop window backed by the same API server. On Linux and Windows, a system tray icon is also created (requires `pystray` and `Pillow`, both installed by the `desktop` extra).
+
+```bash
+claude-manager --enable-gui
+```
+
+The tray icon provides:
+- **Open Web UI** — opens `http://localhost:44740` in the default browser
+- **Running Sessions** — lists all active/working sessions grouped by machine; clicking one launches a terminal for that session
+- **Tmux / Psmux Sessions** — lists mux sessions; clicking one attaches
+- **Force Scan** — triggers an immediate rescan
+- **Exit** — calls `POST /api/exit` to shut down the server cleanly, then closes the tray icon
+
+On macOS, pywebview requires the main thread for its AppKit integration, so the tray icon is not available on macOS. Use the Web UI or TUI instead.
+
+### Exiting
+
+From the Web UI: click the exit button (top-right menu).
+From the system tray: click **Exit**.
+Via API: `curl -X POST http://localhost:44740/api/exit`
+
+`/api/exit` gives the server 0.5 seconds to respond, then calls `os._exit(0)`. The launchd/systemd service will restart the process automatically if `KeepAlive` / `Restart=always` is set.
+
+To exit without restarting (e.g. for maintenance), stop the service first:
+
+```bash
+# macOS
+launchctl unload ~/Library/LaunchAgents/com.claude-manager.plist
+
+# Linux
+systemctl --user stop claude-manager
+```
+
 ## LAN Access Configuration
 
 To make the Web UI accessible from other machines on your network:
@@ -134,7 +195,9 @@ Open `http://192.168.1.10:44740` from any machine on your network.
 
 ## Fleet Machine Setup
 
-Each remote machine needs:
+See [Fleet Setup Guide](fleet-setup.md) for a full walkthrough covering SSH key setup, `src/config.py` configuration, per-OS dependency installation, and troubleshooting.
+
+Quick reference for the most common steps:
 
 ### 1. SSH access
 

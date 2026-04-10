@@ -304,6 +304,300 @@ Kill a tmux/psmux session by name.
 
 ---
 
+## GET /api/logs
+
+Return recent log entries from the in-memory ring buffer (last 500 entries max).
+
+**Query parameters:**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `limit` | `100` | Maximum number of entries to return |
+| `level` | *(none)* | Filter by log level: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+
+**Response:**
+```json
+{
+  "logs": [
+    {
+      "timestamp": "2026-04-09T12:00:01+00:00",
+      "level": "INFO",
+      "module": "server",
+      "message": "background_scan: 23 sessions, 4 tmux, 4 fleet machines in 1.23s"
+    },
+    {
+      "timestamp": "2026-04-09T12:00:01+00:00",
+      "level": "ERROR",
+      "module": "scanner",
+      "message": "SSH to ubuntu-desktop failed: Connection timed out"
+    }
+  ]
+}
+```
+
+---
+
+## POST /api/sessions/rename
+
+Rename a Claude Code session by writing a `name` field into the active PID file (`~/.claude/sessions/<pid>.json`).
+
+The session must be currently running (status `active` or `working`) — a PID file is only present while the Claude Code process is alive.
+
+**Request body:**
+```json
+{
+  "machine": "mac-mini",
+  "session_id": "abc123",
+  "pid": 24740,
+  "name": "my-new-name"
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `machine` | yes | Fleet machine name |
+| `session_id` | yes | Session UUID |
+| `pid` | no | Process ID — speeds up PID file lookup; falls back to scanning all `*.json` files |
+| `name` | yes | New display name (non-empty string) |
+
+**Response:**
+```json
+{"ok": true, "name": "my-new-name"}
+```
+
+---
+
+## POST /api/sessions/archive
+
+Add a session ID to the archived list (stored in `.claude-manager-prefs.json`). Archived sessions are hidden from the default view.
+
+**Request body:**
+```json
+{"session_id": "abc123"}
+```
+
+**Response:**
+```json
+{"ok": true, "archived_sessions": ["abc123"]}
+```
+
+---
+
+## POST /api/sessions/unarchive
+
+Remove a session ID from the archived list.
+
+**Request body:**
+```json
+{"session_id": "abc123"}
+```
+
+**Response:**
+```json
+{"ok": true, "archived_sessions": []}
+```
+
+---
+
+## POST /api/sessions/pin
+
+Add a session ID to the pinned list (stored in `.claude-manager-prefs.json`). Pinned sessions appear at the top of the session list.
+
+**Request body:**
+```json
+{"session_id": "abc123"}
+```
+
+**Response:**
+```json
+{"ok": true, "pinned_sessions": ["abc123"]}
+```
+
+---
+
+## POST /api/sessions/unpin
+
+Remove a session ID from the pinned list.
+
+**Request body:**
+```json
+{"session_id": "abc123"}
+```
+
+**Response:**
+```json
+{"ok": true, "pinned_sessions": []}
+```
+
+---
+
+## POST /api/hardware
+
+Collect CPU, GPU, and memory stats for a machine. Results are cached for 30 seconds.
+
+**Request body:**
+```json
+{"machine": "ubuntu-desktop"}
+```
+
+Omit `machine` or set it to the local machine name to query the local host.
+
+**Response:**
+```json
+{
+  "ok": true,
+  "cpu": {
+    "name": "AMD Ryzen 7 5800X",
+    "cores": 16,
+    "usage_percent": 12.3,
+    "temp_c": 54.0
+  },
+  "gpus": [
+    {
+      "name": "NVIDIA GeForce GTX 1060",
+      "temp_c": 48.0,
+      "usage_percent": 0.0,
+      "memory_used_mb": 512.0,
+      "memory_total_mb": 6144.0
+    }
+  ],
+  "memory": {
+    "total_gb": 32.0,
+    "used_gb": 14.2,
+    "percent": 44.4
+  }
+}
+```
+
+GPU data uses `nvidia-smi` when available. On macOS without NVIDIA hardware, GPU name is read from `system_profiler`; temperature and usage fields are `null`. `cpu_temp` requires `psutil.sensors_temperatures()` support (not available on macOS or Windows).
+
+---
+
+## POST /api/browse
+
+List subdirectories at a given path on a machine. Used by the folder picker in the Web UI.
+
+**Request body:**
+```json
+{
+  "machine": "ubuntu-desktop",
+  "path": "/home/myuser/git"
+}
+```
+
+Omit `path` to start at the home directory. Omit `machine` for the local host.
+
+**Response:**
+```json
+{
+  "ok": true,
+  "path": "/home/myuser/git",
+  "parent": "/home/myuser",
+  "drive": "/",
+  "dirs": [
+    {"name": "myproject", "path": "/home/myuser/git/myproject"},
+    {"name": "other-repo", "path": "/home/myuser/git/other-repo"}
+  ]
+}
+```
+
+Hidden directories (names starting with `.`) are excluded. At most 200 entries are returned, sorted alphabetically.
+
+---
+
+## POST /api/drives
+
+List disk drives/volumes on a machine. Used by the folder picker to show the root of each drive.
+
+**Request body:**
+```json
+{"machine": "windows-desktop"}
+```
+
+Omit `machine` for the local host.
+
+**Response:**
+```json
+{
+  "ok": true,
+  "drives": [
+    {
+      "path": "C:\\",
+      "name": "C:",
+      "label": "C:",
+      "total_gb": 953.9,
+      "free_gb": 412.1,
+      "is_system": true
+    },
+    {
+      "path": "D:\\",
+      "name": "D:",
+      "label": "D:",
+      "total_gb": 1863.0,
+      "free_gb": 900.5,
+      "is_system": false
+    }
+  ]
+}
+```
+
+Virtual, pseudo, and system filesystems (devfs, tmpfs, sysfs, /proc, /sys, /dev, /run, /snap) are excluded.
+
+---
+
+## POST /api/mkdir
+
+Create a single new directory (no recursive parents) on a machine.
+
+**Request body:**
+```json
+{
+  "machine": "ubuntu-desktop",
+  "path": "/home/myuser/git/new-project"
+}
+```
+
+**Response:**
+```json
+{"ok": true, "path": "/home/myuser/git/new-project"}
+```
+
+**Error responses:**
+- `400` — path is not absolute, or parent does not exist
+- `403` — permission denied
+- `409` — directory already exists
+- `504` — SSH timeout (remote machines)
+
+---
+
+## POST /api/exit
+
+Gracefully shut down the server. The server responds, then calls `os._exit(0)` after a 0.5-second delay.
+
+**Request body:** none
+
+**Response:**
+```json
+{"ok": true, "message": "Shutting down..."}
+```
+
+If the server is running under launchd (`KeepAlive: true`) or systemd (`Restart=always`), it will restart automatically. Stop the service first if you want a clean exit.
+
+---
+
+## POST /api/restart
+
+Reset the background scan cycle without killing the server. Cancels the current background task, clears cached state, and restarts the scan loop.
+
+**Request body:** none
+
+**Response:**
+```json
+{"ok": true, "message": "Scan cycle restarted"}
+```
+
+---
+
 ## GET /api/preferences
 
 Get current user preferences.
