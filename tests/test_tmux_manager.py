@@ -813,3 +813,368 @@ class TestKillTmuxSession:
 
         assert result["ok"] is False
         assert "tmux gone" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# capture_pane
+# ---------------------------------------------------------------------------
+
+class TestCapturePane:
+    """Tests for capture_pane() — one-shot pane content capture."""
+
+    @pytest.mark.asyncio
+    async def test_local_tmux_capture(self):
+        """Local tmux: verifies `tmux capture-pane -t SESSION -e -p -S -50` executed."""
+        from src.tmux_manager import capture_pane
+
+        proc = _make_proc(0, stdout=b"some output\n")
+        with patch("src.tmux_manager.asyncio.create_subprocess_exec", return_value=proc) as mock_exec, \
+             patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"), \
+             patch("src.tmux_manager.get_adapter") as mock_adapter:
+            mock_adapter.return_value.mux_type = "tmux"
+            result = await capture_pane("mac-mini", "my-session")
+
+        args = mock_exec.call_args[0]
+        args_str = " ".join(str(a) for a in args)
+        assert "tmux" in args_str
+        assert "capture-pane" in args_str
+        assert "my-session" in args_str
+        assert "-p" in args_str
+
+    @pytest.mark.asyncio
+    async def test_local_psmux_capture(self):
+        """Local psmux: verifies `psmux capture-pane -t SESSION -p` (no -S flag)."""
+        from src.tmux_manager import capture_pane
+
+        proc = _make_proc(0, stdout=b"psmux output\n")
+        with patch("src.tmux_manager.asyncio.create_subprocess_exec", return_value=proc) as mock_exec, \
+             patch("src.tmux_manager.detect_local_machine", return_value="avell-i7"), \
+             patch("src.tmux_manager.get_adapter") as mock_adapter:
+            mock_adapter.return_value.mux_type = "psmux"
+            result = await capture_pane("avell-i7", "win-session")
+
+        args = mock_exec.call_args[0]
+        args_str = " ".join(str(a) for a in args)
+        assert "psmux" in args_str
+        assert "capture-pane" in args_str
+        assert "win-session" in args_str
+        # psmux does not use -S flag
+        assert "-S" not in args_str
+
+    @pytest.mark.asyncio
+    async def test_remote_tmux_capture(self):
+        """Remote tmux: verifies SSH wrapping with ConnectTimeout."""
+        from src.tmux_manager import capture_pane
+        from src.config import SSH_TIMEOUT
+
+        proc = _make_proc(0, stdout=b"remote content\n")
+        with patch("src.tmux_manager.asyncio.create_subprocess_exec", return_value=proc) as mock_exec, \
+             patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"), \
+             patch("src.tmux_manager.get_adapter") as mock_adapter:
+            mock_adapter.return_value.mux_type = "tmux"
+            result = await capture_pane("ubuntu-desktop", "remote-sess")
+
+        args = mock_exec.call_args[0]
+        args_str = " ".join(str(a) for a in args)
+        assert args[0] == "ssh"
+        assert f"ConnectTimeout={SSH_TIMEOUT}" in args_str
+        assert "BatchMode=yes" in args_str
+        assert "ubuntu-desktop" in args_str
+
+    @pytest.mark.asyncio
+    async def test_remote_psmux_capture(self):
+        """Remote psmux: verifies SSH + psmux command."""
+        from src.tmux_manager import capture_pane
+
+        proc = _make_proc(0, stdout=b"remote psmux content\n")
+        with patch("src.tmux_manager.asyncio.create_subprocess_exec", return_value=proc) as mock_exec, \
+             patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"), \
+             patch("src.tmux_manager.get_adapter") as mock_adapter:
+            mock_adapter.return_value.mux_type = "psmux"
+            result = await capture_pane("avell-i7", "win-sess")
+
+        args = mock_exec.call_args[0]
+        args_str = " ".join(str(a) for a in args)
+        assert args[0] == "ssh"
+        assert "avell-i7" in args_str
+        # The remote command (last arg) uses psmux
+        remote_cmd = args[-1]
+        assert "psmux" in remote_cmd
+
+    @pytest.mark.asyncio
+    async def test_custom_line_count(self):
+        """Verify `-S -100` when lines=100 for tmux."""
+        from src.tmux_manager import capture_pane
+
+        proc = _make_proc(0, stdout=b"content\n")
+        with patch("src.tmux_manager.asyncio.create_subprocess_exec", return_value=proc) as mock_exec, \
+             patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"), \
+             patch("src.tmux_manager.get_adapter") as mock_adapter:
+            mock_adapter.return_value.mux_type = "tmux"
+            await capture_pane("mac-mini", "my-session", lines=100)
+
+        args = mock_exec.call_args[0]
+        args_str = " ".join(str(a) for a in args)
+        assert "-S" in args_str
+        assert "-100" in args_str
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_on_oserror(self):
+        """OSError → returns empty string."""
+        from src.tmux_manager import capture_pane
+
+        with patch("src.tmux_manager.asyncio.create_subprocess_exec", side_effect=OSError("no tmux")), \
+             patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"), \
+             patch("src.tmux_manager.get_adapter") as mock_adapter:
+            mock_adapter.return_value.mux_type = "tmux"
+            result = await capture_pane("mac-mini", "sess")
+
+        assert result == ""
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_on_timeout(self):
+        """asyncio.TimeoutError → returns empty string."""
+        from src.tmux_manager import capture_pane
+
+        proc = AsyncMock()
+        proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError())
+        with patch("src.tmux_manager.asyncio.create_subprocess_exec", return_value=proc), \
+             patch("src.tmux_manager.asyncio.wait_for", side_effect=asyncio.TimeoutError()), \
+             patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"), \
+             patch("src.tmux_manager.get_adapter") as mock_adapter:
+            mock_adapter.return_value.mux_type = "tmux"
+            result = await capture_pane("mac-mini", "sess")
+
+        assert result == ""
+
+    @pytest.mark.asyncio
+    async def test_returns_decoded_utf8(self):
+        """Verify stdout bytes are decoded as UTF-8."""
+        from src.tmux_manager import capture_pane
+
+        proc = _make_proc(0, stdout="héllo wörld\n".encode("utf-8"))
+        with patch("src.tmux_manager.asyncio.create_subprocess_exec", return_value=proc), \
+             patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"), \
+             patch("src.tmux_manager.get_adapter") as mock_adapter:
+            mock_adapter.return_value.mux_type = "tmux"
+            result = await capture_pane("mac-mini", "sess")
+
+        assert "héllo" in result
+        assert "wörld" in result
+
+    @pytest.mark.asyncio
+    async def test_strips_ansi_control_codes(self):
+        """_clean_pane_output strips non-color ANSI control codes from output."""
+        from src.tmux_manager import _clean_pane_output
+
+        # Cursor movement (\x1b[2A), OSC title (\x1b]0;title\x07), charset switch (\x1b(B)
+        # should all be stripped. SGR color (\x1b[32m) should be KEPT.
+        raw = "\x1b[2Ahello\x1b]0;mytitle\x07 \x1b(Bworld\x1b[32m green text\x1b[0m"
+        cleaned = _clean_pane_output(raw)
+        assert "\x1b[2A" not in cleaned         # cursor up stripped
+        assert "mytitle" not in cleaned          # OSC title stripped
+        assert "\x1b(B" not in cleaned           # charset stripped
+        assert "\x1b[32m" in cleaned             # SGR color KEPT
+        assert "hello" in cleaned
+        assert "world" in cleaned
+
+    @pytest.mark.asyncio
+    async def test_session_name_is_quoted(self):
+        """Session name with spaces is properly quoted in the command string."""
+        from src.tmux_manager import capture_pane
+        import shlex
+
+        proc = _make_proc(0, stdout=b"output\n")
+        with patch("src.tmux_manager.asyncio.create_subprocess_exec", return_value=proc) as mock_exec, \
+             patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"), \
+             patch("src.tmux_manager.get_adapter") as mock_adapter:
+            mock_adapter.return_value.mux_type = "tmux"
+            await capture_pane("mac-mini", "my session with spaces")
+
+        args = mock_exec.call_args[0]
+        args_str = " ".join(str(a) for a in args)
+        # shlex.quote wraps in single quotes when there are spaces
+        assert shlex.quote("my session with spaces") in args_str
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_on_nonzero_returncode(self):
+        """Non-zero returncode → returns empty string."""
+        from src.tmux_manager import capture_pane
+
+        proc = _make_proc(1, stderr=b"no such session")
+        with patch("src.tmux_manager.asyncio.create_subprocess_exec", return_value=proc), \
+             patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"), \
+             patch("src.tmux_manager.get_adapter") as mock_adapter:
+            mock_adapter.return_value.mux_type = "tmux"
+            result = await capture_pane("mac-mini", "missing-sess")
+
+        assert result == ""
+
+
+# ---------------------------------------------------------------------------
+# start_pipe_pane
+# ---------------------------------------------------------------------------
+
+class TestStartPipePane:
+    """Tests for start_pipe_pane() — local tmux pipe-pane."""
+
+    @pytest.mark.asyncio
+    async def test_starts_pipe_pane_returns_true(self):
+        """returncode=0 → returns True."""
+        from src.tmux_manager import start_pipe_pane
+
+        proc = _make_proc(0)
+        with patch("src.tmux_manager.asyncio.create_subprocess_exec", return_value=proc):
+            result = await start_pipe_pane("my-session", "/tmp/output.log")
+
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_returns_false_on_failure(self):
+        """returncode=1 → returns False."""
+        from src.tmux_manager import start_pipe_pane
+
+        proc = _make_proc(1, stderr=b"no session")
+        with patch("src.tmux_manager.asyncio.create_subprocess_exec", return_value=proc):
+            result = await start_pipe_pane("my-session", "/tmp/output.log")
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_correct_command_format(self):
+        """Verifies `tmux pipe-pane -t SESSION 'cat >> /tmp/file'`."""
+        from src.tmux_manager import start_pipe_pane
+
+        proc = _make_proc(0)
+        with patch("src.tmux_manager.asyncio.create_subprocess_exec", return_value=proc) as mock_exec:
+            await start_pipe_pane("work-session", "/tmp/pane.log")
+
+        args = mock_exec.call_args[0]
+        assert args[0] == "tmux"
+        assert args[1] == "pipe-pane"
+        assert "-t" in args
+        t_idx = list(args).index("-t")
+        assert args[t_idx + 1] == "work-session"
+        # Last arg should contain the cat command with the output path
+        last_arg = args[-1]
+        assert "cat" in last_arg
+        assert "/tmp/pane.log" in last_arg
+
+    @pytest.mark.asyncio
+    async def test_returns_false_on_exception(self):
+        """OSError → returns False."""
+        from src.tmux_manager import start_pipe_pane
+
+        with patch("src.tmux_manager.asyncio.create_subprocess_exec", side_effect=OSError("no tmux")):
+            result = await start_pipe_pane("my-session", "/tmp/output.log")
+
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# stop_pipe_pane
+# ---------------------------------------------------------------------------
+
+class TestStopPipePane:
+    """Tests for stop_pipe_pane() — stops local tmux pipe-pane."""
+
+    @pytest.mark.asyncio
+    async def test_stops_pipe_pane_returns_true(self):
+        """returncode=0 → returns True."""
+        from src.tmux_manager import stop_pipe_pane
+
+        proc = _make_proc(0)
+        with patch("src.tmux_manager.asyncio.create_subprocess_exec", return_value=proc):
+            result = await stop_pipe_pane("my-session")
+
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_correct_command_format(self):
+        """Verifies `tmux pipe-pane -t SESSION` with no extra command (empty = stop)."""
+        from src.tmux_manager import stop_pipe_pane
+
+        proc = _make_proc(0)
+        with patch("src.tmux_manager.asyncio.create_subprocess_exec", return_value=proc) as mock_exec:
+            await stop_pipe_pane("work-session")
+
+        args = mock_exec.call_args[0]
+        assert args[0] == "tmux"
+        assert args[1] == "pipe-pane"
+        assert "-t" in args
+        t_idx = list(args).index("-t")
+        assert args[t_idx + 1] == "work-session"
+        # No additional command argument after session name (stops the pipe)
+        # args should be exactly: tmux, pipe-pane, -t, SESSION
+        assert len(args) == 4
+
+    @pytest.mark.asyncio
+    async def test_returns_false_on_failure(self):
+        """returncode=1 → returns False."""
+        from src.tmux_manager import stop_pipe_pane
+
+        proc = _make_proc(1, stderr=b"no session found")
+        with patch("src.tmux_manager.asyncio.create_subprocess_exec", return_value=proc):
+            result = await stop_pipe_pane("my-session")
+
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# _clean_pane_output
+# ---------------------------------------------------------------------------
+
+class TestCleanPaneOutput:
+    """Tests for _clean_pane_output() and ANSI stripping."""
+
+    def test_strips_cursor_movement_codes(self):
+        from src.tmux_manager import _clean_pane_output
+        # Cursor up (\x1b[2A), cursor down (\x1b[3B), cursor forward (\x1b[4C)
+        raw = "\x1b[2Atext\x1b[3B more\x1b[4C end"
+        cleaned = _clean_pane_output(raw)
+        assert "\x1b[" not in cleaned.replace("\x1b[32m", "").replace("\x1b[0m", "")
+        assert "text" in cleaned
+        assert "more" in cleaned
+
+    def test_strips_osc_title_sequences(self):
+        from src.tmux_manager import _clean_pane_output
+        raw = "\x1b]0;Window Title\x07hello world"
+        cleaned = _clean_pane_output(raw)
+        assert "Window Title" not in cleaned
+        assert "\x1b]" not in cleaned
+        assert "hello world" in cleaned
+
+    def test_strips_charset_switching(self):
+        from src.tmux_manager import _clean_pane_output
+        raw = "before\x1b(Bafter"
+        cleaned = _clean_pane_output(raw)
+        assert "\x1b(B" not in cleaned
+        assert "before" in cleaned
+        assert "after" in cleaned
+
+    def test_preserves_sgr_color_codes(self):
+        from src.tmux_manager import _clean_pane_output
+        raw = "\x1b[32mgreen text\x1b[0m normal"
+        cleaned = _clean_pane_output(raw)
+        assert "\x1b[32m" in cleaned
+        assert "\x1b[0m" in cleaned
+        assert "green text" in cleaned
+
+    def test_trims_trailing_blank_lines(self):
+        from src.tmux_manager import _clean_pane_output
+        raw = "line1\nline2\n\n\n"
+        cleaned = _clean_pane_output(raw)
+        assert not cleaned.endswith("\n")
+        assert "line1" in cleaned
+        assert "line2" in cleaned
+
+    def test_empty_string_returns_empty(self):
+        from src.tmux_manager import _clean_pane_output
+        assert _clean_pane_output("") == ""
+
+    def test_plain_text_unchanged(self):
+        from src.tmux_manager import _clean_pane_output
+        raw = "hello world\nno escape codes here"
+        cleaned = _clean_pane_output(raw)
+        assert "hello world" in cleaned
+        assert "no escape codes here" in cleaned

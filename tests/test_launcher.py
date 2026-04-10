@@ -847,3 +847,153 @@ class TestShellInjectionSafety:
         # The raw unescaped double-quote must not appear inside the outer quotes
         inner = result[1:-1]  # strip the outer wrapping quotes
         assert '"' not in inner.replace('\\"', "")
+
+
+# ---------------------------------------------------------------------------
+# _launch_macos_multi
+# ---------------------------------------------------------------------------
+
+class TestLaunchMacosMulti:
+    """Tests for _launch_macos_multi — multi-command iTerm2 launcher."""
+
+    @pytest.mark.asyncio
+    async def test_single_command(self):
+        from src.launcher import _launch_macos_multi
+
+        called_scripts = []
+
+        async def fake_osascript(script):
+            called_scripts.append(script)
+            return {"ok": True}
+
+        with patch("src.launcher._run_osascript", new=fake_osascript):
+            result = await _launch_macos_multi(["echo hello"])
+
+        assert result == {"ok": True}
+        assert len(called_scripts) == 1
+        assert "write text" in called_scripts[0]
+
+    @pytest.mark.asyncio
+    async def test_multiple_commands_with_delays(self):
+        from src.launcher import _launch_macos_multi
+
+        called_scripts = []
+
+        async def fake_osascript(script):
+            called_scripts.append(script)
+            return {"ok": True}
+
+        with patch("src.launcher._run_osascript", new=fake_osascript):
+            await _launch_macos_multi(["ssh host", "cd /tmp", "ls"])
+
+        script = called_scripts[0]
+        # Default delays: 2s after first command, 0.5s between rest
+        assert "delay" in script
+
+    @pytest.mark.asyncio
+    async def test_empty_commands_returns_error(self):
+        from src.launcher import _launch_macos_multi
+
+        result = await _launch_macos_multi([])
+
+        assert result["ok"] is False
+        assert "No commands" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_iterm2_fallback_to_terminal(self):
+        from src.launcher import _launch_macos_multi
+
+        call_count = 0
+
+        async def fake_osascript(script):
+            nonlocal call_count
+            call_count += 1
+            if "iTerm2" in script:
+                return {"ok": False, "error": "iTerm2 not running"}
+            return {"ok": True}
+
+        with patch("src.launcher._run_osascript", new=fake_osascript):
+            result = await _launch_macos_multi(["echo hi"])
+
+        assert result == {"ok": True}
+        assert call_count == 2  # tried iTerm2 then Terminal.app
+
+    @pytest.mark.asyncio
+    async def test_custom_delays(self):
+        from src.launcher import _launch_macos_multi
+
+        called_scripts = []
+
+        async def fake_osascript(script):
+            called_scripts.append(script)
+            return {"ok": True}
+
+        custom_delays = [0, 5.0, 1.5]
+        with patch("src.launcher._run_osascript", new=fake_osascript):
+            await _launch_macos_multi(["ssh host", "cd /tmp", "ls"], delays=custom_delays)
+
+        script = called_scripts[0]
+        assert "delay 5.0" in script
+        assert "delay 1.5" in script
+
+
+# ---------------------------------------------------------------------------
+# launch_remote_terminal
+# ---------------------------------------------------------------------------
+
+class TestLaunchRemoteTerminal:
+    """Tests for launch_remote_terminal — opens terminal on remote display."""
+
+    @pytest.mark.asyncio
+    async def test_darwin_remote_uses_osascript(self):
+        from src.launcher import launch_remote_terminal
+
+        proc = _make_proc(0)
+        with patch("src.launcher.asyncio.create_subprocess_shell", return_value=proc) as mock_shell, \
+             patch("src.launcher.asyncio.create_subprocess_exec", return_value=proc):
+            result = await launch_remote_terminal("echo hi", "mac-mini")
+
+        assert result == {"ok": True}
+        # The SSH command should include osascript for macOS
+        cmd = mock_shell.call_args[0][0]
+        assert "ssh" in cmd
+        assert "osascript" in cmd
+
+    @pytest.mark.asyncio
+    async def test_linux_remote_uses_display0(self):
+        from src.launcher import launch_remote_terminal
+
+        proc = _make_proc(0)
+        with patch("src.launcher.asyncio.create_subprocess_shell", return_value=proc) as mock_shell, \
+             patch("src.launcher.asyncio.create_subprocess_exec", return_value=proc):
+            result = await launch_remote_terminal("htop", "ubuntu-desktop")
+
+        assert result == {"ok": True}
+        cmd = mock_shell.call_args[0][0]
+        assert "ssh" in cmd
+        assert "DISPLAY=:0" in cmd
+
+    @pytest.mark.asyncio
+    async def test_win32_remote_uses_powershell(self):
+        from src.launcher import launch_remote_terminal
+
+        proc = _make_proc(0)
+        with patch("src.launcher.asyncio.create_subprocess_shell", return_value=proc) as mock_shell, \
+             patch("src.launcher.asyncio.create_subprocess_exec", return_value=proc):
+            result = await launch_remote_terminal("dir", "avell-i7")
+
+        assert result == {"ok": True}
+        cmd = mock_shell.call_args[0][0]
+        assert "ssh" in cmd
+        assert "powershell" in cmd.lower()
+
+    @pytest.mark.asyncio
+    async def test_unknown_os_returns_error(self):
+        from src.launcher import launch_remote_terminal
+        from src.config import FLEET_MACHINES
+
+        # Use a machine name that does not exist in FLEET_MACHINES so remote_os == ""
+        result = await launch_remote_terminal("echo hi", "nonexistent-machine-xyz")
+
+        assert result["ok"] is False
+        assert "Unknown remote OS" in result["error"]

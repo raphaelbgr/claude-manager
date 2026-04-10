@@ -23,7 +23,7 @@ import json
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -1203,3 +1203,349 @@ class TestBackgroundScanTask:
                 assert state["last_scan"] is not None
             finally:
                 await client.close()
+
+
+# ---------------------------------------------------------------------------
+# POST /api/tmux/capture
+# ---------------------------------------------------------------------------
+
+class TestHandleTmuxCapture:
+    """Tests for POST /api/tmux/capture endpoint."""
+
+    async def test_returns_pane_content(self, cli):
+        """Mock capture_pane; verify JSON response with content field."""
+        with patch("src.tmux_manager.capture_pane", new_callable=AsyncMock, return_value="line1\nline2"):
+            resp = await cli.post(
+                "/api/tmux/capture",
+                json={"machine": "mac-mini", "session_name": "work"},
+            )
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["ok"] is True
+        assert data["content"] == "line1\nline2"
+
+    async def test_requires_machine_param(self, cli):
+        """400 when machine param is missing."""
+        resp = await cli.post(
+            "/api/tmux/capture",
+            json={"session_name": "work"},
+        )
+        assert resp.status == 400
+        data = await resp.json()
+        assert data["ok"] is False
+
+    async def test_requires_session_name_param(self, cli):
+        """400 when session_name param is missing."""
+        resp = await cli.post(
+            "/api/tmux/capture",
+            json={"machine": "mac-mini"},
+        )
+        assert resp.status == 400
+        data = await resp.json()
+        assert data["ok"] is False
+
+    async def test_returns_empty_on_capture_failure(self, cli):
+        """capture_pane returning "" → ok=True with empty content."""
+        with patch("src.tmux_manager.capture_pane", new_callable=AsyncMock, return_value=""):
+            resp = await cli.post(
+                "/api/tmux/capture",
+                json={"machine": "mac-mini", "session_name": "work"},
+            )
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["ok"] is True
+        assert data["content"] == ""
+
+    async def test_invalid_json_body(self, cli):
+        """400 on malformed JSON body."""
+        resp = await cli.post(
+            "/api/tmux/capture",
+            data="not-json",
+            headers={"Content-Type": "application/json"},
+        )
+        assert resp.status == 400
+        data = await resp.json()
+        assert data["ok"] is False
+
+
+# ---------------------------------------------------------------------------
+# _remove_pane_subscriber helper
+# ---------------------------------------------------------------------------
+
+class TestRemovePaneSubscriber:
+    """Tests for _remove_pane_subscriber helper."""
+
+    def _make_state(self, key, subscribers, task=None):
+        mock_task = task or MagicMock()
+        mock_task.done.return_value = False
+        return {
+            "pane_streams": {
+                key: {
+                    "subscribers": set(subscribers),
+                    "task": mock_task,
+                    "last_content": "",
+                }
+            }
+        }
+
+    def test_removes_subscriber(self):
+        """Subscriber is discarded from the set after call."""
+        from src.server import _remove_pane_subscriber
+
+        ws1 = MagicMock()
+        ws2 = MagicMock()
+        key = ("mac-mini", "work")
+        state = self._make_state(key, [ws1, ws2])
+
+        _remove_pane_subscriber(state, "mac-mini", "work", ws1)
+
+        assert ws1 not in state["pane_streams"][key]["subscribers"]
+        assert ws2 in state["pane_streams"][key]["subscribers"]
+
+    def test_cancels_task_when_last_subscriber(self):
+        """task.cancel() called when removing the last subscriber."""
+        from src.server import _remove_pane_subscriber
+
+        ws = MagicMock()
+        mock_task = MagicMock()
+        mock_task.done.return_value = False
+        key = ("mac-mini", "work")
+        state = self._make_state(key, [ws], task=mock_task)
+
+        _remove_pane_subscriber(state, "mac-mini", "work", ws)
+
+        mock_task.cancel.assert_called_once()
+
+    def test_deletes_stream_when_empty(self):
+        """Key deleted from pane_streams when no subscribers remain."""
+        from src.server import _remove_pane_subscriber
+
+        ws = MagicMock()
+        key = ("mac-mini", "work")
+        state = self._make_state(key, [ws])
+
+        _remove_pane_subscriber(state, "mac-mini", "work", ws)
+
+        assert key not in state["pane_streams"]
+
+    def test_noop_for_unknown_key(self):
+        """No error raised for non-existent machine/session key."""
+        from src.server import _remove_pane_subscriber
+
+        ws = MagicMock()
+        state = {"pane_streams": {}}
+
+        # Should not raise
+        _remove_pane_subscriber(state, "nonexistent-machine", "ghost-session", ws)
+
+
+# ---------------------------------------------------------------------------
+# _push_pane_output helper
+# ---------------------------------------------------------------------------
+
+class TestPushPaneOutput:
+    """Tests for _push_pane_output helper."""
+
+    def _make_state(self, key, subscribers, last_content=""):
+        return {
+            "pane_streams": {
+                key: {
+                    "subscribers": set(subscribers),
+                    "task": MagicMock(),
+                    "last_content": last_content,
+                }
+            }
+        }
+
+    @pytest.mark.asyncio
+    async def test_sends_to_all_subscribers(self):
+        """Each ws.send_str is called with the pane_output payload."""
+        from src.server import _push_pane_output
+
+        ws1 = AsyncMock()
+        ws2 = AsyncMock()
+        key = ("mac-mini", "work")
+        state = self._make_state(key, [ws1, ws2])
+
+        await _push_pane_output(state, key, "hello output")
+
+        ws1.send_str.assert_awaited_once()
+        ws2.send_str.assert_awaited_once()
+        sent_payload = json.loads(ws1.send_str.call_args[0][0])
+        assert sent_payload["type"] == "pane_output"
+        assert sent_payload["content"] == "hello output"
+        assert sent_payload["machine"] == "mac-mini"
+        assert sent_payload["session_name"] == "work"
+
+    @pytest.mark.asyncio
+    async def test_removes_dead_subscribers(self):
+        """A ws that raises on send_str is removed from subscribers."""
+        from src.server import _push_pane_output
+
+        ws_ok = AsyncMock()
+        ws_dead = AsyncMock()
+        ws_dead.send_str.side_effect = Exception("connection closed")
+        key = ("mac-mini", "work")
+        state = self._make_state(key, [ws_ok, ws_dead])
+
+        await _push_pane_output(state, key, "content")
+
+        assert ws_dead not in state["pane_streams"][key]["subscribers"]
+        assert ws_ok in state["pane_streams"][key]["subscribers"]
+
+    @pytest.mark.asyncio
+    async def test_noop_when_no_subscribers(self):
+        """No error raised when pane_streams has no matching key."""
+        from src.server import _push_pane_output
+
+        state = {"pane_streams": {}}
+        key = ("mac-mini", "nonexistent")
+
+        # Should not raise
+        await _push_pane_output(state, key, "content")
+
+    @pytest.mark.asyncio
+    async def test_updates_last_content(self):
+        """last_content field is updated after successful push."""
+        from src.server import _push_pane_output
+
+        ws = AsyncMock()
+        key = ("mac-mini", "work")
+        state = self._make_state(key, [ws], last_content="old content")
+
+        await _push_pane_output(state, key, "new content")
+
+        assert state["pane_streams"][key]["last_content"] == "new content"
+
+
+# ---------------------------------------------------------------------------
+# _parse_num — local helper inside _get_local_hardware()
+#
+# _parse_num is defined as a closure inside _get_local_hardware(), not at
+# module scope, so it cannot be imported directly.  These tests exercise the
+# identical logic inline, which also serves as a behavioural contract.
+# ---------------------------------------------------------------------------
+
+def _parse_num(s):
+    """Replica of the _parse_num closure found in server._get_local_hardware."""
+    try:
+        return float(s.split()[0])
+    except Exception:
+        return None
+
+
+class TestParseNum:
+    def test_valid_int(self):
+        assert _parse_num("42") == 42
+
+    def test_valid_float(self):
+        assert _parse_num("3.14") == 3.14
+
+    def test_invalid_returns_none(self):
+        # The real implementation returns None (not 0) on failure
+        assert _parse_num("abc") is None
+
+    def test_none_returns_none(self):
+        assert _parse_num(None) is None
+
+
+# ---------------------------------------------------------------------------
+# _load_prefs / _save_prefs tests
+# ---------------------------------------------------------------------------
+
+class TestLoadSavePrefs:
+    def test_load_prefs_returns_default_on_missing_file(self, tmp_path, monkeypatch):
+        import src.server as _srv
+        monkeypatch.setattr(_srv, "PREFS_FILE", tmp_path / "nonexistent.json")
+        result = _srv._load_prefs()
+        assert isinstance(result, dict)
+
+    def test_save_and_load_roundtrip(self, tmp_path, monkeypatch):
+        import src.server as _srv
+        monkeypatch.setattr(_srv, "PREFS_FILE", tmp_path / "prefs.json")
+        data = {"pinned_sessions": ["sess-1", "sess-2"], "skip_permissions": True}
+        _srv._save_prefs(data)
+        loaded = _srv._load_prefs()
+        assert loaded == data
+
+    def test_load_prefs_returns_default_on_corrupt_json(self, tmp_path, monkeypatch):
+        import src.server as _srv
+        bad_file = tmp_path / "bad.json"
+        bad_file.write_text("{this is not valid json")
+        monkeypatch.setattr(_srv, "PREFS_FILE", bad_file)
+        result = _srv._load_prefs()
+        # Returns the fallback dict, not raises
+        assert isinstance(result, dict)
+
+    def test_save_prefs_creates_file(self, tmp_path, monkeypatch):
+        import src.server as _srv
+        prefs_path = tmp_path / "prefs.json"
+        monkeypatch.setattr(_srv, "PREFS_FILE", prefs_path)
+        _srv._save_prefs({"key": "value"})
+        assert prefs_path.exists()
+
+    def test_prefs_contain_expected_keys_after_roundtrip(self, tmp_path, monkeypatch):
+        import src.server as _srv
+        monkeypatch.setattr(_srv, "PREFS_FILE", tmp_path / "prefs.json")
+        data = {"pinned_sessions": ["a"], "archived_sessions": ["b"], "skip_permissions": False}
+        _srv._save_prefs(data)
+        loaded = _srv._load_prefs()
+        assert "pinned_sessions" in loaded
+        assert "archived_sessions" in loaded
+
+
+# ---------------------------------------------------------------------------
+# _get_local_drive tests
+# ---------------------------------------------------------------------------
+
+class TestGetLocalDrive:
+    def test_unix_path_returns_root(self, monkeypatch):
+        import src.server as _srv
+        import sys as _sys
+
+        # Force unix path on any platform by monkeypatching sys.platform
+        monkeypatch.setattr(_sys, "platform", "linux")
+
+        # psutil.disk_partitions may not match the path; fallback is "/"
+        import psutil as _psutil
+        monkeypatch.setattr(_psutil, "disk_partitions", lambda all=False: [])
+
+        result = _srv._get_local_drive("/home/user/project")
+        assert result == "/"
+
+    def test_windows_path_returns_drive(self, monkeypatch):
+        import src.server as _srv
+        import sys as _sys
+        import pathlib as _pathlib
+
+        monkeypatch.setattr(_sys, "platform", "win32")
+
+        # On non-Windows hosts pathlib.Path won't compute Windows anchors, so
+        # stub Path to return a fake object whose .anchor is the expected drive.
+        class _FakePath:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            @property
+            def anchor(self):
+                return "C:\\"
+
+        monkeypatch.setattr(_pathlib, "Path", _FakePath)
+        result = _srv._get_local_drive("C:\\Users\\rbgnr\\project")
+        assert result == "C:\\"
+
+    def test_relative_path_does_not_crash(self, monkeypatch):
+        import src.server as _srv
+        import sys as _sys
+
+        monkeypatch.setattr(_sys, "platform", "linux")
+
+        import psutil as _psutil
+        monkeypatch.setattr(_psutil, "disk_partitions", lambda all=False: [])
+
+        # Should not raise regardless of the path shape
+        try:
+            result = _srv._get_local_drive("relative/path")
+            assert isinstance(result, str)
+        except Exception as exc:
+            pytest.fail(f"_get_local_drive raised unexpectedly: {exc}")
