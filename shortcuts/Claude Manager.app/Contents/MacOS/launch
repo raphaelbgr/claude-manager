@@ -1,4 +1,5 @@
 #!/bin/bash
 cd "$(dirname "$0")/../../../../"
 source .venv/bin/activate 2>/dev/null
-exec python3 -m src.main 2>/dev/null
+# Try GUI first, fall back to web-only if pywebview missing
+exec python3 -m src.main 2>>"/tmp/claude-manager.log" || exec python3 -m src.main --enable-web 2>>"/tmp/claude-manager.log"
