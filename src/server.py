@@ -357,10 +357,29 @@ async def on_cleanup(app: web.Application) -> None:
 # ---------------------------------------------------------------------------
 
 def _read_version_metadata() -> dict:
-    """Read version from git (source of truth), fall back to VERSION.json."""
+    """Read version from VERSION.json if present, fall back to live git."""
     import pathlib
-    repo = pathlib.Path(__file__).parent.parent
-    # Prefer live git — always matches running code
+    repo = pathlib.Path(__file__).resolve().parent.parent
+    # Prefer committed VERSION.json — canonical fleet-wide standard
+    try:
+        version_file = repo / "VERSION.json"
+        if version_file.is_file():
+            data = json.loads(version_file.read_text())
+            required = ("version", "commit", "commit_full", "branch", "date", "message")
+            if all(k in data for k in required) \
+                    and isinstance(data["version"], int) \
+                    and all(isinstance(data[k], str) for k in required if k != "version"):
+                return {
+                    "version": data["version"],
+                    "commit": data["commit"],
+                    "commit_full": data["commit_full"],
+                    "branch": data["branch"],
+                    "date": data["date"],
+                    "message": data["message"],
+                }
+    except Exception:
+        pass
+    # Fall back to live git — matches running code when VERSION.json is missing/stale
     try:
         import subprocess as _sp
         def _g(*args):
@@ -375,13 +394,6 @@ def _read_version_metadata() -> dict:
         }
     except Exception:
         pass
-    # Fall back to VERSION.json (packaged install without .git)
-    version_file = repo / "VERSION.json"
-    if version_file.is_file():
-        try:
-            return json.loads(version_file.read_text())
-        except Exception:
-            pass
     return {"version": 0, "commit": "unknown"}
 
 

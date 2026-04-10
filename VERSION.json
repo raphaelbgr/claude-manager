@@ -1,0 +1,8 @@
+{
+  "version": 102,
+  "commit": "e340df5",
+  "commit_full": "e340df50a072ba5c3e64e395d6f11291a637fd41",
+  "branch": "master",
+  "date": "2026-04-10T07:40:41-03:00",
+  "message": "feat: smart tmux attach + fleet install scripts + mac dock/menu bar"
+}

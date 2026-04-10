@@ -2,6 +2,14 @@
 """Generate VERSION.json from git state.
 
 Writes the file to the repo root. Run before commit or as part of CI/install.
+
+Fields:
+    version:     monotonic int (git rev-list --count HEAD, includes THIS commit)
+    commit:      short hash
+    commit_full: full hash
+    branch:      current branch name
+    date:        commit date (ISO 8601)
+    message:     first line of commit message
 """
 from __future__ import annotations
 
@@ -16,6 +24,7 @@ def _git(*args: str, repo: Path) -> str:
 
 
 def generate(repo: Path) -> dict:
+    # +1 so the next commit (which will include this VERSION.json bump) gets a unique int
     count = int(_git("rev-list", "--count", "HEAD", repo=repo))
     return {
         "version": count + 1,
