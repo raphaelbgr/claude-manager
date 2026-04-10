@@ -8,6 +8,8 @@
 
 **claude-manager** is a fleet session manager that discovers, organizes, and resumes Claude Code sessions across all your machines from a single interface.
 
+Built by a computer engineer with ADHD who runs Claude Code sessions across 5 machines simultaneously and kept losing track of all of them. This tool went from "I can't find that session" to "everything is right here" — and it's been a game changer for staying focused when your brain wants to jump between 20 things at once.
+
 ## The Problem
 
 You have 5 machines. 300+ Claude Code sessions. Dozens of tmux/psmux multiplexer sessions. You can't remember:
@@ -16,6 +18,8 @@ You have 5 machines. 300+ Claude Code sessions. Dozens of tmux/psmux multiplexer
 - What folder were you in when you started that refactoring?
 - Is that session still running or did it idle out?
 - How do you resume a session on a remote Windows machine from your Mac?
+
+If you have ADHD, multiply all of the above by the number of context switches your brain does per hour.
 
 **claude-manager** solves this in one click.
 
