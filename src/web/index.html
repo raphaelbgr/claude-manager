@@ -2254,10 +2254,21 @@ function Header({ health, sessions, tmuxSessions, fleet, onScan, scanning, skipP
         clearTimeout(restartTimerRef.current);
         setRestartConfirm(false);
         try {
-          await fetch('/api/restart', { method: 'POST' });
-          toast('Server restarting...', 'info');
-          setTimeout(() => { window.location.reload(); }, 3000);
-        } catch { toast('Restart failed', 'error'); }
+          const res = await fetch('/api/restart', { method: 'POST' });
+          if (res.ok) {
+            toast('Server restarted — rescanning fleet...', 'success');
+            // Trigger a fresh scan after restart
+            setTimeout(async () => {
+              try {
+                const scanRes = await fetch('/api/sessions/scan', { method: 'POST' });
+                const d = await scanRes.json();
+                if (d.ok) toast(`Scan complete: ${(d.sessions||[]).length} sessions`, 'success');
+              } catch {}
+            }, 3000);
+          } else {
+            toast('Restart failed', 'error');
+          }
+        } catch (e) { toast(`Restart error: ${e.message}`, 'error'); }
       },
       title: restartConfirm ? 'Click again to confirm restart' : 'Restart API server',
       style: {
