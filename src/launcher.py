@@ -56,6 +56,57 @@ async def _run_osascript(script: str) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
+async def _launch_macos_multi(commands: list[str], delays: list[float] = None) -> dict:
+    """Launch iTerm2 and type multiple commands with delays between them.
+
+    Used for Windows SSH sessions where we need to:
+    1. ssh host  (wait for connection)
+    2. powershell  (wait for PS prompt)
+    3. cd path
+    4. claude --resume ...
+    """
+    if not commands:
+        return {"ok": False, "error": "No commands"}
+    if delays is None:
+        delays = [0] + [2] + [0.5] * (len(commands) - 2)  # 2s after SSH, 0.5s between rest
+
+    lines = []
+    for i, cmd in enumerate(commands):
+        if i > 0 and i < len(delays) and delays[i] > 0:
+            lines.append(f'        delay {delays[i]}')
+        lines.append(f'        write text {applescript_string(cmd)}')
+
+    body = '\n'.join(lines)
+    iterm_script = (
+        'tell application "iTerm2"\n'
+        '    activate\n'
+        '    set newWindow to (create window with default profile)\n'
+        '    tell current session of newWindow\n'
+        f'{body}\n'
+        '    end tell\n'
+        'end tell'
+    )
+    result = await _run_osascript(iterm_script)
+    if result["ok"]:
+        return result
+
+    # Terminal.app fallback — use 'do script' for each command
+    term_lines = [f'    do script {applescript_string(commands[0])}']
+    for i, cmd in enumerate(commands[1:], 1):
+        if i < len(delays) and delays[i] > 0:
+            term_lines.append(f'    delay {delays[i]}')
+        term_lines.append(f'    do script {applescript_string(cmd)} in front window')
+
+    term_body = '\n'.join(term_lines)
+    terminal_script = (
+        'tell application "Terminal"\n'
+        '    activate\n'
+        f'{term_body}\n'
+        'end tell'
+    )
+    return await _run_osascript(terminal_script)
+
+
 async def _launch_macos(command: str) -> dict:
     """Launch a terminal on macOS — tries iTerm2 first, falls back to Terminal.app."""
     cmd_esc = applescript_string(command)
@@ -168,25 +219,36 @@ async def launch_claude_session(cwd: str, session_id: str, machine: str, skip_pe
 
     if machine == local_machine:
         cmd = adapter.build_session_command(cwd, session_id, skip_permissions)
+        return await launch_terminal(cmd)
+
+    info = FLEET_MACHINES.get(machine, {})
+    alias = info.get("ssh_alias", machine)
+
+    if adapter.is_windows and sys.platform == "darwin":
+        # Windows via SSH: ConPTY breaks PowerShell -Command with SSH -t,
+        # and without -t claude has no TTY. Clean solution: use iTerm2's
+        # native SSH command feature to get a proper TTY, then type
+        # powershell + cd + claude as separate commands with delays.
+        skip_flag = " --dangerously-skip-permissions" if skip_permissions else ""
+        return await _launch_macos_multi(
+            [
+                f"ssh {alias}",          # SSH into Windows (Git Bash)
+                "powershell",             # Start PowerShell (gets proper TTY)
+                f"cd '{cwd}'",            # Navigate to project directory
+                f"claude --resume {session_id}{skip_flag}",  # Resume session
+            ],
+            delays=[0, 2, 1, 0.5],  # 2s for SSH connect, 1s for PS startup
+        )
+    elif adapter.is_windows:
+        # Non-macOS client to Windows — best effort
+        cmd = f"ssh {alias}"
+        return await launch_terminal(cmd)
     else:
-        info = FLEET_MACHINES.get(machine, {})
-        alias = info.get("ssh_alias", machine)
-        # Build the remote command using the SSH adapter (PowerShell on Windows)
+        # Linux/macOS target: SSH -t with full command works perfectly
         session_cmd = adapter.build_session_command_ssh(cwd, session_id, skip_permissions)
         terminal_cmd = adapter.for_terminal(session_cmd, keep_open=True)
-        if adapter.is_windows:
-            # Windows OpenSSH uses Git Bash as DefaultShell (DefaultShellCommandOption=-c).
-            # With SSH -t (PTY): OpenSSH wraps the command in ConPTY/conhost and the
-            # -Command "..." argument is NOT passed to PowerShell — it starts interactive.
-            # Without -t: Git Bash runs `bash -c "user_cmd"` normally and PowerShell
-            # receives the full -Command "..." argument correctly.
-            # Fix: omit -t for Windows. PowerShell -NoExit keeps the session open.
-            # Single quotes preserve backslashes in C:\paths across the bash→SSH chain.
-            cmd = f"ssh {alias} '{terminal_cmd}'"
-        else:
-            cmd = f"ssh {shlex.quote(alias)} -t {shlex.quote(terminal_cmd)}"
-
-    return await launch_terminal(cmd)
+        cmd = f"ssh {shlex.quote(alias)} -t {shlex.quote(terminal_cmd)}"
+        return await launch_terminal(cmd)
 
 
 async def launch_tmux_attach(session_name: str, machine: str) -> dict:

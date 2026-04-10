@@ -101,12 +101,18 @@ class TestLaunchClaudeSessionRemote:
         from src.launcher import launch_claude_session
 
         with patch("src.launcher.detect_local_machine", return_value="mac-mini"), \
-             patch("src.launcher.launch_terminal", new=AsyncMock(return_value={"ok": True})) as mock_lt:
+             patch("src.launcher.launch_terminal", new=AsyncMock(return_value={"ok": True})) as mock_lt, \
+             patch("src.launcher._launch_macos_multi", new=AsyncMock(return_value={"ok": True})) as mock_multi:
             await launch_claude_session("/proj", "sess", "avell-i7")
 
-        cmd = mock_lt.call_args[0][0]
-        assert "avell-i7" in cmd
-        assert "ssh" in cmd
+        # Windows: uses multi-command approach via _launch_macos_multi
+        if mock_multi.called:
+            cmds = mock_multi.call_args[0][0]
+            assert any("avell-i7" in c for c in cmds)
+            assert any("ssh" in c for c in cmds)
+        else:
+            cmd = mock_lt.call_args[0][0]
+            assert "avell-i7" in cmd
 
     @pytest.mark.asyncio
     async def test_remote_exec_bash_at_end(self):

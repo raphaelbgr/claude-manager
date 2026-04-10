@@ -605,11 +605,17 @@ class TestLaunchClaudeSession:
         from src.launcher import launch_claude_session
 
         with patch("src.launcher.detect_local_machine", return_value="mac-mini"), \
-             patch("src.launcher.launch_terminal", new=AsyncMock(return_value={"ok": True})) as mock_lt:
+             patch("src.launcher.launch_terminal", new=AsyncMock(return_value={"ok": True})) as mock_lt, \
+             patch("src.launcher._launch_macos_multi", new=AsyncMock(return_value={"ok": True})) as mock_multi:
             await launch_claude_session("/dir", "sid", "avell-i7")
 
-        cmd = mock_lt.call_args[0][0]
-        assert "avell-i7" in cmd
+        # Windows uses _launch_macos_multi, Linux/macOS uses launch_terminal
+        if mock_multi.called:
+            cmds = mock_multi.call_args[0][0]
+            assert any("avell-i7" in c for c in cmds)
+        else:
+            cmd = mock_lt.call_args[0][0]
+            assert "avell-i7" in cmd
 
 
 # ---------------------------------------------------------------------------

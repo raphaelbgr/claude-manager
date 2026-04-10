@@ -284,8 +284,7 @@ async def handle_sessions_launch(request: web.Request) -> web.Response:
 
         if is_remote_windows:
             # Windows: server creates psmux session + sends cd+claude via send-keys.
-            # Client just opens a terminal that SSHes into the machine.
-            # The psmux session runs claude in the background.
+            # Then open terminal: SSH -t powershell → psmux attach.
             project = cwd.replace("\\", "/").rstrip("/").split("/")[-1] if cwd else "claude"
             project_safe = re.sub(r"[^a-zA-Z0-9_-]", "-", project) or "claude"
             existing_names = [t.name for t in request.app["state"]["tmux"] if t.machine == machine]
@@ -296,11 +295,19 @@ async def handle_sessions_launch(request: web.Request) -> web.Response:
             if not create_result.get("ok"):
                 result = create_result
             else:
-                # Open a local terminal that just SSHes in — user can manually
-                # psmux attach -t <name> to see the running session
+                # Open terminal: SSH → PowerShell → psmux attach
+                from .launcher import _launch_macos_multi
                 info = FLEET_MACHINES.get(machine, {})
                 alias = info.get("ssh_alias", machine)
-                result = await launch_terminal(f"ssh {alias}")
+                attach_cmd = adapter.mux_attach(safe_name)
+                result = await _launch_macos_multi(
+                    [
+                        f"ssh {alias}",    # SSH into Windows (Git Bash)
+                        "powershell",       # Start PowerShell
+                        attach_cmd,         # psmux attach -t session-name
+                    ],
+                    delays=[0, 2, 1],
+                )
         else:
             # tmux on macOS/Linux: create session + attach works perfectly
             project = cwd.replace("\\", "/").rstrip("/").split("/")[-1] if cwd else "claude"
