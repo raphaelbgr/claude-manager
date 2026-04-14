@@ -2264,6 +2264,190 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
 
 
 # ---------------------------------------------------------------------------
+# README render + OS-native folder open
+# ---------------------------------------------------------------------------
+
+_README_SUFFIXES_LOWER = {"readme.md", "readme.md", "readme", "readme"}  # canonical check is suffix-only
+
+
+def _is_valid_readme_path(path: str) -> bool:
+    """Return True if path looks like an absolute README* file (case-insensitive, no traversal)."""
+    if not path:
+        return False
+    import pathlib as _pl
+    p = _pl.PurePosixPath(path) if not path.startswith("C:") and not path.startswith("c:") else _pl.PureWindowsPath(path)
+    # No traversal
+    if ".." in path:
+        return False
+    # Must be absolute
+    if not (path.startswith("/") or (len(path) >= 3 and path[1] == ":" and path[2] in ("/", "\\"))):
+        return False
+    # Filename must start with readme (case-insensitive)
+    fname = path.replace("\\", "/").split("/")[-1]
+    return fname.lower().startswith("readme")
+
+
+async def handle_sessions_readme(request: web.Request) -> web.Response:
+    """GET /api/sessions/readme?machine=<m>&path=<abs-readme-path>
+
+    Returns {ok, content, truncated} on success, {ok: false, error} on failure.
+    Content capped at 256 KiB.
+    """
+    machine = request.rel_url.query.get("machine", "")
+    path = request.rel_url.query.get("path", "")
+
+    if not machine or machine not in FLEET_MACHINES:
+        # Also allow local machine name
+        local_machine = request.app.get("local_machine")
+        if machine and machine != local_machine:
+            return web.json_response({"ok": False, "error": f"unknown machine: {machine}"}, status=400)
+
+    if not _is_valid_readme_path(path):
+        return web.json_response({"ok": False, "error": "invalid path — must be absolute and point to README*"}, status=400)
+
+    MAX_BYTES = 256 * 1024  # 256 KiB
+
+    local_machine = request.app.get("local_machine")
+    is_local = (not machine) or (machine == local_machine)
+
+    if is_local:
+        import pathlib as _pl
+        try:
+            p = _pl.Path(path)
+            if not p.is_file():
+                return web.json_response({"ok": False, "error": "file not found"}, status=404)
+            raw = p.read_bytes()
+            truncated = len(raw) > MAX_BYTES
+            content = raw[:MAX_BYTES].decode("utf-8", errors="replace")
+            return web.json_response({"ok": True, "content": content, "truncated": truncated})
+        except PermissionError:
+            return web.json_response({"ok": False, "error": "permission denied"}, status=403)
+        except Exception as exc:
+            return web.json_response({"ok": False, "error": str(exc)}, status=500)
+
+    # Remote machine
+    info = FLEET_MACHINES.get(machine, {})
+    is_windows = info.get("os") == "win32"
+    from .executor import SSHExecutor
+    executor = SSHExecutor(machine)
+
+    try:
+        if is_windows:
+            # PowerShell: read up to 256 KiB
+            # Escape single quotes in path for PS
+            ps_path = path.replace("'", "''")
+            ps_cmd = (
+                f"$bytes = [System.IO.File]::ReadAllBytes('{ps_path}');"
+                f"if ($bytes.Length -gt {MAX_BYTES}) {{ $bytes = $bytes[0..{MAX_BYTES - 1}]; Write-Host 'TRUNCATED' }};"
+                f"[System.Text.Encoding]::UTF8.GetString($bytes)"
+            )
+            rc, stdout, stderr = await executor.exec_shell(
+                f"powershell -NoProfile -Command \"{ps_cmd}\"",
+                timeout=15,
+            )
+        else:
+            # Unix: cat | head -c 262144
+            import shlex as _shlex
+            quoted = _shlex.quote(path)
+            rc, stdout, stderr = await executor.exec_shell(
+                f"cat {quoted} | head -c {MAX_BYTES + 1}",
+                timeout=15,
+            )
+        if rc != 0:
+            err = stderr.decode("utf-8", errors="replace").strip() if isinstance(stderr, bytes) else str(stderr)
+            return web.json_response({"ok": False, "error": err or "remote read failed"}, status=500)
+        raw = stdout if isinstance(stdout, bytes) else stdout.encode()
+        truncated = len(raw) > MAX_BYTES
+        content = raw[:MAX_BYTES].decode("utf-8", errors="replace")
+        # Strip Windows TRUNCATED marker if present
+        if is_windows and "TRUNCATED" in content:
+            content = content.replace("TRUNCATED\n", "").replace("TRUNCATED", "")
+            truncated = True
+        return web.json_response({"ok": True, "content": content, "truncated": truncated})
+    except asyncio.TimeoutError:
+        return web.json_response({"ok": False, "error": "SSH timeout"}, status=504)
+    except Exception as exc:
+        return web.json_response({"ok": False, "error": str(exc)}, status=500)
+
+
+async def handle_fs_open(request: web.Request) -> web.Response:
+    """POST /api/fs/open — open a folder in the OS native file manager.
+
+    Body: {machine: str, path: str}
+    Loopback-only. For local machine: launches open/explorer/xdg-open.
+    For remote: returns smb:// URL info (the frontend uses <a href> directly).
+    """
+    from .auth import is_loopback
+    if not is_loopback(request.remote):
+        return web.json_response({"ok": False, "error": "loopback only"}, status=403)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid JSON body"}, status=400)
+
+    machine = body.get("machine", "")
+    path = body.get("path", "")
+    if not path:
+        return web.json_response({"ok": False, "error": "path required"}, status=400)
+
+    local_machine = request.app.get("local_machine")
+    is_local = (not machine) or (machine == local_machine)
+
+    if not is_local:
+        # Remote: compute smb/UNC URL authoritatively and return it
+        info = FLEET_MACHINES.get(machine, {})
+        ip = info.get("ip", machine)
+        # Normalise path separators
+        norm = path.replace("\\", "/")
+        # Strip drive letter on Windows paths (C:/Users/... → Users/...)
+        if len(norm) >= 3 and norm[1] == ":" and norm[2] == "/":
+            share_root = norm[0]  # drive letter as share name
+            rest = norm[3:]       # everything after C:/
+            smb_url = f"smb://{ip}/{share_root}/{rest}"
+            unc_url = f"\\\\{ip}\\{share_root}\\{rest.replace('/', chr(92))}"
+        else:
+            # Unix path: use first segment as share name
+            parts = [p for p in norm.split("/") if p]
+            if len(parts) >= 2:
+                smb_url = f"smb://{ip}/{parts[0]}/{'/'.join(parts[1:])}"
+                _unc_parts = "\\".join(parts)
+                unc_url = f"\\\\{ip}\\{_unc_parts}"
+            elif parts:
+                smb_url = f"smb://{ip}/{parts[0]}"
+                unc_url = f"\\\\{ip}\\{parts[0]}"
+            else:
+                smb_url = f"smb://{ip}"
+                unc_url = f"\\\\{ip}"
+        return web.json_response({
+            "ok": False,
+            "error": "use smb:// link for remote folders",
+            "smb_url": smb_url,
+            "unc_url": unc_url,
+        })
+
+    # Local: launch native file manager
+    import shlex as _shlex
+    try:
+        if sys.platform == "darwin":
+            cmd = ["open", path]
+        elif sys.platform == "win32":
+            cmd = ["explorer.exe", path]
+        else:
+            cmd = ["xdg-open", path]
+        rc, _, stderr = await run_with_timeout(cmd, timeout=5)
+        if rc != 0:
+            err = stderr.decode("utf-8", errors="replace").strip() if isinstance(stderr, bytes) else str(stderr)
+            return web.json_response({"ok": False, "error": err or f"command exited {rc}"}, status=500)
+        return web.json_response({"ok": True})
+    except asyncio.TimeoutError:
+        # open/explorer usually returns immediately; timeout means something odd happened
+        return web.json_response({"ok": False, "error": "command timed out"}, status=504)
+    except Exception as exc:
+        return web.json_response({"ok": False, "error": str(exc)}, status=500)
+
+
+# ---------------------------------------------------------------------------
 # Application factory
 # ---------------------------------------------------------------------------
 
@@ -2326,6 +2510,8 @@ def create_app(
     app.router.add_get("/api/sessions/{machine}", handle_sessions_machine)
     app.router.add_post("/api/sessions/scan", handle_sessions_scan)
     app.router.add_post("/api/sessions/launch", handle_sessions_launch)
+    app.router.add_get("/api/sessions/readme", handle_sessions_readme)
+    app.router.add_post("/api/fs/open", handle_fs_open)
     app.router.add_post("/api/sessions/pin", handle_sessions_pin)
     app.router.add_post("/api/sessions/unpin", handle_sessions_unpin)
     app.router.add_post("/api/sessions/archive", handle_sessions_archive)
