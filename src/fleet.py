@@ -15,6 +15,7 @@ from typing import Any
 import aiohttp
 
 from .config import FLEET_MACHINES, SSH_TIMEOUT
+from .executor import SSHExecutor
 from .subprocess_utils import run_with_timeout
 
 log = logging.getLogger("claude_manager.fleet")
@@ -72,19 +73,9 @@ async def check_machine_health(name: str, info: dict[str, Any]) -> dict[str, Any
             pass  # fall through to SSH
 
     # --- SSH probe ---
-    ssh_alias = info.get("ssh_alias", name)
     try:
-        rc, stdout, _ = await run_with_timeout(
-            [
-                "ssh",
-                "-o", "BatchMode=yes",
-                "-o", f"ConnectTimeout={SSH_TIMEOUT}",
-                "-o", "StrictHostKeyChecking=no",
-                ssh_alias,
-                "echo ok",
-            ],
-            timeout=SSH_TIMEOUT + 2,
-        )
+        executor = SSHExecutor(name)
+        rc, stdout, _ = await executor.exec(["echo", "ok"], timeout=SSH_TIMEOUT + 2)
         if rc == 0 and b"ok" in stdout:
             base.update(online=True, method="ssh", health_data={"ssh": "ok"})
             log.info("check_machine_health(%s): online=True via ssh", name)

@@ -27,6 +27,7 @@ from typing import Any, Callable
 import psutil
 
 from .subprocess_utils import run_with_timeout
+from .executor import SSHExecutor
 
 log = logging.getLogger("claude_manager.scanner")
 
@@ -537,10 +538,10 @@ async def scan_remote(
     the remote machine name.
     """
     script = REMOTE_SCAN_SCRIPT.strip()
+    executor = SSHExecutor(machine_name)
     try:
-        rc, stdout, stderr = await run_with_timeout(
-            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
-             "-o", "StrictHostKeyChecking=no", ssh_alias, "python3", "-"],
+        rc, stdout, stderr = await executor.exec_shell(
+            "python3 -",
             timeout=30,
             input=script.encode("utf-8"),
         )

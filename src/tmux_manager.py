@@ -5,23 +5,11 @@ import shlex
 from dataclasses import dataclass, asdict
 from .command_adapter import get_adapter
 from .config import FLEET_MACHINES, detect_local_machine, SSH_TIMEOUT
+from .executor import get_executor, SSHExecutor
 from .mux_parser import parse_mux_output
 from .subprocess_utils import run_with_timeout
 
 log = logging.getLogger("claude_manager.tmux_manager")
-
-# PATH prefix for SSH commands to Unix machines — ensures tmux is found in
-# non-interactive shells (macOS Homebrew at /opt/homebrew/bin, etc.)
-# NOT used for Windows targets (PowerShell doesn't understand 'export').
-_SSH_PATH_PREFIX_UNIX = "export PATH=/opt/homebrew/bin:/usr/local/bin:/snap/bin:$PATH; "
-
-
-def _ssh_path_prefix(machine: str) -> str:
-    """Return PATH prefix for SSH commands, empty for Windows targets."""
-    info = FLEET_MACHINES.get(machine, {})
-    if info.get("os") == "win32":
-        return ""
-    return _SSH_PATH_PREFIX_UNIX
 
 
 @dataclass
@@ -100,20 +88,11 @@ async def list_remote_tmux_via_api(machine_name: str, ip: str, dispatch_port: in
 async def list_remote_tmux(machine_name: str, ssh_alias: str, mux: str) -> list[TmuxSession]:
     """List tmux/psmux sessions on a remote machine via SSH."""
     fmt = "#{session_name}|#{session_created}|#{session_windows}|#{session_attached}|#{pane_current_path}"
-    ssh_base = [
-        "ssh",
-        "-o", f"ConnectTimeout={SSH_TIMEOUT}",
-        "-o", "BatchMode=yes",
-        "-o", "StrictHostKeyChecking=no",
-        ssh_alias,
-    ]
+    executor = SSHExecutor(machine_name)
 
     async def _run_remote(cmd_str: str) -> tuple[int, str]:
         try:
-            rc, stdout, _ = await run_with_timeout(
-                [*ssh_base, _ssh_path_prefix(machine_name) + cmd_str],
-                timeout=15,
-            )
+            rc, stdout, _ = await executor.exec_shell(cmd_str, timeout=15)
             return rc, stdout.decode()
         except (asyncio.TimeoutError, OSError):
             return -1, ""
@@ -215,16 +194,13 @@ async def create_tmux_session(
     """
     info = FLEET_MACHINES.get(machine, {})
     mux = info.get("mux", "tmux")
-    ssh_alias = info.get("ssh_alias", machine)
-    local_machine = detect_local_machine()
-    is_local = (machine == local_machine)
-
     adapter = get_adapter(machine)
+    executor = get_executor(machine)
 
     try:
-        if is_local:
+        if executor.is_local:
             # Step 1: Create detached session (no -c, psmux doesn't support it)
-            _rc_create, _, stderr = await run_with_timeout(
+            _rc_create, _, stderr = await executor.exec(
                 [mux, "new-session", "-d", "-s", name],
                 timeout=15,
             )
@@ -236,14 +212,14 @@ async def create_tmux_session(
             # Step 2: cd into the working directory via send-keys
             if cwd:
                 cd_cmd = adapter.cd_command(cwd)
-                await run_with_timeout(
+                await executor.exec(
                     [mux, "send-keys", "-t", name, cd_cmd, "Enter"],
                     timeout=10,
                 )
 
             # Step 3: Send the command via send-keys
             if command:
-                await run_with_timeout(
+                await executor.exec(
                     [mux, "send-keys", "-t", name, command, "Enter"],
                     timeout=10,
                 )
@@ -251,20 +227,10 @@ async def create_tmux_session(
             log.info("create_tmux_session(%s, %s): ok (local, cwd=%s)", machine, name, cwd)
             return {"ok": True}
         else:
-            # Remote: use create + send-keys approach (avoids quoting hell over SSH).
-            ssh_base = [
-                "ssh",
-                "-o", f"ConnectTimeout={SSH_TIMEOUT}",
-                "-o", "BatchMode=yes",
-                "-o", "StrictHostKeyChecking=no",
-                ssh_alias,
-            ]
+            assert isinstance(executor, SSHExecutor)
 
             async def _ssh_run(cmd_str: str) -> tuple[int, str]:
-                _rc, _, _se = await run_with_timeout(
-                    [*ssh_base, _ssh_path_prefix(machine) + cmd_str],
-                    timeout=15,
-                )
+                _rc, _, _se = await executor.exec_shell(cmd_str, timeout=15)
                 return _rc, _se.decode().strip()
 
             # Step 1: Create empty detached session.
@@ -383,24 +349,15 @@ async def _capture_pane_local(machine: str, session_name: str, lines: int) -> st
 async def _capture_pane_via_ssh(machine: str, session_name: str, lines: int) -> str:
     """Capture pane via SSH (fallback when API unavailable)."""
     adapter = get_adapter(machine)
-    info = FLEET_MACHINES.get(machine, {})
-    ssh_alias = info.get("ssh_alias", machine)
+    executor = SSHExecutor(machine)
 
     if adapter.mux_type == "tmux":
         cmd_str = f"tmux capture-pane -t {shlex.quote(session_name)} -e -p -S -{lines}"
     else:
         cmd_str = f"psmux capture-pane -t {shlex.quote(session_name)} -p"
 
-    ssh_cmd = [
-        "ssh",
-        "-o", f"ConnectTimeout={SSH_TIMEOUT}",
-        "-o", "BatchMode=yes",
-        "-o", "StrictHostKeyChecking=no",
-        ssh_alias,
-        _ssh_path_prefix(machine) + cmd_str,
-    ]
     try:
-        rc, stdout, _ = await run_with_timeout(ssh_cmd, timeout=10)
+        rc, stdout, _ = await executor.exec_shell(cmd_str, timeout=10)
         if rc == 0:
             return _clean_pane_output(stdout.decode("utf-8", errors="replace"))
     except (asyncio.TimeoutError, OSError) as exc:
@@ -450,13 +407,11 @@ async def kill_tmux_session(machine: str, name: str) -> dict:
     """
     info = FLEET_MACHINES.get(machine, {})
     mux = info.get("mux", "tmux")
-    ssh_alias = info.get("ssh_alias", machine)
-    local_machine = detect_local_machine()
-    is_local = (machine == local_machine)
+    executor = get_executor(machine)
 
     try:
-        if is_local:
-            rc, _, stderr = await run_with_timeout(
+        if executor.is_local:
+            rc, _, stderr = await executor.exec(
                 [mux, "kill-session", "-t", name],
                 timeout=10,
             )
@@ -466,17 +421,10 @@ async def kill_tmux_session(machine: str, name: str) -> dict:
                 return {"ok": False, "error": err}
             return {"ok": True}
         else:
+            assert isinstance(executor, SSHExecutor)
             adapter = get_adapter(machine)
-            remote_cmd = _ssh_path_prefix(machine) + adapter.mux_kill_session(name)
-            rc, _, stderr = await run_with_timeout(
-                [
-                    "ssh",
-                    "-o", f"ConnectTimeout={SSH_TIMEOUT}",
-                    "-o", "BatchMode=yes",
-                    "-o", "StrictHostKeyChecking=no",
-                    ssh_alias,
-                    remote_cmd,
-                ],
+            rc, _, stderr = await executor.exec_shell(
+                adapter.mux_kill_session(name),
                 timeout=15,
             )
             if rc != 0:
