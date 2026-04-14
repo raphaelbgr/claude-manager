@@ -282,8 +282,10 @@ async def _background_scan(app: web.Application) -> None:
                 })
                 await store.push_raw(payload)
 
-            sessions = await scan_all(local_machine, fleet, on_progress=_emit_scan_progress)
-            tmux = await list_all_tmux(local_machine, fleet)
+            sessions, tmux = await asyncio.gather(
+                scan_all(local_machine, fleet, on_progress=_emit_scan_progress),
+                list_all_tmux(local_machine, fleet),
+            )
             await store.update_fleet(fleet)
             await store.update_sessions(sessions)
             await store.update_tmux(tmux)

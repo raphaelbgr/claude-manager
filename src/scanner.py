@@ -527,7 +527,7 @@ async def scan_remote_via_api(machine_name: str, ip: str, dispatch_port: int) ->
     url = f"http://{ip}:{dispatch_port}/sessions"
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=3)) as resp:
                 if resp.status != 200:
                     return []
                 data = await resp.json()

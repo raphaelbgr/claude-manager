@@ -67,7 +67,7 @@ async def list_remote_tmux_via_api(machine_name: str, ip: str, dispatch_port: in
     url = f"http://{ip}:{dispatch_port}/tmux"
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=3)) as resp:
                 if resp.status != 200:
                     return []
                 data = await resp.json()
