@@ -2274,6 +2274,19 @@ function ProjectsView({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaunc
     return () => clearTimeout(debounceRef.current);
   }, [wsUpdateCount, fetchProjects]);
 
+  // Listen for global Expand/Collapse All from the header
+  useEffect(() => {
+    const onSetAll = (e) => {
+      const all = !!e.detail;
+      const next = {};
+      for (const p of projects) { next[p.project_id] = all; }
+      setExpandedProjects(next);
+      try { localStorage.setItem('expandedProjects', JSON.stringify(next)); } catch {}
+    };
+    window.addEventListener('projectsSetAllExpanded', onSetAll);
+    return () => window.removeEventListener('projectsSetAllExpanded', onSetAll);
+  }, [projects]);
+
   const toggleProject = useCallback((pid) => {
     setExpandedProjects(prev => {
       const next = { ...prev, [pid]: !prev[pid] };
@@ -2335,21 +2348,27 @@ function ProjectsView({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaunc
           latestSession && h('span', {
             style: { fontSize: '0.62rem', color: '#484f58', fontFamily: 'monospace', marginLeft: 4 }
           }, relativeTime(proj.latest_modified)),
-          // Machine badges strip
+          // Machine badges strip (label · session count for that machine within this project)
           h('div', { style: { display: 'flex', gap: 4, marginLeft: 4, flexWrap: 'wrap' } },
-            (proj.machines || []).map(m => {
-              const mc = machineColor(m);
-              return h('span', {
-                key: m,
-                title: m,
-                style: {
-                  fontSize: '0.58rem', fontWeight: 700, padding: '1px 6px',
-                  borderRadius: 10, border: `1px solid ${mc.border}`,
-                  background: mc.bg, color: mc.color, whiteSpace: 'nowrap',
-                  fontFamily: '"SF Mono", "Fira Code", Consolas, monospace',
-                }
-              }, m);
-            })
+            (() => {
+              const counts = {};
+              for (const s of (proj.sessions || [])) {
+                counts[s.machine] = (counts[s.machine] || 0) + 1;
+              }
+              return (proj.machines || []).map(m => {
+                const mc = machineColor(m);
+                return h('span', {
+                  key: m,
+                  title: `${m} — ${counts[m] || 0} session${(counts[m] || 0) === 1 ? '' : 's'}`,
+                  style: {
+                    fontSize: '0.58rem', fontWeight: 700, padding: '1px 6px',
+                    borderRadius: 10, border: `1px solid ${mc.border}`,
+                    background: mc.bg, color: mc.color, whiteSpace: 'nowrap',
+                    fontFamily: '"SF Mono", "Fira Code", Consolas, monospace',
+                  }
+                }, `${m} · ${counts[m] || 0}`);
+              });
+            })()
           ),
           h('div', { style: { flex: 1 } }),
         ),
@@ -4263,12 +4282,14 @@ function App() {
     const tmuxMachines = [...new Set(tmuxSessions.map(s => s.machine || 'unknown'))];
     for (const m of machineNames) { newState[m] = true; }
     for (const m of tmuxMachines) { newState[`tmux:${m}`] = true; }
-    // Project keys
+    // Project keys (Machine view)
     for (const s of sessions) {
       const path = s.cwd || s.project_path || '';
       if (path && s.machine) { newState[`project:${s.machine}:${path}`] = true; }
     }
     setCollapseState(newState);
+    // Project view: broadcast to ProjectsView to expand all project folders
+    window.dispatchEvent(new CustomEvent('projectsSetAllExpanded', { detail: true }));
   }, [sessions, tmuxSessions]);
 
   const handleCollapseAll = useCallback(() => {
@@ -4282,6 +4303,7 @@ function App() {
       if (path && s.machine) { newState[`project:${s.machine}:${path}`] = false; }
     }
     setCollapseState(newState);
+    window.dispatchEvent(new CustomEvent('projectsSetAllExpanded', { detail: false }));
   }, [sessions, tmuxSessions]);
 
   // ── Tmux connect ──────────────────────────────────────────────────────────
@@ -4447,8 +4469,16 @@ function App() {
               style: {
                 fontSize: '0.7rem', fontWeight: 700, letterSpacing: '0.08em',
                 textTransform: 'uppercase', color: '#484f58',
-              }
-            }, 'Sessions'),
+              },
+              title: 'Total unique projects across the fleet',
+            }, (() => {
+              const projectCount = new Set(
+                (sessions || [])
+                  .map(s => (s.git_remote || '').trim() || (s.project_path || s.cwd || '').split('/').filter(Boolean).pop() || '')
+                  .filter(Boolean)
+              ).size;
+              return projectCount ? `Sessions · ${projectCount} projects` : 'Sessions';
+            })()),
             // Project | Machine segmented toggle
             h('div', {
               style: {
