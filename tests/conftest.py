@@ -11,6 +11,26 @@ import pytest
 
 
 # ---------------------------------------------------------------------------
+# Disable the asyncssh pool during tests.
+#
+# SSHExecutor.exec_shell routes through a persistent asyncssh connection pool
+# in production. Tests mock `asyncio.create_subprocess_exec` and expect ALL
+# remote commands to flow through subprocess-ssh — the pool would otherwise
+# connect to real fleet hosts and bypass those mocks.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _disable_ssh_pool(monkeypatch):
+    """Force SSHExecutor.exec_shell to skip the pool and take the subprocess
+    fallback. Flipping src.ssh_pool.asyncssh to None makes the `if _asyncssh
+    is not None` guard fail → the except path logs and falls through to the
+    legacy subprocess-ssh code, which is what tests mock."""
+    import src.ssh_pool as _pool
+    monkeypatch.setattr(_pool, "asyncssh", None, raising=False)
+    yield
+
+
+# ---------------------------------------------------------------------------
 # Sample JSONL session content
 # ---------------------------------------------------------------------------
 
