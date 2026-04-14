@@ -42,6 +42,7 @@ from .config import DEFAULT_BIND, DEFAULT_PORT, FLEET_MACHINES, SCAN_INTERVAL, d
 from .fleet import discover_fleet
 from .launcher import launch_claude_session, launch_tmux_attach, launch_tmux_attach_remote, launch_new_tmux_and_attach, launch_terminal, _ssh_path_prefix
 from .scanner import ClaudeSession, scan_all
+from .state_store import StateStore
 from .subprocess_utils import run_with_timeout
 from .tmux_manager import TmuxSession, list_all_tmux, create_tmux_session, kill_tmux_session
 
@@ -251,14 +252,15 @@ async def _background_scan(app: web.Application) -> None:
     the desktop window is even open, and the UI would only see the snapshot).
     """
     local_machine = app["local_machine"]
+    store: StateStore = app["store"]
 
     # Wait for first WS client (or 30s timeout) so the user sees first-scan progress
     log.info("background_scan: waiting for first WS client...")
     waited = 0.0
-    while not app["state"]["ws_clients"] and waited < 30.0:
+    while not store.has_ws_clients() and waited < 30.0:
         await asyncio.sleep(0.2)
         waited += 0.2
-    if app["state"]["ws_clients"]:
+    if store.has_ws_clients():
         log.info("background_scan: WS client connected after %.1fs, starting first scan", waited)
     else:
         log.info("background_scan: 30s timeout reached, scanning anyway")
@@ -278,30 +280,19 @@ async def _background_scan(app: web.Application) -> None:
                     "total": total,
                     "current_file": current_file,
                 })
-                dead: set = set()
-                for ws in list(app["state"]["ws_clients"]):
-                    try:
-                        await ws.send_str(payload)
-                    except Exception:
-                        dead.add(ws)
-                app["state"]["ws_clients"] -= dead
+                await store.push_raw(payload)
 
             sessions = await scan_all(local_machine, fleet, on_progress=_emit_scan_progress)
             tmux = await list_all_tmux(local_machine, fleet)
-            app["state"]["fleet"] = fleet
-            app["state"]["sessions"] = sessions
-            app["state"]["tmux"] = tmux
-            app["state"]["last_scan"] = _now_iso()
+            await store.update_fleet(fleet)
+            await store.update_sessions(sessions)
+            await store.update_tmux(tmux)
+            store.set_last_scan(_now_iso())
             elapsed = time.monotonic() - t0
             log.info(
                 "background_scan: %d sessions, %d tmux, %d fleet machines in %.2fs",
                 len(sessions), len(tmux), len(fleet), elapsed,
             )
-
-            # Push to WebSocket subscribers
-            await _push_to_ws(app, "sessions", [s.to_dict() for s in sessions])
-            await _push_to_ws(app, "fleet", fleet)
-            await _push_to_ws(app, "tmux", [t.to_dict() for t in tmux])
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -316,16 +307,8 @@ async def _push_to_ws(
     data: Any,
 ) -> None:
     """Send an update message to all WebSocket clients subscribed to channel."""
-    payload = json.dumps({"type": "update", "channel": channel, "data": data, "action": "refresh"})
-    dead: set[web.WebSocketResponse] = set()
-    for ws in list(app["state"]["ws_clients"]):
-        subs: set[str] = getattr(ws, "_subscribed_channels", set())
-        if channel in subs:
-            try:
-                await ws.send_str(payload)
-            except Exception:
-                dead.add(ws)
-    app["state"]["ws_clients"] -= dead
+    store: StateStore = app["store"]
+    await store.push_to_channel(channel, data)
 
 
 # ---------------------------------------------------------------------------
@@ -346,11 +329,13 @@ async def on_cleanup(app: web.Application) -> None:
             pass
 
     # Close all open WebSocket connections cleanly
-    for ws in list(app["state"]["ws_clients"]):
-        try:
-            await ws.close()
-        except Exception:
-            pass
+    store: StateStore = app.get("store")
+    if store:
+        for ws in store.iter_ws():
+            try:
+                await ws.close()
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -545,9 +530,9 @@ async def handle_update_apply(request: web.Request) -> web.Response:
 
 
 async def handle_health(request: web.Request) -> web.Response:
-    state = request.app["state"]
-    sessions: list[ClaudeSession] = state["sessions"]
-    fleet: dict = state["fleet"]
+    store: StateStore = request.app["store"]
+    sessions = store.sessions()
+    fleet = store.fleet()
     # Detect LAN IP for Web Access URL
     local_ip = "localhost"
     try:
@@ -566,7 +551,7 @@ async def handle_health(request: web.Request) -> web.Response:
             "local_ip": local_ip,
             "machines": len(fleet),
             "sessions": len(sessions),
-            "last_scan": state["last_scan"],
+            "last_scan": store.last_scan(),
             "version": _VERSION_METADATA,
         }
     )
@@ -654,16 +639,14 @@ async def handle_auth_token(request: web.Request) -> web.Response:
 
 
 async def handle_sessions_all(request: web.Request) -> web.Response:
-    state = request.app["state"]
-    sessions: list[ClaudeSession] = state["sessions"]
-    return web.json_response(_sessions_by_machine(sessions))
+    store: StateStore = request.app["store"]
+    return web.json_response(_sessions_by_machine(store.sessions()))
 
 
 async def handle_sessions_machine(request: web.Request) -> web.Response:
     machine = request.match_info["machine"]
-    state = request.app["state"]
-    sessions: list[ClaudeSession] = state["sessions"]
-    filtered = [s for s in sessions if s.machine == machine]
+    store: StateStore = request.app["store"]
+    filtered = [s for s in store.sessions() if s.machine == machine]
     return web.json_response(_sessions_by_machine(filtered).get(machine, []))
 
 
@@ -671,25 +654,23 @@ async def handle_sessions_scan(request: web.Request) -> web.Response:
     """Force an immediate rescan and return fresh results."""
     app = request.app
     local_machine = app["local_machine"]
+    store: StateStore = app["store"]
     t0 = time.monotonic()
     try:
         fleet = await discover_fleet()
         sessions = await scan_all(local_machine, fleet)
         tmux = await list_all_tmux(local_machine, fleet)
-        app["state"]["fleet"] = fleet
-        app["state"]["sessions"] = sessions
-        app["state"]["tmux"] = tmux
-        app["state"]["last_scan"] = _now_iso()
-        await _push_to_ws(app, "sessions", [s.to_dict() for s in sessions])
-        await _push_to_ws(app, "fleet", fleet)
-        await _push_to_ws(app, "tmux", [t.to_dict() for t in tmux])
+        await store.update_fleet(fleet)
+        await store.update_sessions(sessions)
+        await store.update_tmux(tmux)
+        store.set_last_scan(_now_iso())
         log.info("POST /api/sessions/scan: %d sessions, %.2fs", len(sessions), time.monotonic() - t0)
         return web.json_response(
             {
                 "ok": True,
                 "sessions": [s.to_dict() for s in sessions],
                 "tmux": [t.to_dict() for t in tmux],
-                "last_scan": app["state"]["last_scan"],
+                "last_scan": store.last_scan(),
             }
         )
     except Exception as exc:
@@ -737,7 +718,8 @@ async def handle_sessions_launch(request: web.Request) -> web.Response:
 
         project = cwd.replace("\\", "/").rstrip("/").split("/")[-1] if cwd else "claude"
         project_safe = re.sub(r"[^a-zA-Z0-9_-]", "-", project) or "claude"
-        existing_names = [t.name for t in request.app["state"]["tmux"] if t.machine == machine]
+        store: StateStore = request.app["store"]
+        existing_names = [t.name for t in store.tmux() if t.machine == machine]
         safe_name = adapter.generate_mux_session_name(machine, project_safe, existing_names)
 
         if is_remote_windows:
@@ -808,31 +790,30 @@ async def handle_sessions_launch(request: web.Request) -> web.Response:
     if mode == "tmux" and result.get("ok"):
         try:
             local_machine = request.app["local_machine"]
-            fleet = request.app["state"]["fleet"]
-            tmux = await list_all_tmux(local_machine, fleet)
-            request.app["state"]["tmux"] = tmux
-            await _push_to_ws(request.app, "tmux", [t.to_dict() for t in tmux])
+            store: StateStore = request.app["store"]
+            tmux = await list_all_tmux(local_machine, store.fleet())
+            await store.update_tmux(tmux)
         except Exception:
             pass
     return web.json_response(result, status=status)
 
 
 async def handle_fleet(request: web.Request) -> web.Response:
-    fleet = request.app["state"]["fleet"]
-    return web.json_response(fleet)
+    store: StateStore = request.app["store"]
+    return web.json_response(store.fleet())
 
 
 async def handle_tmux(request: web.Request) -> web.Response:
     """Return all tmux sessions across fleet."""
-    tmux: list[TmuxSession] = request.app["state"]["tmux"]
-    return web.json_response([t.to_dict() for t in tmux])
+    store: StateStore = request.app["store"]
+    return web.json_response([t.to_dict() for t in store.tmux()])
 
 
 async def handle_tmux_machine(request: web.Request) -> web.Response:
     """Return tmux sessions for a specific machine."""
     machine = request.match_info["machine"]
-    tmux: list[TmuxSession] = request.app["state"]["tmux"]
-    filtered = [t.to_dict() for t in tmux if t.machine == machine]
+    store: StateStore = request.app["store"]
+    filtered = [t.to_dict() for t in store.tmux() if t.machine == machine]
     return web.json_response(filtered)
 
 
@@ -861,7 +842,8 @@ async def handle_tmux_create(request: web.Request) -> web.Response:
         import re as _re
         project = cwd.replace("\\", "/").rstrip("/").split("/")[-1] or "session"
         project_safe = _re.sub(r"[^a-zA-Z0-9_-]", "-", project) or "session"
-        existing_names = [t.name for t in request.app["state"]["tmux"] if t.machine == machine]
+        store: StateStore = request.app["store"]
+        existing_names = [t.name for t in store.tmux() if t.machine == machine]
         name = adapter.generate_mux_session_name(machine, project_safe, existing_names)
 
     # Sanitize: tmux/psmux reject / and \ in session names
@@ -871,10 +853,9 @@ async def handle_tmux_create(request: web.Request) -> web.Response:
     if result.get("ok"):
         log.info("POST /api/tmux/create machine=%s name=%s %d", machine, name, status)
         local_machine = request.app["local_machine"]
-        fleet = request.app["state"]["fleet"]
-        tmux = await list_all_tmux(local_machine, fleet)
-        request.app["state"]["tmux"] = tmux
-        await _push_to_ws(request.app, "tmux", [t.to_dict() for t in tmux])
+        store: StateStore = request.app["store"]
+        tmux = await list_all_tmux(local_machine, store.fleet())
+        await store.update_tmux(tmux)
     else:
         log.error("POST /api/tmux/create machine=%s name=%s %d: %s", machine, name, status, result.get("error"))
     return web.json_response(result, status=status)
@@ -936,10 +917,9 @@ async def handle_tmux_kill(request: web.Request) -> web.Response:
     if result.get("ok"):
         log.info("POST /api/tmux/kill machine=%s name=%s %d", machine, name, status)
         local_machine = request.app["local_machine"]
-        fleet = request.app["state"]["fleet"]
-        tmux = await list_all_tmux(local_machine, fleet)
-        request.app["state"]["tmux"] = tmux
-        await _push_to_ws(request.app, "tmux", [t.to_dict() for t in tmux])
+        store: StateStore = request.app["store"]
+        tmux = await list_all_tmux(local_machine, store.fleet())
+        await store.update_tmux(tmux)
     else:
         log.error("POST /api/tmux/kill machine=%s name=%s %d: %s", machine, name, status, result.get("error"))
     return web.json_response(result, status=status)
@@ -1384,10 +1364,11 @@ async def handle_restart(request: web.Request) -> web.Response:
                 pass
 
         # Clear state to force a fresh scan on next cycle
-        app["state"]["sessions"] = []
-        app["state"]["fleet"] = {}
-        app["state"]["tmux"] = []
-        app["state"]["last_scan"] = None
+        store: StateStore = app["store"]
+        await store.update_sessions([])
+        await store.update_fleet({})
+        await store.update_tmux([])
+        store.set_last_scan(None)
 
         # Restart background scan
         app["bg_task"] = asyncio.ensure_future(_background_scan(app))
@@ -1891,18 +1872,6 @@ print(json.dumps({{'ok': True, 'name': name}}))
 # Pane streaming helpers
 # ---------------------------------------------------------------------------
 
-def _remove_pane_subscriber(state: dict, machine: str, session_name: str, ws) -> None:
-    """Remove a WS client from pane stream subscribers. Stop stream if no subscribers left."""
-    key = (machine, session_name)
-    info = state["pane_streams"].get(key)
-    if not info:
-        return
-    info["subscribers"].discard(ws)
-    if not info["subscribers"]:
-        if info["task"] and not info["task"].done():
-            info["task"].cancel()
-        del state["pane_streams"][key]
-
 
 async def _push_pane_output(state: dict, key: tuple, content: str) -> None:
     """Push pane output to all subscribers of this stream."""
@@ -1998,7 +1967,8 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
     await ws.prepare(request)
 
     ws._subscribed_channels: set[str] = set()  # type: ignore[attr-defined]
-    request.app["state"]["ws_clients"].add(ws)
+    store: StateStore = request.app["store"]
+    store.add_ws(ws)
     client_addr = request.remote or "unknown"
 
     # Auth gate: if enabled and client is NOT loopback, require first message = auth
@@ -2006,9 +1976,7 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
     ws_authed = (not auth_cfg) or (not auth_cfg.enabled) or is_loopback(client_addr)
 
     log.info("WS connect: %s (authed=%s, total: %d)",
-             client_addr, ws_authed, len(request.app["state"]["ws_clients"]))
-
-    state = request.app["state"]
+             client_addr, ws_authed, store.ws_count())
 
     try:
         async for msg in ws:
@@ -2041,11 +2009,11 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
                     ws._subscribed_channels.add(channel)  # type: ignore[attr-defined]
                     # Send immediate snapshot
                     if channel == "sessions":
-                        snap = [s.to_dict() for s in state["sessions"]]
+                        snap = [s.to_dict() for s in store.sessions()]
                     elif channel == "fleet":
-                        snap = state["fleet"]
+                        snap = store.fleet()
                     elif channel == "tmux":
-                        snap = [t.to_dict() for t in state["tmux"]]
+                        snap = [t.to_dict() for t in store.tmux()]
                     else:
                         snap = []
                     await ws.send_str(
@@ -2059,20 +2027,10 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
                     machine = data.get("machine", "")
                     session_name = data.get("session_name", "")
                     if machine and session_name:
-                        key = (machine, session_name)
-                        streams = state["pane_streams"]
-                        if key not in streams:
-                            streams[key] = {
-                                "subscribers": set(),
-                                "last_content": "",
-                                "task": None,
-                            }
-                        streams[key]["subscribers"].add(ws)
-                        # Start stream task if not running
-                        if streams[key]["task"] is None or streams[key]["task"].done():
-                            streams[key]["task"] = asyncio.ensure_future(
-                                _pane_stream_loop(request.app, machine, session_name)
-                            )
+                        await store.subscribe_pane(
+                            machine, session_name, ws,
+                            lambda m, s: _pane_stream_loop(request.app, m, s),
+                        )
                         # Send initial capture immediately
                         from .tmux_manager import capture_pane
                         content = await capture_pane(machine, session_name)
@@ -2088,22 +2046,15 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
                     machine = data.get("machine", "")
                     session_name = data.get("session_name", "")
                     if machine and session_name:
-                        _remove_pane_subscriber(state, machine, session_name, ws)
+                        await store.unsubscribe_pane(machine, session_name, ws)
 
             elif msg.type in (web.WSMsgType.ERROR, web.WSMsgType.CLOSE):
                 break
     finally:
-        request.app["state"]["ws_clients"].discard(ws)
+        store.remove_ws(ws)
         # Clean up pane stream subscriptions for this client
-        for key in list(state["pane_streams"]):
-            info = state["pane_streams"].get(key)
-            if info:
-                info["subscribers"].discard(ws)
-                if not info["subscribers"]:
-                    if info["task"] and not info["task"].done():
-                        info["task"].cancel()
-                    del state["pane_streams"][key]
-        log.info("WS disconnect: %s (total: %d)", client_addr, len(request.app["state"]["ws_clients"]))
+        await store.unsubscribe_pane_all(ws)
+        log.info("WS disconnect: %s (total: %d)", client_addr, store.ws_count())
 
     return ws
 
@@ -2152,6 +2103,7 @@ def create_app(
         "ws_clients": set(),
         "pane_streams": {},  # {(machine, session_name): {"task": Task, "subscribers": set(ws), "last_content": str}}
     }
+    app["store"] = StateStore(app)
 
     # Lifecycle hooks
     app.on_startup.append(on_startup)
