@@ -16,6 +16,7 @@ async def run_with_timeout(
     timeout: float,
     input: bytes | None = None,
     cwd: str | None = None,
+    env: dict[str, str] | None = None,
 ) -> tuple[int, bytes, bytes]:
     """Run subprocess with hard timeout. Guarantees the child is killed + reaped
     on ANY failure mode (timeout, CancelledError, OSError). Returns (rc, stdout, stderr).
@@ -30,6 +31,7 @@ async def run_with_timeout(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=cwd,
+        env=env,
     )
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(input), timeout=timeout)

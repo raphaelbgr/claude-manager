@@ -8,10 +8,86 @@ from __future__ import annotations
 import hashlib
 import os
 import shlex
+import sys
 from typing import Protocol
 
 from .config import FLEET_MACHINES, SSH_TIMEOUT, detect_local_machine
 from .subprocess_utils import run_with_timeout
+
+
+# Hardcoded native-OS PATH fallbacks so the daemon finds tmux/psmux/claude/git
+# regardless of how it was started (GUI, LaunchAgent, systemd user service,
+# Task Scheduler). Minimal launchd envs like PATH=/usr/bin:/bin:/usr/sbin:/sbin
+# would otherwise break every local subprocess that relies on Homebrew / snap
+# / user-site installs.
+_LOCAL_PATH_FALLBACKS: dict[str, list[str]] = {
+    "darwin": [
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/bin",
+        "/usr/local/sbin",
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
+    ],
+    "linux": [
+        "/usr/local/bin",
+        "/usr/local/sbin",
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
+        "/snap/bin",
+        os.path.expanduser("~/.local/bin"),
+    ],
+    "win32": [
+        r"C:\Windows\System32",
+        r"C:\Windows",
+        r"C:\Windows\System32\WindowsPowerShell\v1.0",
+        r"C:\Program Files\Git\bin",
+        r"C:\Program Files\Git\cmd",
+        r"C:\Program Files\PowerShell\7",
+        os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WindowsApps"),
+        os.path.expandvars(r"%USERPROFILE%\.local\bin"),
+    ],
+}
+
+
+def _augmented_local_env() -> dict[str, str]:
+    """Return a copy of os.environ with PATH augmented by native-OS fallbacks.
+
+    Preserves the user's existing PATH entries (they take precedence) and
+    appends the hardcoded fallbacks so missing Homebrew / snap / PowerShell
+    paths are recovered when the daemon inherits a stripped launchd env.
+    """
+    env = os.environ.copy()
+    key = sys.platform if sys.platform in _LOCAL_PATH_FALLBACKS else (
+        "linux" if sys.platform.startswith("linux") else None
+    )
+    if not key:
+        return env
+    sep = ";" if key == "win32" else ":"
+    current = env.get("PATH", "")
+    existing = [p for p in current.split(sep) if p]
+    seen = set(existing)
+    for p in _LOCAL_PATH_FALLBACKS[key]:
+        if p and p not in seen:
+            existing.append(p)
+            seen.add(p)
+    env["PATH"] = sep.join(existing)
+    return env
+
+
+_CACHED_LOCAL_ENV: dict[str, str] | None = None
+
+
+def local_env() -> dict[str, str]:
+    """Cached accessor for the augmented local env (built once per process)."""
+    global _CACHED_LOCAL_ENV
+    if _CACHED_LOCAL_ENV is None:
+        _CACHED_LOCAL_ENV = _augmented_local_env()
+    return _CACHED_LOCAL_ENV
 
 
 def _ssh_control_path(machine: str) -> str:
@@ -64,7 +140,7 @@ class LocalExecutor:
         timeout: float,
         input: bytes | None = None,
     ) -> tuple[int, bytes, bytes]:
-        return await run_with_timeout(cmd, timeout=timeout, input=input)
+        return await run_with_timeout(cmd, timeout=timeout, input=input, env=local_env())
 
 
 class SSHExecutor:
