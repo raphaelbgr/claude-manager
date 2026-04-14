@@ -318,6 +318,11 @@ async def _push_to_ws(
 # ---------------------------------------------------------------------------
 
 async def on_startup(app: web.Application) -> None:
+    # Persistent asyncssh pool — one connection per fleet machine for the
+    # whole app lifecycle. Replaces subprocess-ssh storms (esp. on Windows
+    # where ControlMaster is a no-op).
+    from .ssh_pool import default_pool
+    app["ssh_pool"] = default_pool()
     app["bg_task"] = asyncio.ensure_future(_background_scan(app))
 
 
@@ -329,6 +334,14 @@ async def on_cleanup(app: web.Application) -> None:
             await task
         except asyncio.CancelledError:
             pass
+
+    # Tear down every pooled SSH connection so the app leaves no sshd-sessions
+    # behind on remote machines.
+    try:
+        from .ssh_pool import shutdown_default
+        await shutdown_default()
+    except Exception as exc:
+        log.warning("on_cleanup: ssh_pool shutdown error: %s", exc)
 
     # Close all open WebSocket connections cleanly
     store: StateStore = app.get("store")
@@ -1648,6 +1661,42 @@ async def handle_sessions_unpin(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "pinned_sessions": pinned})
 
 
+async def handle_projects_pin(request: web.Request) -> web.Response:
+    """Add a project id to the pinned list. Pinning is per-project now —
+    sessions inherit their parent project's pin state."""
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid JSON body"}, status=400)
+    project_id = body.get("project_id", "")
+    if not project_id:
+        return web.json_response({"ok": False, "error": "project_id required"}, status=400)
+    prefs = _load_prefs()
+    pinned = prefs.get("pinned_projects", [])
+    if project_id not in pinned:
+        pinned.append(project_id)
+    prefs["pinned_projects"] = pinned
+    _save_prefs(prefs)
+    return web.json_response({"ok": True, "pinned_projects": pinned})
+
+
+async def handle_projects_unpin(request: web.Request) -> web.Response:
+    """Remove a project id from the pinned list."""
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid JSON body"}, status=400)
+    project_id = body.get("project_id", "")
+    if not project_id:
+        return web.json_response({"ok": False, "error": "project_id required"}, status=400)
+    prefs = _load_prefs()
+    pinned = prefs.get("pinned_projects", [])
+    pinned = [p for p in pinned if p != project_id]
+    prefs["pinned_projects"] = pinned
+    _save_prefs(prefs)
+    return web.json_response({"ok": True, "pinned_projects": pinned})
+
+
 async def handle_sessions_archive(request: web.Request) -> web.Response:
     """Add a session ID to the archived list."""
     try:
@@ -2514,6 +2563,8 @@ def create_app(
     app.router.add_post("/api/fs/open", handle_fs_open)
     app.router.add_post("/api/sessions/pin", handle_sessions_pin)
     app.router.add_post("/api/sessions/unpin", handle_sessions_unpin)
+    app.router.add_post("/api/projects/pin", handle_projects_pin)
+    app.router.add_post("/api/projects/unpin", handle_projects_unpin)
     app.router.add_post("/api/sessions/archive", handle_sessions_archive)
     app.router.add_post("/api/sessions/unarchive", handle_sessions_unarchive)
     app.router.add_post("/api/sessions/rename", handle_sessions_rename)

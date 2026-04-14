@@ -227,7 +227,32 @@ class SSHExecutor:
         timeout: float,
         input: bytes | None = None,
     ) -> tuple[int, bytes, bytes]:
-        """Run a pre-assembled shell command string on the remote machine."""
+        """Run a pre-assembled shell command string on the remote machine.
+
+        Tries the persistent asyncssh pool first (single long-lived connection
+        per machine → no sshd-session spam, no per-call reconnect latency).
+        Falls back to subprocess `ssh` if the pool is unavailable or the
+        connection is in its backoff window. PATH prefix is applied for Unix
+        targets just like the subprocess path.
+        """
+        remote_str = (
+            self._path_prefix + remote_shell_str
+            if not self._is_windows else remote_shell_str
+        )
+        # Prefer the pool — reuses a single connection for the whole app lifecycle.
+        try:
+            from .ssh_pool import default_pool, asyncssh as _asyncssh
+            if _asyncssh is not None:
+                pool = default_pool()
+                return await pool.run(self.machine, remote_str, timeout=timeout, input=input)
+        except Exception as exc:
+            # Silent fallback to subprocess on any pool failure (asyncssh missing,
+            # backoff window, auth failure, etc). Logged at debug so it doesn't
+            # fill production logs when a machine is genuinely offline.
+            import logging as _logging
+            _logging.getLogger("claude_manager.executor").debug(
+                "exec_shell(%s): pool unavailable (%s), falling back to subprocess", self.machine, exc
+            )
         ssh_cmd = self._build_ssh_cmd_raw(remote_shell_str)
         return await run_with_timeout(ssh_cmd, timeout=timeout, input=input)
 

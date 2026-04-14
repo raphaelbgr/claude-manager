@@ -1193,14 +1193,7 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
       tmuxLaunching ? '…' : tmuxShort,
     ),
 
-    // Pin button
-    h('button', {
-      className: `compact-action-btn btn btn-icon-only${isPinned ? ' btn-pin-active' : ''}`,
-      onClick: e => { e.stopPropagation(); isPinned ? onUnpin(sessionId) : onPin(sessionId); },
-      title: isPinned ? 'Unpin this session' : 'Pin this session to the top of the list for quick access',
-    },
-      h('span', { className: 'material-icons-round', style: { fontSize: '12px' } }, 'push_pin'),
-    ),
+    // Pin button removed — pinning is now per-project (see project header).
 
     // Archive button
     h('button', {
@@ -2386,18 +2379,57 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
 
 // ─── Pinned Section ───────────────────────────────────────────────────────────
 
-function PinnedSection({ sessions, pinnedIds, onLaunch, launchingId, onTmuxLaunch, tmuxLaunchingId, skipPermissions, onPin, onUnpin, onArchive, onUnarchive, archivedIds, expandedCards, onToggleExpand, hwCache, fetchHardware }) {
-  const pinned = sessions.filter(s => pinnedIds.includes(s.session_id));
-  if (!pinned.length) return null;
+function PinnedSection({ pinnedIds, onLaunch, launchingId, onTmuxLaunch, tmuxLaunchingId, skipPermissions, onPin, onUnpin, onArchive, onUnarchive, archivedIds, expandedCards, onToggleExpand, hwCache, fetchHardware, wsUpdateCount }) {
+  // Pinned projects now — we fetch /api/projects and filter by pinned project_ids.
+  // The entire project folder (with all its sessions) moves into this section
+  // above everything else. Section itself is collapsible (state persisted).
+  const [projects, setProjects] = useState([]);
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return localStorage.getItem('pinnedSectionCollapsed') === '1'; } catch { return false; }
+  });
+  const debounceRef = useRef(null);
+
+  const fetchProjects = useCallback(() => {
+    apiFetch('/api/projects')
+      .then(r => r.json())
+      .then(d => { setProjects(d.projects || []); })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => { fetchProjects(); }, [fetchProjects]);
+
+  useEffect(() => {
+    if (!wsUpdateCount) return;
+    clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(fetchProjects, 300);
+    return () => clearTimeout(debounceRef.current);
+  }, [wsUpdateCount, fetchProjects]);
+
+  const toggleCollapsed = () => {
+    setCollapsed(v => {
+      const next = !v;
+      try { localStorage.setItem('pinnedSectionCollapsed', next ? '1' : '0'); } catch {}
+      return next;
+    });
+  };
+
+  const pinnedProjects = projects.filter(p => (pinnedIds || []).includes(p.project_id));
+  if (!pinnedProjects.length) return null;
 
   return h('div', {
     style: { marginBottom: 16, borderBottom: '1px solid #30363d', paddingBottom: 12 }
   },
+    // Collapsible header
     h('div', {
-      style: { display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8, padding: '0 2px' }
+      onClick: toggleCollapsed,
+      style: { display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8, padding: '4px 2px', cursor: 'pointer', userSelect: 'none' }
     },
       h('span', {
-        title: "Sessions you've pinned for quick access",
+        className: 'material-icons-round',
+        style: { fontSize: '14px', color: '#e3b341', transition: 'transform 0.15s', transform: collapsed ? 'none' : 'rotate(90deg)' },
+      }, 'chevron_right'),
+      h('span', {
+        title: "Projects you've pinned for quick access (click to collapse/expand)",
         style: {
           fontSize: '0.7rem', fontWeight: 700, letterSpacing: '0.08em',
           textTransform: 'uppercase', color: '#e3b341',
@@ -2413,29 +2445,39 @@ function PinnedSection({ sessions, pinnedIds, onLaunch, launchingId, onTmuxLaunc
           borderRadius: 20, padding: '1px 7px', marginLeft: 4,
           border: '1px solid #5a4a1a',
         }
-      }, pinned.length),
+      }, pinnedProjects.length),
     ),
-    pinned.map(s =>
-      h(SessionCardMemo, {
-        key: s.session_id,
-        session: s,
-        onLaunch,
-        onTmuxLaunch,
-        launching: launchingId === s.session_id,
-        tmuxLaunching: tmuxLaunchingId === s.session_id,
-        skipPermissions,
-        onPin,
-        onUnpin,
-        isPinned: true,
-        onArchive,
-        onUnarchive,
-        isArchived: (archivedIds || new Set()).has(s.session_id),
-        expanded: expandedCards.has(s.session_id),
-        onToggleExpand: () => onToggleExpand(s.session_id),
-        inMachineSection: false,
-        hwCache,
-        fetchHardware,
-      })
+    !collapsed && pinnedProjects.map(proj =>
+      h('div', { key: proj.project_id, className: 'machine-section' },
+        h('div', {
+          className: 'machine-header',
+          style: { justifyContent: 'flex-start', gap: 8 },
+        },
+          h('span', { className: 'material-icons-round', style: { fontSize: '14px', color: '#58a6ff' } }, 'folder'),
+          h('span', {
+            style: { fontWeight: 700, color: '#e6edf3', fontSize: '0.82rem', letterSpacing: 0, textTransform: 'none' },
+            title: proj.git_remote || proj.project_id,
+          }, proj.display_name),
+          h('span', {
+            style: { background: '#161b22', color: '#484f58', fontSize: '0.6rem', borderRadius: 10, padding: '1px 6px', marginLeft: 2 }
+          }, proj.session_count),
+          h('div', { style: { flex: 1 } }),
+          h('button', {
+            className: 'compact-action-btn btn btn-icon-only btn-pin-active',
+            onClick: e => { e.stopPropagation(); onUnpin(proj.project_id); },
+            title: 'Unpin this project',
+          },
+            h('span', { className: 'material-icons-round', style: { fontSize: '12px' } }, 'push_pin'),
+          ),
+        ),
+        h(ProjectRunList, {
+          project: proj,
+          onLaunch, onTmuxLaunch, launchingId, tmuxLaunchingId, skipPermissions,
+          onPin, onUnpin, pinnedIds,
+          onArchive, onUnarchive, archivedIds,
+          expandedCards, onToggleExpand, hwCache, fetchHardware,
+        }),
+      )
     ),
   );
 }
@@ -2666,6 +2708,17 @@ function ProjectsView({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaunc
             })()
           ),
           h('div', { style: { flex: 1 } }),
+          // Per-project Pin toggle (moves the whole folder to the Pinned section).
+          (() => {
+            const isP = (pinnedIds || []).includes(proj.project_id);
+            return h('button', {
+              className: `compact-action-btn btn btn-icon-only${isP ? ' btn-pin-active' : ''}`,
+              onClick: e => { e.stopPropagation(); isP ? onUnpin(proj.project_id) : onPin(proj.project_id); },
+              title: isP ? 'Unpin this project' : 'Pin this project to the top of the list for quick access',
+            },
+              h('span', { className: 'material-icons-round', style: { fontSize: '12px' } }, 'push_pin'),
+            );
+          })(),
         ),
         // Expanded: list sessions grouped into same-machine runs
         isOpen && h(ProjectRunList, {
@@ -2693,7 +2746,7 @@ function ProjectsView({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaunc
 
 // ─── Sessions Panel ───────────────────────────────────────────────────────────
 
-function SessionsPanel({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaunchingId, skipPermissions, scanning, collapseState, setCollapseState, pinnedIds, onPin, onUnpin, onArchive, onUnarchive, archivedIds, expandedCards, onToggleExpand, hwCache, fetchHardware, onNewSessionInProject, onNewTmuxInProject }) {
+function SessionsPanel({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaunchingId, skipPermissions, scanning, collapseState, setCollapseState, pinnedIds, onPin, onUnpin, onArchive, onUnarchive, archivedIds, expandedCards, onToggleExpand, hwCache, fetchHardware, onNewSessionInProject, onNewTmuxInProject, wsUpdateCount }) {
   // sessions is already filtered/sorted by App; just group by machine then by project
   const byMachine = useMemo(() => groupBy(sessions, 'machine'), [sessions]);
 
@@ -2747,7 +2800,6 @@ function SessionsPanel({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaun
   return h('div', null,
     // Pinned section (always above machine sections)
     h(PinnedSection, {
-      sessions: sessions,
       pinnedIds: pinnedIds || [],
       onLaunch,
       launchingId,
@@ -2763,6 +2815,7 @@ function SessionsPanel({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaun
       onToggleExpand,
       hwCache,
       fetchHardware,
+      wsUpdateCount,
     }),
     // Scan progress indicator
     scanning && h('div', {
@@ -4364,7 +4417,8 @@ function App() {
       .then(r => r.json())
       .then(d => {
         if (d && typeof d.skip_permissions === 'boolean') setSkipPermissions(d.skip_permissions);
-        if (d && Array.isArray(d.pinned_sessions)) setPinnedIds(d.pinned_sessions);
+        // Pin is per-project now; legacy pinned_sessions ignored.
+        if (d && Array.isArray(d.pinned_projects)) setPinnedIds(d.pinned_projects);
         if (d && Array.isArray(d.archived_sessions)) setArchivedIds(new Set(d.archived_sessions));
       })
       .catch(() => {});
@@ -4408,27 +4462,30 @@ function App() {
     }
   }, []);
 
-  // ── Pin / Unpin session ───────────────────────────────────────────────────
-  const handlePin = useCallback(async (sessionId) => {
-    setPinnedIds(prev => prev.includes(sessionId) ? prev : [...prev, sessionId]);
+  // ── Pin / Unpin project ───────────────────────────────────────────────────
+  // Pin is per-project — the entire project folder (with all its sessions)
+  // moves into the Pinned section above everything else. pinnedIds stores
+  // project_ids.
+  const handlePin = useCallback(async (projectId) => {
+    setPinnedIds(prev => prev.includes(projectId) ? prev : [...prev, projectId]);
     try {
-      await apiFetch('/api/sessions/pin', {
+      await apiFetch('/api/projects/pin', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionId }),
+        body: JSON.stringify({ project_id: projectId }),
       });
     } catch {
       // non-fatal
     }
   }, []);
 
-  const handleUnpin = useCallback(async (sessionId) => {
-    setPinnedIds(prev => prev.filter(id => id !== sessionId));
+  const handleUnpin = useCallback(async (projectId) => {
+    setPinnedIds(prev => prev.filter(id => id !== projectId));
     try {
-      await apiFetch('/api/sessions/unpin', {
+      await apiFetch('/api/projects/unpin', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionId }),
+        body: JSON.stringify({ project_id: projectId }),
       });
     } catch {
       // non-fatal
@@ -4887,6 +4944,7 @@ function App() {
                     fetchHardware,
                     onNewSessionInProject: handleNewSessionInProject,
                     onNewTmuxInProject: handleNewTmuxInProject,
+                    wsUpdateCount: wsSessionUpdateCount,
                   }),
           ),
         ),

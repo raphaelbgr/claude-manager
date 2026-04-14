@@ -10,6 +10,61 @@ from .config import FLEET_MACHINES, detect_local_machine, SSH_TIMEOUT
 log = logging.getLogger("claude_manager.launcher")
 
 
+def build_window_title(
+    origin: str | None,
+    destination: str | None,
+    mux_session: str | None,
+    project: str | None,
+) -> str:
+    """Build the arrow-separated window title: Origin -> Dest -> Session -> Project.
+
+    Any segment that's None or empty is dropped. Local launches (origin == dest
+    or dest is None) drop the destination. Terminal-only (no mux) drops the
+    session. Missing project is tolerated — you still get at least the origin.
+    """
+    parts: list[str] = []
+    if origin:
+        parts.append(origin)
+    if destination and destination != origin:
+        parts.append(destination)
+    if mux_session:
+        parts.append(mux_session)
+    if project:
+        parts.append(project)
+    return " → ".join(parts) if parts else "claude-manager"
+
+
+def _title_prefix_unix(title: str) -> str:
+    """printf the ANSI OSC 0 sequence that sets the terminal window/tab title.
+    Honored by iTerm2, Terminal.app, gnome-terminal, konsole, xterm, alacritty,
+    Windows Terminal, tmux (when pass-through is on). Silently ignored elsewhere."""
+    # Single-quote-safe: title cannot contain arbitrary quotes because we only
+    # build it from fleet names / session names which are sanitised upstream.
+    safe = title.replace("'", "'\\''")
+    return f"printf '\\033]0;{safe}\\007'; "
+
+
+def _title_prefix_powershell(title: str) -> str:
+    """PowerShell: set $Host.UI.RawUI.WindowTitle, wrapped in try/catch so
+    environments without a real host (e.g. ISE, unknown terminal) don't error."""
+    safe = title.replace("'", "''")
+    return f"try {{ $Host.UI.RawUI.WindowTitle = '{safe}' }} catch {{}} ; "
+
+
+def title_prefix_for(target_os: str, title: str) -> str:
+    """Return a shell-prepended title-set for the given target OS. Empty string
+    if target is unknown or title is empty (fail-open — launches must never
+    break just because we couldn't label the window)."""
+    if not title:
+        return ""
+    try:
+        if target_os == "win32":
+            return _title_prefix_powershell(title)
+        return _title_prefix_unix(title)
+    except Exception:
+        return ""
+
+
 def _ssh_path_prefix(machine: str) -> str:
     """Return PATH export prefix for SSH to Unix machines, empty for Windows."""
     info = FLEET_MACHINES.get(machine, {})
@@ -225,18 +280,32 @@ async def launch_claude_session(cwd: str, session_id: str, machine: str, skip_pe
     adapter = get_adapter(machine)
     log.info("launch_claude_session(%s, %s): mode=terminal", machine, session_id[:12])
 
+    project_name = (cwd or "").replace("\\", "/").rstrip("/").split("/")[-1] or None
+
     if machine == local_machine:
+        # Local: title = Origin -> Project (no destination, no mux).
+        title = build_window_title(local_machine, None, None, project_name)
+        local_os = "win32" if sys.platform == "win32" else ("linux" if sys.platform.startswith("linux") else "darwin")
+        target_os = "win32" if local_os == "win32" else "unix"
+        prefix = title_prefix_for("win32" if local_os == "win32" else local_os, title)
         cmd = adapter.build_session_command(cwd, session_id, skip_permissions)
-        return await launch_terminal(cmd)
+        return await launch_terminal(prefix + cmd)
 
     info = FLEET_MACHINES.get(machine, {})
     alias = info.get("ssh_alias", machine)
+    remote_os = info.get("os", "")
+
+    # Remote: title = Origin -> Dest -> Project. The title is set INSIDE the
+    # SSH session so it reflects the remote context (both the origin terminal
+    # title and the post-SSH title get the arrow-chain label).
+    title = build_window_title(local_machine, machine, None, project_name)
+    inner_prefix = title_prefix_for(remote_os, title)
 
     # Same approach for ALL platforms: SSH -t with single command.
     # Windows: build_session_command_ssh converts C:\path to /c/path for Git Bash.
     # Linux/macOS: uses native paths. Both use bash syntax with SSH -t.
     session_cmd = adapter.build_session_command_ssh(cwd, session_id, skip_permissions)
-    terminal_cmd = _ssh_path_prefix(machine) + adapter.for_terminal(session_cmd, keep_open=True)
+    terminal_cmd = _ssh_path_prefix(machine) + inner_prefix + adapter.for_terminal(session_cmd, keep_open=True)
     cmd = f"ssh {shlex.quote(alias)} -t {shlex.quote(terminal_cmd)}"
     return await launch_terminal(cmd)
 
@@ -351,12 +420,21 @@ async def launch_tmux_attach(session_name: str, machine: str, skip_permissions: 
     info = FLEET_MACHINES.get(machine, {})
     alias = info.get("ssh_alias", machine)
     adapter = get_adapter(machine)
+    remote_os = info.get("os", "")
 
     # Pre-attach probe: if no claude is running inside the session, start one.
     await _ensure_claude_running(machine, session_name, skip_permissions=skip_permissions)
 
+    # Title: Origin -> (Dest if remote) -> mux session name. Project is not
+    # trivially recoverable from the mux session name alone so we omit it here.
     if machine == local_machine:
-        return await launch_terminal(adapter.mux_attach(session_name))
+        title = build_window_title(local_machine, None, session_name, None)
+        local_os = "win32" if sys.platform == "win32" else ("linux" if sys.platform.startswith("linux") else "darwin")
+        prefix = title_prefix_for("win32" if local_os == "win32" else local_os, title)
+        return await launch_terminal(prefix + adapter.mux_attach(session_name))
+
+    title = build_window_title(local_machine, machine, session_name, None)
+    inner_prefix = title_prefix_for(remote_os, title)
 
     if adapter.mux_type == "psmux":
         # psmux attach over SSH -t fails with "Incorrect function (os error 1)"
@@ -364,7 +442,7 @@ async def launch_tmux_attach(session_name: str, machine: str, skip_permissions: 
         # command. Mirror the strategy handle_sessions_launch uses for fresh
         # Windows sessions: open a terminal, SSH in (lands in PowerShell),
         # wait for the login shell to be ready, then type `psmux attach -t`.
-        attach_cmd = adapter.mux_attach(session_name)
+        attach_cmd = inner_prefix + adapter.mux_attach(session_name)
         if sys.platform == "darwin":
             return await _launch_macos_multi(
                 [f"ssh {alias}", attach_cmd],
@@ -377,7 +455,7 @@ async def launch_tmux_attach(session_name: str, machine: str, skip_permissions: 
         )
 
     # tmux: SSH -t with direct attach works
-    attach_cmd = _ssh_path_prefix(machine) + adapter.mux_attach(session_name)
+    attach_cmd = _ssh_path_prefix(machine) + inner_prefix + adapter.mux_attach(session_name)
     return await launch_terminal(
         f"ssh {shlex.quote(alias)} -t {shlex.quote(attach_cmd)}"
     )
