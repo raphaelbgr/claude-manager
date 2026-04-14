@@ -1220,6 +1220,125 @@ async def handle_mkdir(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "path": path})
 
 
+async def handle_projects_create(request: web.Request) -> web.Response:
+    """Create a project folder (mkdir -p) and optionally git-init it."""
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid JSON body"}, status=400)
+
+    machine = body.get("machine", "")
+    path = body.get("path", "")
+    init_git = bool(body.get("init_git", False))
+
+    if not path:
+        return web.json_response({"ok": False, "error": "path required"}, status=400)
+
+    from .config import FLEET_MACHINES
+    local_machine = request.app["local_machine"]
+    is_local = (not machine) or (machine == local_machine)
+
+    # Validate machine is known (allow empty/local)
+    if machine and machine != local_machine and machine not in FLEET_MACHINES:
+        return web.json_response({"ok": False, "error": f"Unknown machine: {machine}"}, status=400)
+
+    if is_local:
+        import pathlib as _pathlib
+        import subprocess as _subprocess
+        try:
+            p = _pathlib.Path(path)
+            if not p.is_absolute():
+                return web.json_response({"ok": False, "error": "path must be absolute"}, status=400)
+            created = not p.exists()
+            p.mkdir(parents=True, exist_ok=True)
+            git_initialized = False
+            if init_git and not (p / ".git").exists():
+                result = _subprocess.run(
+                    ["git", "init"],
+                    cwd=str(p),
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if result.returncode != 0:
+                    return web.json_response({
+                        "ok": False,
+                        "error": f"git init failed: {result.stderr.strip()}",
+                    }, status=500)
+                git_initialized = True
+            return web.json_response({"ok": True, "created": created, "git_initialized": git_initialized})
+        except PermissionError as exc:
+            return web.json_response({"ok": False, "error": f"Permission denied: {exc}"}, status=403)
+        except Exception as exc:
+            return web.json_response({"ok": False, "error": str(exc)}, status=500)
+
+    info = FLEET_MACHINES[machine]
+    ssh_alias = info.get("ssh_alias", machine)
+    os_type = info.get("os", "linux")  # "win32", "darwin", "linux"
+    is_windows = os_type == "win32"
+
+    if is_windows:
+        # PowerShell one-liner: create dir, optionally git init
+        esc = path.replace("'", "''")
+        if init_git:
+            ps_cmd = (
+                f"$p='{esc}';"
+                "$exists=Test-Path $p;"
+                "New-Item -ItemType Directory -Force -Path $p | Out-Null;"
+                "if (-not (Test-Path \"$p\\.git\")) { Set-Location $p; git init | Out-Null; "
+                "Write-Output \"git_initialized=true\" } else { Write-Output \"git_initialized=false\" };"
+                "Write-Output \"created=$(!$exists)\""
+            )
+        else:
+            ps_cmd = (
+                f"$p='{esc}';"
+                "$exists=Test-Path $p;"
+                "New-Item -ItemType Directory -Force -Path $p | Out-Null;"
+                "Write-Output \"git_initialized=false\";"
+                "Write-Output \"created=$(!$exists)\""
+            )
+        try:
+            rc, stdout, stderr = await run_with_timeout(
+                ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes",
+                 ssh_alias, "powershell", "-NoProfile", "-Command", ps_cmd],
+                timeout=15,
+            )
+        except asyncio.TimeoutError:
+            return web.json_response({"ok": False, "error": "SSH timeout"}, status=504)
+        if rc != 0:
+            err = stderr.decode().strip() if isinstance(stderr, bytes) else str(stderr).strip()
+            return web.json_response({"ok": False, "error": err or "Remote command failed"}, status=500)
+        out = stdout.decode().strip() if isinstance(stdout, bytes) else str(stdout).strip()
+        created = "created=True" in out
+        git_inited = "git_initialized=true" in out
+        return web.json_response({"ok": True, "created": created, "git_initialized": git_inited})
+    else:
+        # Unix: bash one-liner
+        esc = path.replace("'", "\\'")
+        if init_git:
+            shell_cmd = (
+                f"mkdir -p '{esc}' && "
+                f"cd '{esc}' && "
+                "if [ ! -d .git ]; then git init && echo git_initialized=true; "
+                "else echo git_initialized=false; fi"
+            )
+        else:
+            shell_cmd = f"mkdir -p '{esc}' && echo git_initialized=false"
+        try:
+            rc, stdout, stderr = await run_with_timeout(
+                ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", ssh_alias, shell_cmd],
+                timeout=15,
+            )
+        except asyncio.TimeoutError:
+            return web.json_response({"ok": False, "error": "SSH timeout"}, status=504)
+        if rc != 0:
+            err = stderr.decode().strip() if isinstance(stderr, bytes) else str(stderr).strip()
+            return web.json_response({"ok": False, "error": err or "Remote command failed"}, status=500)
+        out = stdout.decode().strip() if isinstance(stdout, bytes) else str(stdout).strip()
+        git_inited = "git_initialized=true" in out
+        return web.json_response({"ok": True, "created": True, "git_initialized": git_inited})
+
+
 async def handle_browse(request: web.Request) -> web.Response:
     """Browse directories on a given machine."""
     try:
@@ -2138,6 +2257,7 @@ def create_app(
     app.router.add_post("/api/browse", handle_browse)
     app.router.add_post("/api/drives", handle_drives)
     app.router.add_post("/api/mkdir", handle_mkdir)
+    app.router.add_post("/api/projects/create", handle_projects_create)
     app.router.add_get("/api/preferences", handle_preferences_get)
     app.router.add_post("/api/preferences", handle_preferences_post)
     app.router.add_post("/api/restart", handle_restart)
