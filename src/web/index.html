@@ -2924,8 +2924,11 @@ function Header({ health, sessions, tmuxSessions, fleet, onScan, scanning, scanP
   const exitTimerRef = useRef(null);
   const currentVersion = health && health.version && health.version.version;
   const currentCommit = health && health.version && health.version.commit;
+  const currentCommitShort = currentCommit ? currentCommit.slice(0, 7) : null;
   const updateAvailable = updateStatus && updateStatus.update_available;
   const latestCommit = updateStatus && updateStatus.latest && updateStatus.latest.commit;
+  const latestCommitShort = updateStatus && updateStatus.latest && (updateStatus.latest.commit_short || (latestCommit && latestCommit.slice(0, 7)));
+  const latestVersion = updateStatus && updateStatus.latest && updateStatus.latest.version;
   const latestMsg = updateStatus && updateStatus.latest && updateStatus.latest.message;
 
   return h('header', {
@@ -2980,8 +2983,10 @@ function Header({ health, sessions, tmuxSessions, fleet, onScan, scanning, scanP
         applyingUpdate
           ? 'Updating…'
           : updateAvailable
-            ? `v${currentVersion || '?'} → ${latestCommit}`
-            : `v${currentVersion || '?'}`,
+            ? h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '240px', display: 'inline-block', verticalAlign: 'middle', whiteSpace: 'nowrap' } },
+                `Update → v${latestVersion || '?'} · ${latestCommitShort || '?'}`)
+            : h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '240px', display: 'inline-block', verticalAlign: 'middle', whiteSpace: 'nowrap' } },
+                `v${currentVersion || '?'} · ${currentCommitShort || '?'}`),
       ),
     ),
 

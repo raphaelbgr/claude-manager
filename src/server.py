@@ -422,6 +422,7 @@ async def _fetch_github_latest() -> dict | None:
         msg = (data.get("commit", {}).get("message") or "").split("\n", 1)[0][:120]
         return {
             "commit": data["sha"][:7],
+            "commit_short": data["sha"][:7],
             "commit_full": data["sha"],
             "date": data["commit"]["author"]["date"],
             "message": msg,
