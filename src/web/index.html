@@ -2175,14 +2175,15 @@ function ProjectRunList({ project, onLaunch, onTmuxLaunch, launchingId, tmuxLaun
         }
       },
         visible.map((s, si) => {
-          // Truncate project_path to last segment; project header already shows the repo
+          // Project header already shows the repo — inside the project, show the
+          // Claude session name (slug) instead of repeating the folder.
           const rawPath = s.project_path || s.cwd || '';
           const lastSeg = rawPath.split('/').filter(Boolean).pop() || rawPath;
-          // Shallow-clone session with truncated paths so SessionCard renders them
+          const label = s.name || s.slug || (s.session_id ? s.session_id.slice(0, 8) : lastSeg);
           const displaySession = Object.assign({}, s, {
-            cwd: lastSeg,
-            project_path: lastSeg,
-            project_folder: lastSeg,
+            cwd: label,
+            project_path: label,
+            project_folder: label,
           });
 
           return h(SessionCardMemo, {
