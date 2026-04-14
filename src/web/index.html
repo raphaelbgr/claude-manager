@@ -88,7 +88,7 @@
 
     .session-card, .tmux-card {
       background: #161b22; border: 1px solid #30363d;
-      border-radius: 8px; padding: 14px 16px; margin-bottom: 8px;
+      border-radius: 8px; padding: 7px 16px; margin-bottom: 5px;
       transition: background 0.15s, border-color 0.15s;
       animation: fade-in 0.2s ease-out;
     }
@@ -718,7 +718,7 @@ function StatusDot({ status, pulse = false }) {
 
 // ─── Session Card ─────────────────────────────────────────────────────────────
 
-function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching, skipPermissions, onPin, onUnpin, isPinned, onArchive, onUnarchive, isArchived, expanded, onToggleExpand, inMachineSection, hwCache, fetchHardware, onRename }) {
+function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching, skipPermissions, onPin, onUnpin, isPinned, onArchive, onUnarchive, isArchived, expanded, onToggleExpand, inMachineSection, hwCache, fetchHardware, onRename, hideMachineLabel }) {
   const isWorking = session.status === 'working';
   const isActive = session.status === 'active' || isWorking;
   const effectivePath = session.cwd || session.project_path || session.project_folder || '';
@@ -828,11 +828,16 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
       title: `Total tokens used in this session (input + output + cache, from the JSONL usage fields)`,
     }, formatTokens(session.tokens)),
 
+    session.git_branch && h('span', {
+      style: { fontSize: '0.7rem', color: '#8b949e', fontFamily: 'monospace', whiteSpace: 'nowrap', flexShrink: 0 },
+      title: `Git branch: ${session.git_branch}${session.git_commits > 0 ? ` · ${session.git_commits} commits` : ''}`,
+    }, '⎇ ' + session.git_branch + (session.git_commits > 0 ? ` · ${session.git_commits}` : '')),
+
     h('span', {
       style: { fontSize: '0.65rem', color: '#484f58', fontFamily: 'monospace', whiteSpace: 'nowrap', flexShrink: 0 },
       title: `Last activity: ${session.modified || 'unknown'}`,
     }, relativeTime(session.modified)),
-    !inMachineSection && h(MachineBadge, { machine: session.machine }),
+    !inMachineSection && !hideMachineLabel && h(MachineBadge, { machine: session.machine }),
 
     // Spacer
     h('div', { style: { flex: 1 } }),
@@ -994,7 +999,7 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
       }),
       session.git_branch && h('span', {
         className: 'compact-action-btn',
-        title: `Git branch: ${session.git_branch} — the branch active when this session was created`,
+        title: `Git branch: ${session.git_branch}${session.git_commits > 0 ? ` · ${session.git_commits} commits` : ''} — the branch active when this session was created`,
         style: {
           cursor: 'default',
           fontSize: '0.62rem',
@@ -1004,7 +1009,7 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
         }
       },
         h('span', { className: 'material-icons-round', style: { fontSize: '11px' } }, 'account_tree'),
-        ' ' + session.git_branch,
+        ' ' + session.git_branch + (session.git_commits > 0 ? ` · ${session.git_commits}` : ''),
       ),
     ),
 
@@ -2142,8 +2147,8 @@ function PinnedSection({ sessions, pinnedIds, onLaunch, launchingId, onTmuxLaunc
 // ─── Project Run List (grouped same-machine runs inside expanded project) ──────
 
 function ProjectRunList({ project, onLaunch, onTmuxLaunch, launchingId, tmuxLaunchingId, skipPermissions, onPin, onUnpin, pinnedIds, onArchive, onUnarchive, archivedIds, expandedCards, onToggleExpand, hwCache, fetchHardware }) {
-  // showAll keyed by "{project_id}::{machine}::{firstSessionId}" — ephemeral per mount
-  const [showAllMap, setShowAllMap] = useState({});
+  // extraMap keyed by "{project_id}::{machine}::{firstSessionId}" — how many extra rows beyond 3 to show
+  const [extraMap, setExtraMap] = useState({});
 
   const sessions = project.sessions || [];
 
@@ -2162,9 +2167,9 @@ function ProjectRunList({ project, onLaunch, onTmuxLaunch, launchingId, tmuxLaun
     runs.map((run, ri) => {
       const mc = machineColor(run.machine);
       const runKey = `${project.project_id}::${run.machine}::${run.sessions[0].session_id}`;
-      const showAll = !!showAllMap[runKey];
-      const visible = showAll ? run.sessions : run.sessions.slice(0, 3);
-      const hiddenCount = run.sessions.length - 3;
+      const extra = extraMap[runKey] || 0;
+      const visible = run.sessions.slice(0, 3 + extra);
+      const remaining = run.sessions.length - (3 + extra);
 
       return h('div', {
         key: runKey,
@@ -2203,12 +2208,13 @@ function ProjectRunList({ project, onLaunch, onTmuxLaunch, launchingId, tmuxLaun
             expanded: (expandedCards || new Set()).has(s.session_id),
             onToggleExpand: () => onToggleExpand(s.session_id),
             inMachineSection: si !== 0,  // suppress machine badge on rows 2+
+            hideMachineLabel: true,
             hwCache,
             fetchHardware,
           });
         }),
-        !showAll && hiddenCount > 0 && h('button', {
-          onClick: () => setShowAllMap(prev => ({ ...prev, [runKey]: true })),
+        remaining > 0 && h('button', {
+          onClick: () => setExtraMap(m => ({ ...m, [runKey]: (m[runKey] || 0) + 3 })),
           style: {
             display: 'inline-block',
             margin: '4px 0 2px 0',
@@ -2222,7 +2228,7 @@ function ProjectRunList({ project, onLaunch, onTmuxLaunch, launchingId, tmuxLaun
             cursor: 'pointer',
             fontFamily: '"SF Mono", "Fira Code", Consolas, monospace',
           }
-        }, `+${hiddenCount} older`),
+        }, remaining >= 3 ? `+3 more${remaining > 3 ? ` (${remaining - 3} still hidden)` : ''}` : `+${remaining} older`),
       );
     })
   );
