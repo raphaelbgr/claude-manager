@@ -56,6 +56,7 @@ class ClaudeSession:
     git_branch: str = ""      # git branch from JSONL gitBranch field
     subprocess_count: int = 0 # number of child processes (recursive)
     git_remote: str = ""      # raw git remote.origin.url (empty if not a git repo)
+    git_commits: int = 0      # total commit count in the repo (rev-list --count HEAD)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -353,8 +354,9 @@ def scan_local(
             continue
 
     _mark_active_sessions(all_sessions, active_pids, session_names)
-    # Detect git remotes for each unique cwd (memoized per scan)
+    # Detect git remotes and commit counts for each unique cwd (memoized per scan)
     _remote_cache: dict[str, str] = {}
+    _commits_cache: dict[str, int] = {}
     for sess in all_sessions:
         cwd_key = sess.cwd or sess.project_path
         if not cwd_key:
@@ -369,6 +371,16 @@ def scan_local(
             except Exception:
                 _remote_cache[cwd_key] = ""
         sess.git_remote = _remote_cache[cwd_key]
+        if cwd_key not in _commits_cache:
+            try:
+                result = subprocess.run(
+                    ["git", "-C", cwd_key, "rev-list", "--count", "HEAD"],
+                    capture_output=True, text=True, timeout=2,
+                )
+                _commits_cache[cwd_key] = int(result.stdout.strip()) if result.returncode == 0 else 0
+            except Exception:
+                _commits_cache[cwd_key] = 0
+        sess.git_commits = _commits_cache[cwd_key]
 
     all_sessions.sort(key=lambda s: s.modified, reverse=True)
     log.info("scan_local: found %d sessions", len(all_sessions))
@@ -496,13 +508,15 @@ if projects_dir.is_dir():
 
 results.sort(key=lambda s: s['modified'], reverse=True)
 
-# Detect git remotes (memoized per cwd)
+# Detect git remotes and commit counts (memoized per cwd)
 import subprocess as _sp
 _remote_cache = {}
+_commits_cache = {}
 for r in results:
     cwd_key = r.get('cwd') or r.get('project_path', '')
     if not cwd_key:
         r['git_remote'] = ''
+        r['git_commits'] = 0
         continue
     if cwd_key not in _remote_cache:
         try:
@@ -512,6 +526,14 @@ for r in results:
         except Exception:
             _remote_cache[cwd_key] = ''
     r['git_remote'] = _remote_cache[cwd_key]
+    if cwd_key not in _commits_cache:
+        try:
+            pr = _sp.run(['git', '-C', cwd_key, 'rev-list', '--count', 'HEAD'],
+                         capture_output=True, text=True, timeout=2)
+            _commits_cache[cwd_key] = int(pr.stdout.strip()) if pr.returncode == 0 else 0
+        except Exception:
+            _commits_cache[cwd_key] = 0
+    r['git_commits'] = _commits_cache[cwd_key]
 
 print(json.dumps(results))
 """
@@ -551,6 +573,7 @@ async def scan_remote_via_api(machine_name: str, ip: str, dispatch_port: int) ->
                         git_branch=item.get("git_branch", ""),
                         subprocess_count=item.get("subprocess_count", 0),
                         git_remote=item.get("git_remote", ""),
+                        git_commits=item.get("git_commits", 0),
                     )
                     sessions.append(s)
                 log.info("scan_remote(%s): %d sessions via api", machine_name, len(sessions))
@@ -620,6 +643,7 @@ async def scan_remote(
                 git_branch=item.get("git_branch", ""),
                 subprocess_count=item.get("subprocess_count", 0),
                 git_remote=item.get("git_remote", ""),
+                git_commits=item.get("git_commits", 0),
             )
             sessions.append(sess)
         except (KeyError, TypeError):
