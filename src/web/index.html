@@ -191,6 +191,53 @@
       .compact-action-btn { flex: 0 0 auto; min-width: 0; }
     }
 
+    /* Split-button: [primary action] [▾ picker caret] */
+    .split-btn-group {
+      display: inline-flex;
+      align-items: stretch;
+      border-radius: 4px;
+      overflow: visible;   /* allow dropdown menu to escape */
+      position: relative;
+    }
+    .split-btn-group .split-btn-primary { border-top-right-radius: 0; border-bottom-right-radius: 0; margin-right: 0; }
+    .split-btn-group .split-btn-caret {
+      border-top-left-radius: 0; border-bottom-left-radius: 0;
+      border-left: 1px solid rgba(255,255,255,0.08);
+      padding-left: 2px; padding-right: 2px;
+      min-width: 18px;
+    }
+    .split-btn-caret-wrap { position: relative; display: inline-flex; }
+    .terminal-picker-menu {
+      position: absolute;
+      top: calc(100% + 2px);
+      right: 0;
+      min-width: 180px;
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+      z-index: 1000;
+      padding: 4px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .terminal-picker-item {
+      display: flex; align-items: center;
+      padding: 6px 10px;
+      background: transparent; color: #e6edf3;
+      border: none;
+      text-align: left;
+      font-size: 0.72rem;
+      border-radius: 4px;
+      cursor: pointer;
+      white-space: nowrap;
+      width: 100%;
+    }
+    .terminal-picker-item:hover { background: #21262d; }
+    .terminal-picker-item.terminal-picker-muted { color: #8b949e; cursor: default; }
+    .terminal-picker-item.terminal-picker-muted:hover { background: transparent; }
+
     /* Filter bar */
     .filter-bar {
       background: #0d1117;
@@ -949,6 +996,71 @@ function ReadmeModal({ machine, readmePath, repoLabel, onClose }) {
   );
 }
 
+// ─── Terminal picker (split-button dropdown) ──────────────────────────────────
+// Module-level cache: machine → Promise<terminals[]>. Multiple cards on the
+// same machine share one /api/machines/:m/terminals round-trip. TTL is
+// handled server-side (5 min) — re-fetch on demand only when the user reopens
+// the dropdown after the page has been up for a while.
+const _terminalCache = new Map();
+function fetchMachineTerminals(machine) {
+  if (_terminalCache.has(machine)) return _terminalCache.get(machine);
+  const p = apiFetch(`/api/machines/${encodeURIComponent(machine)}/terminals`)
+    .then(r => r.json())
+    .then(d => (d && d.ok && Array.isArray(d.terminals)) ? d.terminals : [])
+    .catch(() => []);
+  _terminalCache.set(machine, p);
+  return p;
+}
+
+function TerminalPicker({ machine, variant, disabled, onPick }) {
+  const [open, setOpen] = useState(false);
+  const [terminals, setTerminals] = useState(null);
+  const wrapRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    if (terminals === null) {
+      fetchMachineTerminals(machine).then(setTerminals);
+    }
+    const onDocClick = (e) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, [open, machine, terminals]);
+
+  return h('span', {
+    ref: wrapRef,
+    className: 'split-btn-caret-wrap',
+  },
+    h('button', {
+      className: `compact-action-btn btn split-btn-caret ${variant === 'tmux' ? 'btn-tmux' : 'btn-launch'}`,
+      onClick: e => { e.stopPropagation(); if (!disabled) setOpen(v => !v); },
+      disabled,
+      title: `Pick a terminal to ${variant === 'tmux' ? 'attach the new mux session' : 'resume the session'} in`,
+    },
+      h('span', { className: 'material-icons-round', style: { fontSize: '14px' } }, 'arrow_drop_down'),
+    ),
+    open && h('div', {
+      className: 'terminal-picker-menu',
+      onClick: e => e.stopPropagation(),
+    },
+      terminals === null && h('div', { className: 'terminal-picker-item terminal-picker-muted' }, 'Probing…'),
+      terminals !== null && terminals.length === 0 && h('div', { className: 'terminal-picker-item terminal-picker-muted' }, 'No terminals detected'),
+      (terminals || []).map(t =>
+        h('button', {
+          key: t.id,
+          className: 'terminal-picker-item',
+          onClick: e => { e.stopPropagation(); setOpen(false); onPick(t.id); },
+        },
+          h('span', { className: 'material-icons-round', style: { fontSize: '12px', marginRight: 6, color: '#58a6ff' } }, 'terminal'),
+          t.name,
+        )
+      ),
+    ),
+  );
+}
+
 function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching, skipPermissions, onPin, onUnpin, isPinned, onArchive, onUnarchive, isArchived, expanded, onToggleExpand, inMachineSection, hwCache, fetchHardware, onRename, hideMachineLabel }) {
   const isWorking = session.status === 'working';
   const isActive = session.status === 'active' || isWorking;
@@ -1167,30 +1279,46 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
     // of being pushed off-screen by the greedy flex-grow divider)
     h('div', { className: 'compact-spacer', style: { flex: 1 } }),
 
-    // Launch button
-    h('button', {
-      className: `compact-action-btn btn btn-launch${launching ? '' : ''}`,
-      onClick: e => { e.stopPropagation(); onLaunch(session); },
-      disabled: launching,
-      title: local
-        ? `Open a new terminal and resume this Claude Code session on ${session.machine || 'local'}`
-        : `Open a new terminal and resume this Claude Code session via SSH on ${session.machine}`,
-    },
-      h('span', { className: 'material-icons-round', style: { fontSize: '12px' } }, 'play_arrow'),
-      launching ? '…' : launchShort,
+    // Launch button + terminal picker caret (split-button group)
+    h('div', { className: 'split-btn-group' },
+      h('button', {
+        className: `compact-action-btn btn btn-launch split-btn-primary${launching ? '' : ''}`,
+        onClick: e => { e.stopPropagation(); onLaunch(session); },
+        disabled: launching,
+        title: local
+          ? `Open a new terminal and resume this Claude Code session on ${session.machine || 'local'}`
+          : `Open a new terminal and resume this Claude Code session via SSH on ${session.machine}`,
+      },
+        h('span', { className: 'material-icons-round', style: { fontSize: '12px' } }, 'play_arrow'),
+        launching ? '…' : launchShort,
+      ),
+      h(TerminalPicker, {
+        machine: session.machine,
+        variant: 'launch',
+        disabled: launching,
+        onPick: tid => onLaunch(session, tid),
+      }),
     ),
 
-    // tmux/psmux launch button
-    h('button', {
-      className: `compact-action-btn btn btn-tmux${tmuxLaunching ? '' : ''}`,
-      onClick: e => { e.stopPropagation(); onTmuxLaunch(session); },
-      disabled: tmuxLaunching,
-      title: local
-        ? `Create a new ${muxType} session on ${session.machine || 'local'} and resume Claude Code inside it`
-        : `Create a new ${muxType} session on ${session.machine} via SSH and resume Claude Code inside it`,
-    },
-      h('span', { className: 'material-icons-round', style: { fontSize: '12px' } }, 'terminal'),
-      tmuxLaunching ? '…' : tmuxShort,
+    // tmux/psmux launch button + terminal picker
+    h('div', { className: 'split-btn-group' },
+      h('button', {
+        className: `compact-action-btn btn btn-tmux split-btn-primary${tmuxLaunching ? '' : ''}`,
+        onClick: e => { e.stopPropagation(); onTmuxLaunch(session); },
+        disabled: tmuxLaunching,
+        title: local
+          ? `Create a new ${muxType} session on ${session.machine || 'local'} and resume Claude Code inside it`
+          : `Create a new ${muxType} session on ${session.machine} via SSH and resume Claude Code inside it`,
+      },
+        h('span', { className: 'material-icons-round', style: { fontSize: '12px' } }, 'terminal'),
+        tmuxLaunching ? '…' : tmuxShort,
+      ),
+      h(TerminalPicker, {
+        machine: session.machine,
+        variant: 'tmux',
+        disabled: tmuxLaunching,
+        onPick: tid => onTmuxLaunch(session, tid),
+      }),
     ),
 
     // Pin button removed — pinning is now per-project (see project header).
@@ -4522,7 +4650,7 @@ function App() {
   }, []);
 
   // ── Launch session ────────────────────────────────────────────────────────
-  const handleLaunch = useCallback(async (session) => {
+  const handleLaunch = useCallback(async (session, terminalId) => {
     setLaunchingId(session.session_id);
     const payload = {
       machine: session.machine,
@@ -4530,6 +4658,7 @@ function App() {
       cwd: session.cwd || session.project_path,
       skip_permissions: skipPermissions,
       mode: 'terminal',
+      ...(terminalId ? { terminal_id: terminalId } : {}),
     };
     console.log('[launch]', payload);
     try {
@@ -4557,7 +4686,7 @@ function App() {
   }, [skipPermissions]);
 
   // ── Tmux launch (create tmux session + launch claude in it) ──────────────
-  const handleTmuxLaunch = useCallback(async (session) => {
+  const handleTmuxLaunch = useCallback(async (session, terminalId) => {
     const mux = (MACHINE_INFO[session.machine] || {}).os === 'Windows' ? 'psmux' : 'tmux';
     setTmuxLaunchingId(session.session_id);
     const payload = {
@@ -4566,6 +4695,7 @@ function App() {
       cwd: session.cwd || session.project_path,
       skip_permissions: skipPermissions,
       mode: 'tmux',
+      ...(terminalId ? { terminal_id: terminalId } : {}),
     };
     console.log('[tmux-launch]', payload);
     try {

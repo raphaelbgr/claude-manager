@@ -80,14 +80,40 @@ def applescript_string(s: str) -> str:
     return f'"{escaped}"'
 
 
-async def launch_terminal(command: str) -> dict:
-    """
-    Open a new terminal window on the local machine and run command in it.
+async def launch_terminal(
+    command: str,
+    *,
+    terminal_id: str | None = None,
+    title: str | None = None,
+) -> dict:
+    """Open a new terminal window on the local machine and run `command` in it.
 
-    Returns:
-        {"ok": True} on success, {"ok": False, "error": str} on failure.
+    When `terminal_id` is provided, dispatch through the matching adapter in
+    src.terminals (e.g. "iterm2", "wt", "alacritty"). When it's None or the id
+    doesn't resolve, fall back to the legacy auto-detect path so nothing
+    regresses for existing callers.
+
+    `title` is forwarded to the adapter and, for adapters that support it,
+    overrides the ANSI OSC 0 title that title_prefix_for() may have already
+    baked into `command`.
     """
-    log.info("launch_terminal: command=%s...", command[:80])
+    log.info("launch_terminal: terminal_id=%s command=%s...", terminal_id, command[:80])
+    if terminal_id:
+        from . import terminals as _terms
+        # Map Python's sys.platform to the adapter registry's os key.
+        reg_os = (
+            "win32" if sys.platform == "win32"
+            else "linux" if sys.platform.startswith("linux")
+            else "darwin"
+        )
+        adapter = _terms.get_adapter(reg_os, terminal_id)
+        if adapter is not None:
+            result = await adapter.launch(command, title=title)
+            if not result.get("ok"):
+                log.error("launch_terminal(%s): %s", terminal_id, result.get("error"))
+            return result
+        log.warning("launch_terminal: unknown terminal_id=%r, falling back to auto", terminal_id)
+
     if sys.platform == "darwin":
         result = await _launch_macos(command)
     elif sys.platform.startswith("linux"):
@@ -263,7 +289,7 @@ async def _launch_windows(command: str) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
-async def launch_claude_session(cwd: str, session_id: str, machine: str, skip_permissions: bool = False) -> dict:
+async def launch_claude_session(cwd: str, session_id: str, machine: str, skip_permissions: bool = False, terminal_id: str | None = None) -> dict:
     """
     Open a terminal and resume a Claude session (local or remote).
 
@@ -286,10 +312,9 @@ async def launch_claude_session(cwd: str, session_id: str, machine: str, skip_pe
         # Local: title = Origin -> Project (no destination, no mux).
         title = build_window_title(local_machine, None, None, project_name)
         local_os = "win32" if sys.platform == "win32" else ("linux" if sys.platform.startswith("linux") else "darwin")
-        target_os = "win32" if local_os == "win32" else "unix"
         prefix = title_prefix_for("win32" if local_os == "win32" else local_os, title)
         cmd = adapter.build_session_command(cwd, session_id, skip_permissions)
-        return await launch_terminal(prefix + cmd)
+        return await launch_terminal(prefix + cmd, terminal_id=terminal_id, title=title)
 
     info = FLEET_MACHINES.get(machine, {})
     alias = info.get("ssh_alias", machine)
@@ -307,7 +332,7 @@ async def launch_claude_session(cwd: str, session_id: str, machine: str, skip_pe
     session_cmd = adapter.build_session_command_ssh(cwd, session_id, skip_permissions)
     terminal_cmd = _ssh_path_prefix(machine) + inner_prefix + adapter.for_terminal(session_cmd, keep_open=True)
     cmd = f"ssh {shlex.quote(alias)} -t {shlex.quote(terminal_cmd)}"
-    return await launch_terminal(cmd)
+    return await launch_terminal(cmd, terminal_id=terminal_id, title=title)
 
 
 _SHELL_PROMPT_RE = __import__("re").compile(
@@ -399,7 +424,7 @@ async def _ensure_claude_running(machine: str, session_name: str, skip_permissio
         log.warning("ensure_claude: remote send-keys exception: %s", exc)
 
 
-async def launch_tmux_attach(session_name: str, machine: str, skip_permissions: bool = False) -> dict:
+async def launch_tmux_attach(session_name: str, machine: str, skip_permissions: bool = False, terminal_id: str | None = None) -> dict:
     """
     Open a terminal and attach to an existing tmux/psmux session.
 
@@ -431,7 +456,7 @@ async def launch_tmux_attach(session_name: str, machine: str, skip_permissions: 
         title = build_window_title(local_machine, None, session_name, None)
         local_os = "win32" if sys.platform == "win32" else ("linux" if sys.platform.startswith("linux") else "darwin")
         prefix = title_prefix_for("win32" if local_os == "win32" else local_os, title)
-        return await launch_terminal(prefix + adapter.mux_attach(session_name))
+        return await launch_terminal(prefix + adapter.mux_attach(session_name), terminal_id=terminal_id, title=title)
 
     title = build_window_title(local_machine, machine, session_name, None)
     inner_prefix = title_prefix_for(remote_os, title)
@@ -457,7 +482,8 @@ async def launch_tmux_attach(session_name: str, machine: str, skip_permissions: 
     # tmux: SSH -t with direct attach works
     attach_cmd = _ssh_path_prefix(machine) + inner_prefix + adapter.mux_attach(session_name)
     return await launch_terminal(
-        f"ssh {shlex.quote(alias)} -t {shlex.quote(attach_cmd)}"
+        f"ssh {shlex.quote(alias)} -t {shlex.quote(attach_cmd)}",
+        terminal_id=terminal_id, title=title,
     )
 
 
@@ -562,6 +588,7 @@ async def launch_new_tmux_and_attach(
     machine: str,
     cwd: str | None = None,
     command: str | None = None,
+    terminal_id: str | None = None,
 ) -> dict:
     """
     Create a new detached tmux/psmux session, then open a terminal and attach to it.
@@ -584,4 +611,4 @@ async def launch_new_tmux_and_attach(
 
     # Use the sanitized name returned by create_tmux_session (may differ from input)
     actual_name = create_result.get("name", name)
-    return await launch_tmux_attach(actual_name, machine)
+    return await launch_tmux_attach(actual_name, machine, terminal_id=terminal_id)

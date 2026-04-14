@@ -789,6 +789,7 @@ async def handle_sessions_launch(request: web.Request) -> web.Response:
         return web.json_response({"ok": False, "error": "cwd required"}, status=400)
     skip = body.get("skip_permissions", False)
     mode = body.get("mode", "terminal")
+    terminal_id = body.get("terminal_id") or None
     t0 = time.monotonic()
 
     # mode='tmux' runs the create-session + auto-claude + attach path for
@@ -845,7 +846,7 @@ async def handle_sessions_launch(request: web.Request) -> web.Response:
             )
         else:
             # tmux on macOS/Linux: create session + attach works perfectly
-            result = await launch_new_tmux_and_attach(safe_name, machine, cwd=cwd, command=claude_cmd)
+            result = await launch_new_tmux_and_attach(safe_name, machine, cwd=cwd, command=claude_cmd, terminal_id=terminal_id)
     elif not session_id:
         # Terminal-mode new session (no tmux): cd to cwd and start a fresh claude
         local_machine = request.app["local_machine"]
@@ -861,7 +862,7 @@ async def handle_sessions_launch(request: web.Request) -> web.Response:
             if skip:
                 claude_cmd += " --dangerously-skip-permissions"
             full_cmd = adapter.chain_commands(cd_cmd, claude_cmd)
-            result = await launch_terminal(full_cmd)
+            result = await launch_terminal(full_cmd, terminal_id=terminal_id)
         else:
             # Remote: build command in the SSH landing shell syntax
             # (PowerShell for Windows, bash for Linux/macOS)
@@ -871,13 +872,13 @@ async def handle_sessions_launch(request: web.Request) -> web.Response:
             full_cmd = adapter.build_new_session_command_ssh(cwd, skip_permissions=skip)
             ssh_cmd = _ssh_path_prefix(machine) + full_cmd
             terminal_cmd = f"ssh {shlex.quote(alias)} -t {shlex.quote(ssh_cmd)}"
-            result = await launch_terminal(terminal_cmd)
+            result = await launch_terminal(terminal_cmd, terminal_id=terminal_id)
 
         status = 200 if result.get("ok") else 500
         log.info("POST /api/sessions/launch NEW machine=%s %d", machine, status)
         return web.json_response(result, status=status)
     else:
-        result = await launch_claude_session(cwd, session_id, machine, skip_permissions=skip)
+        result = await launch_claude_session(cwd, session_id, machine, skip_permissions=skip, terminal_id=terminal_id)
     status = 200 if result.get("ok") else 500
     elapsed = time.monotonic() - t0
     if result.get("ok"):
@@ -1695,6 +1696,79 @@ async def handle_projects_unpin(request: web.Request) -> web.Response:
     prefs["pinned_projects"] = pinned
     _save_prefs(prefs)
     return web.json_response({"ok": True, "pinned_projects": pinned})
+
+
+# ---------------------------------------------------------------------------
+# Terminal discovery
+# ---------------------------------------------------------------------------
+# Short-lived cache: (machine → (timestamp, result)). New terminals aren't
+# installed every scan tick, so 5 min is plenty. Also spares remote machines
+# from re-probe storms when many UI clients open the dropdown at once.
+_TERMINAL_CACHE: dict[str, tuple[float, list[dict]]] = {}
+_TERMINAL_CACHE_TTL = 300.0
+
+
+async def handle_machine_terminals(request: web.Request) -> web.Response:
+    """Return the list of terminal emulators installed on the given machine.
+
+    Each entry: {id, name, priority}. Priority-desc; the highest is the
+    'auto' pick. Uses a 5-min cache per machine.
+    """
+    from . import terminals as _terms
+    from .subprocess_utils import run_with_timeout
+    from .executor import local_env
+
+    machine = request.match_info["machine"]
+    info = FLEET_MACHINES.get(machine, {})
+    # Map config os codes to the adapter registry's os key.
+    os_key = info.get("os") or "darwin"
+    if os_key == "linux":
+        reg_os = "linux"
+    elif os_key == "win32":
+        reg_os = "win32"
+    else:
+        reg_os = "darwin"
+
+    now = time.monotonic()
+    cached = _TERMINAL_CACHE.get(machine)
+    if cached and (now - cached[0]) < _TERMINAL_CACHE_TTL:
+        return web.json_response({"ok": True, "machine": machine, "os": reg_os, "terminals": cached[1]})
+
+    local_machine = request.app.get("local_machine")
+    is_local = (machine == local_machine)
+
+    # Runner shape: async (shell_string) -> (rc, stdout, stderr).
+    if is_local:
+        # Native shell per OS. Daemon's host OS may differ from reg_os if the
+        # daemon somehow runs on a machine not in the fleet config — in that
+        # case fall back to the daemon's actual platform.
+        if sys.platform == "win32":
+            async def runner(sh: str):
+                return await run_with_timeout(
+                    ["powershell", "-NoProfile", "-Command", sh],
+                    timeout=6, env=local_env(),
+                )
+        else:
+            async def runner(sh: str):
+                return await run_with_timeout(
+                    ["/bin/bash", "-c", sh],
+                    timeout=6, env=local_env(),
+                )
+    else:
+        # Remote: route through the persistent asyncssh pool.
+        from .ssh_pool import default_pool
+        pool = default_pool()
+        async def runner(sh: str):
+            return await pool.run(machine, sh, timeout=8)
+
+    try:
+        avail = await _terms.list_available(reg_os, runner)
+    except Exception as exc:
+        log.warning("terminal probe(%s) failed: %s", machine, exc)
+        return web.json_response({"ok": False, "error": str(exc), "terminals": []}, status=200)
+
+    _TERMINAL_CACHE[machine] = (now, avail)
+    return web.json_response({"ok": True, "machine": machine, "os": reg_os, "terminals": avail})
 
 
 async def handle_sessions_archive(request: web.Request) -> web.Response:
@@ -2565,6 +2639,7 @@ def create_app(
     app.router.add_post("/api/sessions/unpin", handle_sessions_unpin)
     app.router.add_post("/api/projects/pin", handle_projects_pin)
     app.router.add_post("/api/projects/unpin", handle_projects_unpin)
+    app.router.add_get("/api/machines/{machine}/terminals", handle_machine_terminals)
     app.router.add_post("/api/sessions/archive", handle_sessions_archive)
     app.router.add_post("/api/sessions/unarchive", handle_sessions_unarchive)
     app.router.add_post("/api/sessions/rename", handle_sessions_rename)
