@@ -58,6 +58,7 @@ class ClaudeSession:
     git_remote: str = ""      # raw git remote.origin.url (empty if not a git repo)
     git_commits: int = 0      # total commit count in the repo (rev-list --count HEAD)
     last_user_message: str = ""  # last user prompt in the session (160 char max)
+    readme_path: str = ""        # absolute path to README.md (or variant) in cwd; empty if absent
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -401,6 +402,27 @@ def scan_local(
                 _commits_cache[cwd_key] = 0
         sess.git_commits = _commits_cache[cwd_key]
 
+    # Detect README presence per unique cwd (memoized)
+    _readme_cache: dict[str, str] = {}
+    _README_NAMES = ("README.md", "README.MD", "README", "readme.md")
+    for sess in all_sessions:
+        cwd_key = sess.cwd or sess.project_path
+        if not cwd_key:
+            continue
+        if cwd_key not in _readme_cache:
+            found = ""
+            try:
+                cwd_p = Path(cwd_key)
+                for name in _README_NAMES:
+                    candidate = cwd_p / name
+                    if candidate.is_file():
+                        found = str(candidate)
+                        break
+            except Exception:
+                pass
+            _readme_cache[cwd_key] = found
+        sess.readme_path = _readme_cache[cwd_key]
+
     all_sessions.sort(key=lambda s: s.modified, reverse=True)
     log.info("scan_local: found %d sessions", len(all_sessions))
     return all_sessions
@@ -537,6 +559,7 @@ if projects_dir.is_dir():
                     'name': session_names.get(sid, ''),
                     'git_branch': git_branch,
                     'last_user_message': last_user_msg,
+                    'readme_path': '',
                 })
             except Exception:
                 pass
@@ -569,6 +592,23 @@ for r in results:
         except Exception:
             _commits_cache[cwd_key] = 0
     r['git_commits'] = _commits_cache[cwd_key]
+
+_readme_cache = {}
+_README_NAMES = ('README.md', 'README.MD', 'README', 'readme.md')
+for r in results:
+    cwd_key = r.get('cwd') or r.get('project_path', '')
+    if not cwd_key:
+        r['readme_path'] = ''
+        continue
+    if cwd_key not in _readme_cache:
+        found = ''
+        for name in _README_NAMES:
+            candidate = os.path.join(cwd_key, name)
+            if os.path.isfile(candidate):
+                found = candidate
+                break
+        _readme_cache[cwd_key] = found
+    r['readme_path'] = _readme_cache[cwd_key]
 
 print(json.dumps(results))
 """
@@ -610,6 +650,7 @@ async def scan_remote_via_api(machine_name: str, ip: str, dispatch_port: int) ->
                         git_remote=item.get("git_remote", ""),
                         git_commits=item.get("git_commits", 0),
                         last_user_message=item.get("last_user_message", ""),
+                        readme_path=item.get("readme_path", ""),
                     )
                     sessions.append(s)
                 log.info("scan_remote(%s): %d sessions via api", machine_name, len(sessions))
@@ -680,6 +721,8 @@ async def scan_remote(
                 subprocess_count=item.get("subprocess_count", 0),
                 git_remote=item.get("git_remote", ""),
                 git_commits=item.get("git_commits", 0),
+                last_user_message=item.get("last_user_message", ""),
+                readme_path=item.get("readme_path", ""),
             )
             sessions.append(sess)
         except (KeyError, TypeError):
