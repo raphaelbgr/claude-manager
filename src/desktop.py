@@ -272,7 +272,11 @@ def run_desktop(bind: str = "0.0.0.0", port: int = 44740):
         "background_color": "#0d1117",
     }
     if server_ready:
-        window_kwargs["url"] = local_url
+        # Cache-bust the URL so pywebview fetches fresh HTML after updates.
+        # Combined with no-cache headers server-side, this ensures frontend
+        # changes are visible after `Update and Restart` without a manual reload.
+        import time as _t
+        window_kwargs["url"] = f"{local_url}/?v={int(_t.time())}"
     else:
         window_kwargs["html"] = f"""
         <html style="background:#0d1117;color:#e6edf3;font-family:-apple-system,system-ui,sans-serif">
@@ -288,7 +292,7 @@ def run_desktop(bind: str = "0.0.0.0", port: int = 44740):
                 for (let i = 0; i < 40; i++) {{
                     try {{
                         const r = await fetch('{local_url}/health');
-                        if (r.ok) {{ window.location = '{local_url}'; return; }}
+                        if (r.ok) {{ window.location = '{local_url}/?v=' + Date.now(); return; }}
                     }} catch(e) {{}}
                     await new Promise(r => setTimeout(r, 500));
                 }}

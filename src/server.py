@@ -2351,7 +2351,12 @@ def create_app(
         index_html = web_dir / "index.html"
 
         async def handle_index(request: web.Request) -> web.Response:
-            return web.FileResponse(index_html)
+            # No-cache so pywebview picks up frontend changes after a restart.
+            return web.FileResponse(index_html, headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            })
 
         app.router.add_get("/", handle_index)
         app.router.add_static("/static/", web_dir)
