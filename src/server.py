@@ -42,6 +42,7 @@ from .config import DEFAULT_BIND, DEFAULT_PORT, FLEET_MACHINES, SCAN_INTERVAL, d
 from .fleet import discover_fleet
 from .launcher import launch_claude_session, launch_tmux_attach, launch_tmux_attach_remote, launch_new_tmux_and_attach, launch_terminal, _ssh_path_prefix
 from .scanner import ClaudeSession, scan_all
+from .subprocess_utils import run_with_timeout
 from .tmux_manager import TmuxSession, list_all_tmux, create_tmux_session, kill_tmux_session
 
 log = logging.getLogger("claude_manager.server")
@@ -499,19 +500,18 @@ async def handle_update_apply(request: web.Request) -> web.Response:
     repo = _pathlib.Path(__file__).parent.parent
 
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "git", "pull", "--ff-only",
+        import pathlib as _pathlib2
+        rc_pull, stdout, stderr = await run_with_timeout(
+            ["git", "pull", "--ff-only"],
+            timeout=30,
             cwd=str(repo),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
     except asyncio.TimeoutError:
         return web.json_response({"ok": False, "error": "git pull timed out"}, status=504)
     except Exception as exc:
         return web.json_response({"ok": False, "error": str(exc)}, status=500)
 
-    if proc.returncode != 0:
+    if rc_pull != 0:
         err = stderr.decode("utf-8", errors="replace").strip()
         return web.json_response({
             "ok": False,
@@ -1150,20 +1150,16 @@ except ImportError:
     print(json.dumps({"drives": drives}))
 """
 
-    proc = await asyncio.create_subprocess_exec(
-        "ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", ssh_alias,
-        "python3", "-",
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(input=py_script.encode()), timeout=15)
+        rc, stdout, stderr = await run_with_timeout(
+            ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", ssh_alias, "python3", "-"],
+            timeout=15,
+            input=py_script.encode(),
+        )
     except asyncio.TimeoutError:
-        proc.kill()
         return web.json_response({"ok": False, "error": "SSH timeout"}, status=504)
 
-    if proc.returncode != 0:
+    if rc != 0:
         err = stderr.decode().strip()
         return web.json_response({"ok": False, "error": err or "SSH command failed"}, status=500)
 
@@ -1228,20 +1224,16 @@ async def handle_mkdir(request: web.Request) -> web.Response:
         "print('ok')"
     )
 
-    proc = await asyncio.create_subprocess_exec(
-        "ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", ssh_alias,
-        "python3", "-",
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(input=py_script.encode()), timeout=10)
+        rc, stdout, stderr = await run_with_timeout(
+            ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", ssh_alias, "python3", "-"],
+            timeout=10,
+            input=py_script.encode(),
+        )
     except asyncio.TimeoutError:
-        proc.kill()
         return web.json_response({"ok": False, "error": "SSH timeout"}, status=504)
 
-    if proc.returncode != 0:
+    if rc != 0:
         err = stderr.decode().strip()
         return web.json_response({"ok": False, "error": err or "SSH mkdir failed"}, status=500)
 
@@ -1342,20 +1334,16 @@ except Exception:
 print(json.dumps({{"path": str(p), "parent": str(p.parent), "drive": drive, "dirs": dirs}}))
 """
 
-    proc = await asyncio.create_subprocess_exec(
-        "ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", ssh_alias,
-        "python3", "-",
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(input=py_script.encode()), timeout=10)
+        rc, stdout, stderr = await run_with_timeout(
+            ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", ssh_alias, "python3", "-"],
+            timeout=10,
+            input=py_script.encode(),
+        )
     except asyncio.TimeoutError:
-        proc.kill()
         return web.json_response({"ok": False, "error": "SSH timeout"}, status=504)
 
-    if proc.returncode != 0:
+    if rc != 0:
         err = stderr.decode().strip()
         return web.json_response({"ok": False, "error": err or "SSH command failed"}, status=500)
 
@@ -1744,20 +1732,17 @@ async def handle_hardware(request: web.Request) -> web.Response:
     ssh_alias = info.get("ssh_alias", machine)
 
     script = _REMOTE_HW_SCRIPT.strip()
-    proc = await asyncio.create_subprocess_exec(
-        "ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
-        ssh_alias, "python3", "-",
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(input=script.encode()), timeout=20)
+        rc, stdout, stderr = await run_with_timeout(
+            ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
+             ssh_alias, "python3", "-"],
+            timeout=20,
+            input=script.encode(),
+        )
     except asyncio.TimeoutError:
-        proc.kill()
         return web.json_response({"ok": False, "error": "SSH timeout"}, status=504)
 
-    if proc.returncode != 0:
+    if rc != 0:
         err = stderr.decode().strip()
         return web.json_response({"ok": False, "error": err or "SSH command failed"}, status=500)
 
@@ -1881,20 +1866,17 @@ pid_file.write_text(json.dumps(data, indent=2), encoding='utf-8')
 print(json.dumps({{'ok': True, 'name': name}}))
 """
 
-    proc = await asyncio.create_subprocess_exec(
-        "ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
-        ssh_alias, "python3", "-",
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(input=py_script.encode()), timeout=15)
+        rc, stdout, stderr = await run_with_timeout(
+            ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
+             ssh_alias, "python3", "-"],
+            timeout=15,
+            input=py_script.encode(),
+        )
     except asyncio.TimeoutError:
-        proc.kill()
         return web.json_response({"ok": False, "error": "SSH timeout"}, status=504)
 
-    if proc.returncode != 0:
+    if rc != 0:
         err = stderr.decode().strip()
         return web.json_response({"ok": False, "error": err or "SSH command failed"}, status=500)
 

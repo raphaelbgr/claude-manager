@@ -6,6 +6,7 @@ from dataclasses import dataclass, asdict
 from .command_adapter import get_adapter
 from .config import FLEET_MACHINES, detect_local_machine, SSH_TIMEOUT
 from .mux_parser import parse_mux_output
+from .subprocess_utils import run_with_timeout
 
 log = logging.getLogger("claude_manager.tmux_manager")
 
@@ -58,16 +59,14 @@ async def list_local_tmux() -> list[TmuxSession]:
     machine = detect_local_machine()
     fmt = "#{session_name}|#{session_created}|#{session_windows}|#{session_attached}|#{pane_current_path}"
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "tmux", "list-sessions", "-F", fmt,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        rc, stdout, _ = await run_with_timeout(
+            ["tmux", "list-sessions", "-F", fmt],
+            timeout=10,
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
     except (FileNotFoundError, asyncio.TimeoutError):
         return []
 
-    if proc.returncode != 0:
+    if rc != 0:
         # "no server running" or similar — not an error we surface
         return []
 
@@ -111,13 +110,11 @@ async def list_remote_tmux(machine_name: str, ssh_alias: str, mux: str) -> list[
 
     async def _run_remote(cmd_str: str) -> tuple[int, str]:
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *ssh_base, _ssh_path_prefix(machine_name) + cmd_str,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+            rc, stdout, _ = await run_with_timeout(
+                [*ssh_base, _ssh_path_prefix(machine_name) + cmd_str],
+                timeout=15,
             )
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
-            return proc.returncode, stdout.decode()
+            return rc, stdout.decode()
         except (asyncio.TimeoutError, OSError):
             return -1, ""
 
@@ -227,14 +224,11 @@ async def create_tmux_session(
     try:
         if is_local:
             # Step 1: Create detached session (no -c, psmux doesn't support it)
-            cmd_parts = [mux, "new-session", "-d", "-s", name]
-            proc = await asyncio.create_subprocess_exec(
-                *cmd_parts,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+            _rc_create, _, stderr = await run_with_timeout(
+                [mux, "new-session", "-d", "-s", name],
+                timeout=15,
             )
-            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
-            if proc.returncode != 0:
+            if _rc_create != 0:
                 err = stderr.decode().strip()
                 log.error("create_tmux_session(%s, %s): %s", machine, name, err)
                 return {"ok": False, "error": err}
@@ -242,19 +236,17 @@ async def create_tmux_session(
             # Step 2: cd into the working directory via send-keys
             if cwd:
                 cd_cmd = adapter.cd_command(cwd)
-                sk = [mux, "send-keys", "-t", name, cd_cmd, "Enter"]
-                proc = await asyncio.create_subprocess_exec(
-                    *sk, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                await run_with_timeout(
+                    [mux, "send-keys", "-t", name, cd_cmd, "Enter"],
+                    timeout=10,
                 )
-                await asyncio.wait_for(proc.communicate(), timeout=10)
 
             # Step 3: Send the command via send-keys
             if command:
-                sk = [mux, "send-keys", "-t", name, command, "Enter"]
-                proc = await asyncio.create_subprocess_exec(
-                    *sk, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                await run_with_timeout(
+                    [mux, "send-keys", "-t", name, command, "Enter"],
+                    timeout=10,
                 )
-                await asyncio.wait_for(proc.communicate(), timeout=10)
 
             log.info("create_tmux_session(%s, %s): ok (local, cwd=%s)", machine, name, cwd)
             return {"ok": True}
@@ -269,12 +261,11 @@ async def create_tmux_session(
             ]
 
             async def _ssh_run(cmd_str: str) -> tuple[int, str]:
-                p = await asyncio.create_subprocess_exec(
-                    *ssh_base, _ssh_path_prefix(machine) + cmd_str,
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                _rc, _, _se = await run_with_timeout(
+                    [*ssh_base, _ssh_path_prefix(machine) + cmd_str],
+                    timeout=15,
                 )
-                _, se = await asyncio.wait_for(p.communicate(), timeout=15)
-                return p.returncode, se.decode().strip()
+                return _rc, _se.decode().strip()
 
             # Step 1: Create empty detached session.
             # NOTE: psmux returns rc=0 even when the session already exists
@@ -381,13 +372,8 @@ async def _capture_pane_local(machine: str, session_name: str, lines: int) -> st
     else:
         cmd = ["psmux", "capture-pane", "-t", session_name, "-p"]
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
-        if proc.returncode == 0:
+        rc, stdout, _ = await run_with_timeout(cmd, timeout=5)
+        if rc == 0:
             return _clean_pane_output(stdout.decode("utf-8", errors="replace"))
     except (asyncio.TimeoutError, OSError) as exc:
         log.warning("_capture_pane_local(%s, %s): %s", machine, session_name, exc)
@@ -414,13 +400,8 @@ async def _capture_pane_via_ssh(machine: str, session_name: str, lines: int) -> 
         _ssh_path_prefix(machine) + cmd_str,
     ]
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *ssh_cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
-        if proc.returncode == 0:
+        rc, stdout, _ = await run_with_timeout(ssh_cmd, timeout=10)
+        if rc == 0:
             return _clean_pane_output(stdout.decode("utf-8", errors="replace"))
     except (asyncio.TimeoutError, OSError) as exc:
         log.warning("_capture_pane_via_ssh(%s, %s): %s", machine, session_name, exc)
@@ -434,14 +415,11 @@ async def start_pipe_pane(session_name: str, output_path: str) -> bool:
     Returns True on success.
     """
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "tmux", "pipe-pane", "-t", session_name,
-            f"cat >> {shlex.quote(output_path)}",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        rc, _, _ = await run_with_timeout(
+            ["tmux", "pipe-pane", "-t", session_name, f"cat >> {shlex.quote(output_path)}"],
+            timeout=5,
         )
-        await asyncio.wait_for(proc.communicate(), timeout=5)
-        return proc.returncode == 0
+        return rc == 0
     except (asyncio.TimeoutError, OSError) as exc:
         log.warning("start_pipe_pane(%s): %s", session_name, exc)
         return False
@@ -453,13 +431,11 @@ async def stop_pipe_pane(session_name: str) -> bool:
     Running pipe-pane with no command stops the pipe.
     """
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "tmux", "pipe-pane", "-t", session_name,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        rc, _, _ = await run_with_timeout(
+            ["tmux", "pipe-pane", "-t", session_name],
+            timeout=5,
         )
-        await asyncio.wait_for(proc.communicate(), timeout=5)
-        return proc.returncode == 0
+        return rc == 0
     except (asyncio.TimeoutError, OSError) as exc:
         log.warning("stop_pipe_pane(%s): %s", session_name, exc)
         return False
@@ -478,17 +454,13 @@ async def kill_tmux_session(machine: str, name: str) -> dict:
     local_machine = detect_local_machine()
     is_local = (machine == local_machine)
 
-    kill_cmd = [mux, "kill-session", "-t", name]
-
     try:
         if is_local:
-            proc = await asyncio.create_subprocess_exec(
-                *kill_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+            rc, _, stderr = await run_with_timeout(
+                [mux, "kill-session", "-t", name],
+                timeout=10,
             )
-            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
-            if proc.returncode != 0:
+            if rc != 0:
                 err = stderr.decode().strip()
                 log.warning("kill_tmux_session(%s, %s): %s", machine, name, err)
                 return {"ok": False, "error": err}
@@ -496,21 +468,18 @@ async def kill_tmux_session(machine: str, name: str) -> dict:
         else:
             adapter = get_adapter(machine)
             remote_cmd = _ssh_path_prefix(machine) + adapter.mux_kill_session(name)
-            ssh_cmd = [
-                "ssh",
-                "-o", f"ConnectTimeout={SSH_TIMEOUT}",
-                "-o", "BatchMode=yes",
-                "-o", "StrictHostKeyChecking=no",
-                ssh_alias,
-                remote_cmd,
-            ]
-            proc = await asyncio.create_subprocess_exec(
-                *ssh_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+            rc, _, stderr = await run_with_timeout(
+                [
+                    "ssh",
+                    "-o", f"ConnectTimeout={SSH_TIMEOUT}",
+                    "-o", "BatchMode=yes",
+                    "-o", "StrictHostKeyChecking=no",
+                    ssh_alias,
+                    remote_cmd,
+                ],
+                timeout=15,
             )
-            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
-            if proc.returncode != 0:
+            if rc != 0:
                 err = stderr.decode().strip()
                 log.warning("kill_tmux_session(%s, %s): %s", machine, name, err)
                 return {"ok": False, "error": err}

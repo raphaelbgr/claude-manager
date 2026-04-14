@@ -26,6 +26,8 @@ from typing import Any, Callable
 
 import psutil
 
+from .subprocess_utils import run_with_timeout
+
 log = logging.getLogger("claude_manager.scanner")
 
 
@@ -536,24 +538,11 @@ async def scan_remote(
     """
     script = REMOTE_SCAN_SCRIPT.strip()
     try:
-        # Pipe script via stdin to avoid shell quoting issues with SSH
-        proc = await asyncio.wait_for(
-            asyncio.create_subprocess_exec(
-                "ssh",
-                "-o", "BatchMode=yes",
-                "-o", "ConnectTimeout=5",
-                "-o", "StrictHostKeyChecking=no",
-                ssh_alias,
-                "python3", "-",
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            ),
+        rc, stdout, stderr = await run_with_timeout(
+            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+             "-o", "StrictHostKeyChecking=no", ssh_alias, "python3", "-"],
             timeout=30,
-        )
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(input=script.encode("utf-8")),
-            timeout=30,
+            input=script.encode("utf-8"),
         )
     except asyncio.TimeoutError:
         log.warning("scan_remote(%s): SSH timed out", machine_name)
@@ -562,8 +551,8 @@ async def scan_remote(
         log.warning("scan_remote(%s): failed: %s", machine_name, exc)
         return []
 
-    if proc.returncode != 0:
-        log.warning("scan_remote(%s): SSH exited %d", machine_name, proc.returncode)
+    if rc != 0:
+        log.warning("scan_remote(%s): SSH exited %d", machine_name, rc)
         return []
 
     try:
