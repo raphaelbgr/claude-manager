@@ -1,5 +1,13 @@
 #!/bin/bash
-cd "$(dirname "$0")/../../../../"
-source .venv/bin/activate 2>/dev/null
-# Try GUI first, fall back to web-only if pywebview missing
-exec python3 -m src.main 2>>"/tmp/claude-manager.log" || exec python3 -m src.main --enable-web 2>>"/tmp/claude-manager.log"
+# Always run the latest build from the repo.
+REPO="/Users/rbgnr/git/claude-manager"
+LOG="/tmp/claude-manager.log"
+PY="$REPO/.venv/bin/python3"
+cd "$REPO" || { echo "[launch] cd $REPO failed" >>"$LOG"; exit 1; }
+echo "[launch] $(date) starting" >>"$LOG"
+git pull --ff-only >>"$LOG" 2>&1 || echo "[launch] git pull failed" >>"$LOG"
+if [ ! -x "$PY" ]; then
+  echo "[launch] no .venv python at $PY, falling back to system python3" >>"$LOG"
+  PY=python3
+fi
+exec "$PY" -m src.main >>"$LOG" 2>&1

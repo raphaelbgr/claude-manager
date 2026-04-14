@@ -458,7 +458,24 @@ async def handle_update_check(request: web.Request) -> web.Response:
             "update_available": False,
         })
 
-    update_available = bool(latest.get("commit_full") != current.get("commit_full"))
+    # update_available is True only when GitHub has a commit we don't.
+    # If we're ahead of (or equal to) origin, there's nothing to pull.
+    update_available = False
+    latest_full = latest.get("commit_full")
+    current_full = current.get("commit_full")
+    if latest_full and current_full and latest_full != current_full:
+        try:
+            import pathlib as _p
+            _repo = _p.Path(__file__).parent.parent
+            rc, _, _ = await run_with_timeout(
+                ["git", "merge-base", "--is-ancestor", latest_full, current_full],
+                timeout=5, cwd=str(_repo),
+            )
+            # rc == 0 → latest is ancestor of current (we're ahead). rc != 0 → we need it.
+            update_available = rc != 0
+        except Exception:
+            # If the check fails (e.g., shallow clone), fall back to "not equal"
+            update_available = True
 
     result = {
         "ok": True,
