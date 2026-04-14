@@ -704,12 +704,18 @@ async def handle_projects(request: web.Request) -> web.Response:
         meta = proj_meta[pid]
         # sessions already sorted by modified desc from scan_all
         sorted_sessions = sorted(sess_list, key=lambda s: s.modified or "", reverse=True)
+        # Order machines by most-recent activity within this project (first badge = most recent)
+        machine_latest: dict[str, str] = {}
+        for s in sorted_sessions:
+            if s.machine not in machine_latest:
+                machine_latest[s.machine] = s.modified or ""
+        machines_by_recency = sorted(machine_latest.keys(), key=lambda m: machine_latest[m], reverse=True)
         result_list.append({
             "project_id": pid,
             "display_name": meta["display_name"],
             "git_remote": meta["git_remote"],
             "session_count": len(sess_list),
-            "machines": sorted(meta["machines"]),
+            "machines": machines_by_recency,
             "latest_modified": meta["latest_modified"],
             "sessions": [s.to_dict() for s in sorted_sessions],
         })

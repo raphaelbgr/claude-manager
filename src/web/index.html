@@ -789,8 +789,9 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
       title: effectivePath,
     }, projectName),
 
-    // Custom session name in parentheses (muted)
-    session.name && h('span', {
+    // Custom session name in parentheses (muted) — suppressed in ProjectsView
+    // because the main label already uses session.name.
+    !hideMachineLabel && session.name && h('span', {
       style: { fontSize: '0.72rem', color: '#8b949e', whiteSpace: 'nowrap', flexShrink: 0 },
       title: `Custom session name (set via /rename in Claude Code)`,
     }, `(${session.name})`),
@@ -2179,6 +2180,14 @@ function ProjectRunList({ project, onLaunch, onTmuxLaunch, launchingId, tmuxLaun
           paddingLeft: 6,
         }
       },
+        // Run header: small machine-name label shown above the sessions in this run
+        h('div', {
+          style: {
+            fontSize: '0.6rem', fontWeight: 700, letterSpacing: '0.08em',
+            textTransform: 'uppercase', color: mc.color,
+            padding: '2px 0 4px 2px',
+          },
+        }, run.machine),
         visible.map((s, si) => {
           // Project header already shows the repo — inside the project, show the
           // Claude session name (slug) instead of repeating the folder.
