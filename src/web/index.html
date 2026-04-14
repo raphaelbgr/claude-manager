@@ -170,6 +170,27 @@
       .panel-sessions, .panel-tmux { width: 100% !important; min-width: 0 !important; }
     }
 
+    /* Session card action buttons — responsive row */
+    .session-actions {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .session-actions .btn {
+      flex: 0 1 auto;
+    }
+    @media (max-width: 600px) {
+      .session-actions { flex-direction: column; align-items: stretch; }
+      .session-actions .btn { width: 100%; justify-content: center; }
+      .session-card-compact { flex-wrap: wrap !important; row-gap: 6px; }
+      /* Collapse the flex-grow spacer so action buttons wrap onto a new line
+         flush-left under the metadata row instead of being pushed off-screen. */
+      .compact-spacer { flex: 0 0 100% !important; height: 0; margin: 0; padding: 0; }
+      /* Let the action buttons size to their content and wrap naturally as a
+         right-aligned-ish group that stacks once horizontal room runs out. */
+      .compact-action-btn { flex: 0 0 auto; min-width: 0; }
+    }
+
     /* Filter bar */
     .filter-bar {
       background: #0d1117;
@@ -983,10 +1004,11 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
 
   const handleCopy = (e) => {
     e.stopPropagation();
-    const cmd = `claude --resume ${sessionId}`;
+    const flag = skipPermissions ? ' --dangerously-skip-permissions' : '';
+    const cmd = `claude --resume ${sessionId}${flag}`;
     navigator.clipboard.writeText(cmd).then(() => {
       setCopied(true);
-      toast('Copied resume command', 'info');
+      toast(skipPermissions ? 'Copied (with --dangerously-skip-permissions)' : 'Copied resume command', 'info');
       setTimeout(() => setCopied(false), 2000);
     }).catch(() => { toast('Failed to copy', 'error'); });
   };
@@ -1141,8 +1163,9 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
     }, relativeTime(session.modified)),
     !inMachineSection && !hideMachineLabel && h(MachineBadge, { machine: session.machine }),
 
-    // Spacer
-    h('div', { style: { flex: 1 } }),
+    // Spacer (collapses on mobile so action buttons wrap left-aligned instead
+    // of being pushed off-screen by the greedy flex-grow divider)
+    h('div', { className: 'compact-spacer', style: { flex: 1 } }),
 
     // Launch button
     h('button', {
@@ -1317,41 +1340,6 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
 
     // Hardware info (only for active/working sessions)
     isActive && hwCache !== undefined && h(HardwareInfo, { machine: session.machine, hwCache, fetchHardware }),
-
-    // Full action buttons row
-    h('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap' } },
-      h('button', {
-        className: 'btn',
-        onClick: () => onLaunch(session),
-        disabled: launching,
-        title: local
-          ? `Open a new terminal and resume this Claude Code session on ${session.machine || 'local'}`
-          : `Open a new terminal and resume this Claude Code session via SSH on ${session.machine}`,
-        style: {
-          fontSize: '0.72rem', fontWeight: 600,
-          background: launchBg, color: launchColor,
-          border: `1px solid ${launchBorder}`, borderRadius: 6,
-          padding: '4px 12px', cursor: launching ? 'not-allowed' : 'pointer',
-          opacity: launching ? 0.6 : 1,
-        }
-      }, launching ? 'Resuming…' : launchLabel),
-
-      h('button', {
-        className: 'btn',
-        onClick: () => onTmuxLaunch(session),
-        disabled: tmuxLaunching,
-        title: local
-          ? `Create a new ${muxType} session on ${session.machine || 'local'} and resume Claude Code inside it`
-          : `Create a new ${muxType} session on ${session.machine} via SSH and resume Claude Code inside it`,
-        style: {
-          fontSize: '0.72rem', fontWeight: 600,
-          background: '#1a3a2a', color: '#3fb950',
-          border: '1px solid #2a5a3a', borderRadius: 6,
-          padding: '4px 12px', cursor: tmuxLaunching ? 'not-allowed' : 'pointer',
-          opacity: tmuxLaunching ? 0.6 : 1,
-        }
-      }, tmuxLaunching ? 'Resuming…' : tmuxLabel),
-    ),
   );
 
   return h('div', { className: clsx('session-card', isArchived && 'session-card-archived') },
@@ -4479,30 +4467,33 @@ function App() {
   // ── Launch session ────────────────────────────────────────────────────────
   const handleLaunch = useCallback(async (session) => {
     setLaunchingId(session.session_id);
+    const payload = {
+      machine: session.machine,
+      session_id: session.session_id,
+      cwd: session.cwd || session.project_path,
+      skip_permissions: skipPermissions,
+      mode: 'terminal',
+    };
+    console.log('[launch]', payload);
     try {
       const res = await apiFetch('/api/sessions/launch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          machine: session.machine,
-          session_id: session.session_id,
-          cwd: session.cwd || session.project_path,
-          skip_permissions: skipPermissions,
-        }),
+        body: JSON.stringify(payload),
       });
-      if (!res.ok) {
-        const text = await res.text();
-        toast(`Launch failed (${res.status}): ${text.slice(0, 120)}`, 'error');
+      const text = await res.text();
+      let data = {};
+      try { data = JSON.parse(text); } catch { /* not json */ }
+      if (!res.ok || data.ok === false) {
+        const msg = data.error || text.slice(0, 300) || `HTTP ${res.status}`;
+        console.error('[launch failed]', res.status, msg, payload);
+        toast(`Launch failed (${res.status}): ${msg}`, 'error', 8000);
         return;
       }
-      const data = await res.json();
-      if (data.ok) {
-        toast(`Resumed session on ${session.machine}`, 'success');
-      } else {
-        toast(`Launch error: ${data.error || 'Unknown error'}`, 'error');
-      }
+      toast(`Resumed session on ${session.machine}`, 'success');
     } catch (e) {
-      toast(`Network error: ${e.message || 'Could not reach server'}`, 'error');
+      console.error('[launch network error]', e, payload);
+      toast(`Network error: ${e.message || 'Could not reach server'}`, 'error', 8000);
     } finally {
       setLaunchingId(null);
     }
@@ -4512,31 +4503,33 @@ function App() {
   const handleTmuxLaunch = useCallback(async (session) => {
     const mux = (MACHINE_INFO[session.machine] || {}).os === 'Windows' ? 'psmux' : 'tmux';
     setTmuxLaunchingId(session.session_id);
+    const payload = {
+      machine: session.machine,
+      session_id: session.session_id,
+      cwd: session.cwd || session.project_path,
+      skip_permissions: skipPermissions,
+      mode: 'tmux',
+    };
+    console.log('[tmux-launch]', payload);
     try {
       const res = await apiFetch('/api/sessions/launch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          machine: session.machine,
-          session_id: session.session_id,
-          cwd: session.cwd || session.project_path,
-          skip_permissions: skipPermissions,
-          mode: 'tmux',
-        }),
+        body: JSON.stringify(payload),
       });
-      if (!res.ok) {
-        const text = await res.text();
-        toast(`${mux} launch failed (${res.status}): ${text.slice(0, 120)}`, 'error');
+      const text = await res.text();
+      let data = {};
+      try { data = JSON.parse(text); } catch { /* not json */ }
+      if (!res.ok || data.ok === false) {
+        const msg = data.error || text.slice(0, 300) || `HTTP ${res.status}`;
+        console.error('[tmux-launch failed]', res.status, msg, payload);
+        toast(`${mux} launch failed (${res.status}): ${msg}`, 'error', 8000);
         return;
       }
-      const data = await res.json();
-      if (data.ok) {
-        toast(`Resumed in ${mux} on ${session.machine}`, 'success');
-      } else {
-        toast(`${mux} error: ${data.error || 'Unknown error'}`, 'error');
-      }
+      toast(`Resumed in ${mux} on ${session.machine}`, 'success');
     } catch (e) {
-      toast(`Network error: ${e.message || 'Could not reach server'}`, 'error');
+      console.error('[tmux-launch network error]', e, payload);
+      toast(`Network error: ${e.message || 'Could not reach server'}`, 'error', 8000);
     } finally {
       setTmuxLaunchingId(null);
     }

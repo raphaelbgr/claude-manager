@@ -1,3 +1,4 @@
 {
-  "skip_permissions": true
+  "skip_permissions": true,
+  "pinned_sessions": []
 }
