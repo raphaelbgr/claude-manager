@@ -1456,28 +1456,82 @@ function ProjectSection({ projectPath, machine, children, count, defaultOpen: de
 
 // ─── New Tmux Modal ───────────────────────────────────────────────────────────
 
+// Returns the default project root for a machine based on its OS.
+// "user" is assumed to be "rbgnr" — MACHINE_INFO has no user field.
+function defaultProjectRoot(machine) {
+  const os = (MACHINE_INFO[machine] || {}).os || 'unknown';
+  if (os === 'Windows') return 'C:\\Users\\rbgnr\\git\\';
+  if (os === 'macOS') return '/Users/rbgnr/git/';
+  return '/home/rbgnr/git/';
+}
+
+// Sanitize a display name to a filesystem-safe folder name.
+function sanitizeFolderName(name) {
+  return name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9_-]/g, '');
+}
+
 function NewTmuxModal({ fleet, onClose, onCreated }) {
   const machines = Object.keys(fleet || {});
-  const [machine, setMachine] = useState(machines[0] || '');
+  const initMachine = machines[0] || '';
+  const [machine, setMachine] = useState(initMachine);
   const [name, setName] = useState('');
-  const [cwd, setCwd] = useState('');
+  const [cwd, setCwd] = useState(() => defaultProjectRoot(initMachine));
+  const [pathPristine, setPathPristine] = useState(true);
   const [command, setCommand] = useState('');
   const [creating, setCreating] = useState(false);
   const [browseOpen, setBrowseOpen] = useState(false);
   const [browsePath, setBrowsePath] = useState('');
   const [browseDirs, setBrowseDirs] = useState([]);
   const [browseLoading, setBrowseLoading] = useState(false);
+  // selectedDrive is the controlled value for the drive dropdown (Bug 1 fix)
+  const [selectedDrive, setSelectedDrive] = useState('');
   const [drives, setDrives] = useState([]);
   const [drivesCache, setDrivesCache] = useState({});
   const [newFolderMode, setNewFolderMode] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   const [newFolderCreating, setNewFolderCreating] = useState(false);
+  // UX 3: init-git checkbox, persisted in localStorage
+  const [initGit, setInitGit] = useState(() => {
+    try { return localStorage.getItem('newSessionInitGit') !== 'false'; } catch { return true; }
+  });
+  // Debounce ref for Bug 2
+  const browseDebounceRef = useRef(null);
   const prevMachineRef = useRef(machine);
+
+  // Reset path when machine changes (UX 1)
+  useEffect(() => {
+    if (machine !== prevMachineRef.current) {
+      if (pathPristine) {
+        const root = defaultProjectRoot(machine);
+        const slug = sanitizeFolderName(name);
+        setCwd(slug ? root + slug : root);
+      }
+    }
+  }, [machine]);
+
+  // UX 2: while pathPristine, auto-update cwd as name changes
+  const handleNameChange = (val) => {
+    const sanitized = val.replace(/[/\\]/g, '_');
+    setName(sanitized);
+    if (pathPristine) {
+      const root = defaultProjectRoot(machine);
+      const slug = sanitizeFolderName(sanitized);
+      setCwd(slug ? root + slug : root);
+    }
+  };
+
+  const handleCwdChange = (val) => {
+    setCwd(val);
+    setPathPristine(false);
+  };
 
   const fetchDrives = async (m) => {
     if (drivesCache[m]) {
       setDrives(drivesCache[m]);
-      return drivesCache[m];
+      // Set selectedDrive to system drive if not already on this machine
+      const cached = drivesCache[m];
+      setSelectedDrive(cached.find(d => d.is_system)?.path || cached[0]?.path || '');
+      return cached;
     }
     try {
       const res = await apiFetch('/api/drives', {
@@ -1489,12 +1543,20 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
       if (data.ok) {
         setDrives(data.drives);
         setDrivesCache(prev => ({ ...prev, [m]: data.drives }));
+        setSelectedDrive(data.drives.find(d => d.is_system)?.path || data.drives[0]?.path || '');
         return data.drives;
       }
     } catch (e) {
       // silently ignore — drives are optional
     }
     return [];
+  };
+
+  // Bug 2: debounced fetch so rapid drive/path changes don't flash the list.
+  // Previous results stay visible while the new fetch is in flight.
+  const fetchDirsDebounced = (path) => {
+    if (browseDebounceRef.current) clearTimeout(browseDebounceRef.current);
+    browseDebounceRef.current = setTimeout(() => fetchDirs(path), 250);
   };
 
   const fetchDirs = async (path) => {
@@ -1509,6 +1571,11 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
       if (data.ok) {
         setBrowsePath(data.path);
         setBrowseDirs(data.dirs);
+        // Keep selectedDrive in sync with browsed path (Bug 1)
+        if (drives.length > 0) {
+          const match = drives.find(d => data.path.startsWith(d.path));
+          if (match) setSelectedDrive(match.path);
+        }
       } else {
         toast(data.error || 'Browse failed', 'error');
       }
@@ -1524,6 +1591,7 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
     if (browseOpen && machine !== prevMachineRef.current) {
       prevMachineRef.current = machine;
       setDrives([]);
+      setSelectedDrive('');
       fetchDrives(machine);
       fetchDirs('');
     }
@@ -1560,6 +1628,7 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
         await fetchDirs(browsePath);
         // auto-select the new folder
         setCwd(data.path);
+        setPathPristine(false);
       } else {
         toast(data.error || 'Failed to create folder', 'error');
       }
@@ -1570,6 +1639,11 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
     }
   };
 
+  const handleClose = () => {
+    setPathPristine(true);
+    onClose();
+  };
+
   const handleCreate = async () => {
     if (!machine || !name.trim()) {
       toast('Machine and session name are required', 'error');
@@ -1577,16 +1651,31 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
     }
     setCreating(true);
     try {
+      const trimmedCwd = cwd.trim();
+      // UX 3: if init-git checked, create folder + git init before launching
+      if (initGit && trimmedCwd) {
+        const createRes = await apiFetch('/api/projects/create', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ machine, path: trimmedCwd, init_git: true }),
+        });
+        const createData = await createRes.json();
+        if (!createData.ok) {
+          toast(createData.error || 'Failed to create project folder', 'error');
+          setCreating(false);
+          return;
+        }
+      }
       const res = await apiFetch('/api/tmux/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ machine, name: name.trim(), cwd: cwd.trim() || undefined, command: command.trim() || undefined }),
+        body: JSON.stringify({ machine, name: name.trim(), cwd: trimmedCwd || undefined, command: command.trim() || undefined }),
       });
       const data = await res.json();
       if (data.ok) {
         toast(`Created tmux session "${name}" on ${machine}`, 'success');
         onCreated?.();
-        onClose();
+        handleClose();
       } else {
         toast(data.error || 'Failed to create session', 'error');
       }
@@ -1599,7 +1688,7 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
 
   return h('div', {
     className: 'modal-overlay',
-    onClick: e => { if (e.target === e.currentTarget) onClose(); }
+    onClick: e => { if (e.target === e.currentTarget) handleClose(); }
   },
     h('div', { className: 'modal-box' },
       h('div', {
@@ -1613,7 +1702,7 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
         }, 'New Tmux / Psmux Session'),
         h('button', {
           className: 'btn',
-          onClick: onClose,
+          onClick: handleClose,
           style: {
             background: 'none', border: 'none', color: '#8b949e',
             fontSize: '1.2rem', cursor: 'pointer', padding: '4px 8px',
@@ -1631,7 +1720,7 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
             className: 'form-input',
             title: 'Select which machine to create the session on',
             value: machine,
-            onChange: e => setMachine(e.target.value),
+            onChange: e => { setMachine(e.target.value); },
           },
             machines.map(m => h('option', { key: m, value: m }, m + (isLocalMachine(m) ? ' (local)' : '')))
           ),
@@ -1646,7 +1735,7 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
             placeholder: 'e.g. dev-session',
             title: 'Name for the new tmux/psmux session',
             value: name,
-            onChange: e => setName(e.target.value.replace(/[/\\]/g, '_')),
+            onChange: e => handleNameChange(e.target.value),
             onKeyDown: e => { if (e.key === 'Enter') handleCreate(); },
           }),
         ),
@@ -1658,10 +1747,10 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
             h('input', {
               className: 'form-input',
               type: 'text',
-              placeholder: '/Users/rbgnr/git/project',
+              placeholder: defaultProjectRoot(machine) + 'my-project',
               title: 'Starting directory for the session (leave empty for home directory)',
               value: cwd,
-              onChange: e => setCwd(e.target.value),
+              onChange: e => handleCwdChange(e.target.value),
               style: { flex: 1 },
             }),
             h('button', {
@@ -1693,7 +1782,7 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
               overflow: 'hidden',
             }
           },
-            // Drive picker row
+            // Drive picker row — Bug 1 fix: value bound to selectedDrive state
             drives.length > 0 && h('div', {
               style: {
                 padding: '6px 12px',
@@ -1706,8 +1795,12 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
             },
               h('span', { style: { fontSize: '0.75rem', color: '#8b949e', flexShrink: 0 } }, 'Drive:'),
               h('select', {
-                value: drives.find(d => browsePath.startsWith(d.path))?.path || (drives.find(d => d.is_system)?.path || ''),
-                onChange: e => fetchDirs(e.target.value),
+                value: selectedDrive,
+                onChange: e => {
+                  const drv = e.target.value;
+                  setSelectedDrive(drv);
+                  fetchDirsDebounced(drv);
+                },
                 title: 'Select a drive/volume on the selected machine',
                 style: {
                   flex: 1,
@@ -1725,7 +1818,7 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
                 ))
               ),
             ),
-            // Path bar with New Folder button
+            // Path bar — Bug 2: spinner as overlay badge, old list stays visible
             h('div', {
               style: {
                 padding: '8px 12px',
@@ -1740,9 +1833,15 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
               }
             },
               h('span', { className: 'material-icons-round', style: { fontSize: '14px', verticalAlign: 'middle', flexShrink: 0 } }, 'folder'),
-              browseLoading
-                ? h('span', { style: { color: '#8b949e' } }, 'Loading\u2026')
-                : h('span', { style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, browsePath || '~'),
+              h('span', { style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, browsePath || '~'),
+              browseLoading && h('span', {
+                title: 'Loading…',
+                style: {
+                  fontSize: '0.68rem', color: '#8b949e', flexShrink: 0,
+                  background: '#21262d', borderRadius: 4, padding: '1px 6px',
+                  border: '1px solid #30363d',
+                }
+              }, '\u29d7'),
               !browseLoading && !newFolderMode && h('button', {
                 type: 'button',
                 onClick: () => { setNewFolderMode(true); setNewFolderName(''); },
@@ -1830,7 +1929,8 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
                 padding: '4px 0',
               }
             },
-              !browseLoading && browsePath && h('div', {
+              // Always render existing list (Bug 2: don't clear on load)
+              browsePath && h('div', {
                 onClick: async () => {
                   // Handle both Unix and Windows paths
                   const sep = browsePath.includes('\\') ? '\\' : '/';
@@ -1854,14 +1954,14 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
                 h('span', { className: 'material-icons-round', style: { fontSize: '14px', verticalAlign: 'middle' } }, 'folder'),
               '.. (go up)'
               ),
-              !browseLoading && browseDirs.map(dir =>
+              browseDirs.map(dir =>
                 h('div', {
                   key: dir.path,
                   onClick: () => fetchDirs(dir.path),
                   style: {
                     padding: '6px 14px',
                     fontSize: '0.82rem',
-                    color: '#e6edf3',
+                    color: browseLoading ? '#8b949e' : '#e6edf3',
                     cursor: 'pointer',
                     display: 'flex',
                     alignItems: 'center',
@@ -1874,9 +1974,6 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
                   dir.name
                 )
               ),
-              browseLoading && h('div', {
-                style: { padding: '12px 14px', color: '#8b949e', fontSize: '0.82rem' }
-              }, 'Loading\u2026'),
             ),
             h('div', {
               style: {
@@ -1889,7 +1986,7 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
               h('button', {
                 type: 'button',
                 onClick: () => {
-                  if (browsePath) setCwd(browsePath);
+                  if (browsePath) { setCwd(browsePath); setPathPristine(false); }
                   setBrowseOpen(false);
                   setNewFolderMode(false);
                   setNewFolderName('');
@@ -1923,10 +2020,29 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
           }),
         ),
 
+        // UX 3: init-git checkbox
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+          h('input', {
+            type: 'checkbox',
+            id: 'new-session-init-git',
+            checked: initGit,
+            onChange: e => {
+              const val = e.target.checked;
+              setInitGit(val);
+              try { localStorage.setItem('newSessionInitGit', String(val)); } catch {}
+            },
+            style: { cursor: 'pointer', accentColor: '#238636' },
+          }),
+          h('label', {
+            htmlFor: 'new-session-init-git',
+            style: { fontSize: '0.78rem', color: '#8b949e', cursor: 'pointer', userSelect: 'none' },
+          }, 'Create folder and init git if it doesn\u2019t exist'),
+        ),
+
         h('div', { style: { display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 8 } },
           h('button', {
             className: 'btn',
-            onClick: onClose,
+            onClick: handleClose,
             style: {
               background: '#21262d', color: '#8b949e', border: '1px solid #30363d',
               borderRadius: 8, padding: '8px 20px', fontSize: '0.85rem',
