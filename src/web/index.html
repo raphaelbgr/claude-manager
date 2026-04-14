@@ -2139,6 +2139,94 @@ function PinnedSection({ sessions, pinnedIds, onLaunch, launchingId, onTmuxLaunc
   );
 }
 
+// ─── Project Run List (grouped same-machine runs inside expanded project) ──────
+
+function ProjectRunList({ project, onLaunch, onTmuxLaunch, launchingId, tmuxLaunchingId, skipPermissions, onPin, onUnpin, pinnedIds, onArchive, onUnarchive, archivedIds, expandedCards, onToggleExpand, hwCache, fetchHardware }) {
+  // showAll keyed by "{project_id}::{machine}::{firstSessionId}" — ephemeral per mount
+  const [showAllMap, setShowAllMap] = useState({});
+
+  const sessions = project.sessions || [];
+
+  // Build consecutive same-machine runs O(n)
+  const runs = [];
+  for (const s of sessions) {
+    const last = runs[runs.length - 1];
+    if (last && last.machine === s.machine) {
+      last.sessions.push(s);
+    } else {
+      runs.push({ machine: s.machine, sessions: [s] });
+    }
+  }
+
+  return h('div', { style: { paddingLeft: 4 } },
+    runs.map((run, ri) => {
+      const mc = machineColor(run.machine);
+      const runKey = `${project.project_id}::${run.machine}::${run.sessions[0].session_id}`;
+      const showAll = !!showAllMap[runKey];
+      const visible = showAll ? run.sessions : run.sessions.slice(0, 3);
+      const hiddenCount = run.sessions.length - 3;
+
+      return h('div', {
+        key: runKey,
+        style: {
+          marginTop: ri === 0 ? 0 : 12,
+          borderLeft: `3px solid ${mc.border}`,
+          paddingLeft: 6,
+        }
+      },
+        visible.map((s, si) => {
+          // Truncate project_path to last segment; project header already shows the repo
+          const rawPath = s.project_path || s.cwd || '';
+          const lastSeg = rawPath.split('/').filter(Boolean).pop() || rawPath;
+          // Shallow-clone session with truncated paths so SessionCard renders them
+          const displaySession = Object.assign({}, s, {
+            cwd: lastSeg,
+            project_path: lastSeg,
+            project_folder: lastSeg,
+          });
+
+          return h(SessionCardMemo, {
+            key: s.session_id,
+            session: displaySession,
+            onLaunch,
+            onTmuxLaunch,
+            launching: launchingId === s.session_id,
+            tmuxLaunching: tmuxLaunchingId === s.session_id,
+            skipPermissions,
+            onPin,
+            onUnpin,
+            isPinned: (pinnedIds || []).includes(s.session_id),
+            onArchive,
+            onUnarchive,
+            isArchived: (archivedIds || new Set()).has(s.session_id),
+            expanded: (expandedCards || new Set()).has(s.session_id),
+            onToggleExpand: () => onToggleExpand(s.session_id),
+            inMachineSection: si !== 0,  // suppress machine badge on rows 2+
+            hwCache,
+            fetchHardware,
+          });
+        }),
+        !showAll && hiddenCount > 0 && h('button', {
+          onClick: () => setShowAllMap(prev => ({ ...prev, [runKey]: true })),
+          style: {
+            display: 'inline-block',
+            margin: '4px 0 2px 0',
+            padding: '2px 10px',
+            fontSize: '0.62rem',
+            fontWeight: 600,
+            background: '#161b22',
+            color: mc.color,
+            border: `1px solid ${mc.border}`,
+            borderRadius: 10,
+            cursor: 'pointer',
+            fontFamily: '"SF Mono", "Fira Code", Consolas, monospace',
+          }
+        }, `+${hiddenCount} older`),
+      );
+    })
+  );
+}
+
 // ─── Projects View ────────────────────────────────────────────────────────────
 
 function ProjectsView({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaunchingId, skipPermissions, scanning, pinnedIds, onPin, onUnpin, onArchive, onUnarchive, archivedIds, expandedCards, onToggleExpand, hwCache, fetchHardware, wsUpdateCount }) {
@@ -2249,31 +2337,25 @@ function ProjectsView({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaunc
           ),
           h('div', { style: { flex: 1 } }),
         ),
-        // Expanded: list sessions
-        isOpen && h('div', { style: { paddingLeft: 4 } },
-          (proj.sessions || []).map(s =>
-            h(SessionCardMemo, {
-              key: s.session_id,
-              session: s,
-              onLaunch,
-              onTmuxLaunch,
-              launching: launchingId === s.session_id,
-              tmuxLaunching: tmuxLaunchingId === s.session_id,
-              skipPermissions,
-              onPin,
-              onUnpin,
-              isPinned: (pinnedIds || []).includes(s.session_id),
-              onArchive,
-              onUnarchive,
-              isArchived: (archivedIds || new Set()).has(s.session_id),
-              expanded: (expandedCards || new Set()).has(s.session_id),
-              onToggleExpand: () => onToggleExpand(s.session_id),
-              inMachineSection: false,
-              hwCache,
-              fetchHardware,
-            })
-          )
-        ),
+        // Expanded: list sessions grouped into same-machine runs
+        isOpen && h(ProjectRunList, {
+          project: proj,
+          onLaunch,
+          onTmuxLaunch,
+          launchingId,
+          tmuxLaunchingId,
+          skipPermissions,
+          onPin,
+          onUnpin,
+          pinnedIds,
+          onArchive,
+          onUnarchive,
+          archivedIds,
+          expandedCards,
+          onToggleExpand,
+          hwCache,
+          fetchHardware,
+        }),
       );
     })
   );
