@@ -37,7 +37,7 @@ from aiohttp import web
 
 import shlex
 
-from .command_adapter import get_adapter
+from .command_adapter import get_adapter, sanitize_mux_name
 from .config import DEFAULT_BIND, DEFAULT_PORT, FLEET_MACHINES, SCAN_INTERVAL, detect_local_machine
 from .fleet import discover_fleet
 from .launcher import launch_claude_session, launch_tmux_attach, launch_tmux_attach_remote, launch_new_tmux_and_attach, launch_terminal, _ssh_path_prefix
@@ -846,12 +846,12 @@ async def handle_tmux_create(request: web.Request) -> web.Response:
         existing_names = [t.name for t in store.tmux() if t.machine == machine]
         name = adapter.generate_mux_session_name(machine, project_safe, existing_names)
 
-    # Sanitize: tmux/psmux reject / and \ in session names
-    name = name.replace("/", "_").replace("\\", "_")
+    name = sanitize_mux_name(name)
     result = await create_tmux_session(machine, name, cwd or None, body.get("command"))
     status = 200 if result.get("ok") else 500
     if result.get("ok"):
-        log.info("POST /api/tmux/create machine=%s name=%s %d", machine, name, status)
+        result["name"] = result.get("name", name)
+        log.info("POST /api/tmux/create machine=%s name=%s %d", machine, result["name"], status)
         local_machine = request.app["local_machine"]
         store: StateStore = request.app["store"]
         tmux = await list_all_tmux(local_machine, store.fleet())

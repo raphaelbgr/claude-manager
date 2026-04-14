@@ -3,7 +3,7 @@ import asyncio
 import logging
 import shlex
 from dataclasses import dataclass, asdict
-from .command_adapter import get_adapter
+from .command_adapter import get_adapter, sanitize_mux_name
 from .config import FLEET_MACHINES, detect_local_machine, SSH_TIMEOUT
 from .executor import get_executor, SSHExecutor
 from .mux_parser import parse_mux_output
@@ -190,8 +190,9 @@ async def create_tmux_session(
     Create a new detached tmux/psmux session.
 
     Returns:
-        {"ok": True} on success, {"ok": False, "error": str} on failure.
+        {"ok": True, "name": sanitized_name} on success, {"ok": False, "error": str} on failure.
     """
+    name = sanitize_mux_name(name)
     info = FLEET_MACHINES.get(machine, {})
     mux = info.get("mux", "tmux")
     adapter = get_adapter(machine)
@@ -225,7 +226,7 @@ async def create_tmux_session(
                 )
 
             log.info("create_tmux_session(%s, %s): ok (local, cwd=%s)", machine, name, cwd)
-            return {"ok": True}
+            return {"ok": True, "name": name}
         else:
             assert isinstance(executor, SSHExecutor)
 
@@ -253,7 +254,7 @@ async def create_tmux_session(
                 await _ssh_run(adapter.mux_send_keys(name, command))
 
             log.info("create_tmux_session(%s, %s): ok (remote, cwd=%s)", machine, name, cwd)
-            return {"ok": True, "machine": machine, "session": name}
+            return {"ok": True, "name": name, "machine": machine, "session": name}
     except asyncio.TimeoutError:
         log.error("create_tmux_session(%s, %s): timed out", machine, name)
         return {"ok": False, "error": "Timed out"}
@@ -405,6 +406,7 @@ async def kill_tmux_session(machine: str, name: str) -> dict:
     Returns:
         {"ok": True} on success, {"ok": False, "error": str} on failure.
     """
+    name = sanitize_mux_name(name)
     info = FLEET_MACHINES.get(machine, {})
     mux = info.get("mux", "tmux")
     executor = get_executor(machine)

@@ -4,7 +4,7 @@ import logging
 import shlex
 import shutil
 import sys
-from .command_adapter import get_adapter
+from .command_adapter import get_adapter, sanitize_mux_name
 from .config import FLEET_MACHINES, detect_local_machine, SSH_TIMEOUT
 
 log = logging.getLogger("claude_manager.launcher")
@@ -499,8 +499,11 @@ async def launch_new_tmux_and_attach(
     """
     from .tmux_manager import create_tmux_session
 
+    name = sanitize_mux_name(name)
     create_result = await create_tmux_session(machine, name, cwd=cwd, command=command)
     if not create_result.get("ok"):
         return create_result
 
-    return await launch_tmux_attach(name, machine)
+    # Use the sanitized name returned by create_tmux_session (may differ from input)
+    actual_name = create_result.get("name", name)
+    return await launch_tmux_attach(actual_name, machine)

@@ -7,10 +7,25 @@ Handles command generation for any source→target OS combination:
 - tmux/psmux send-keys commands (bash vs cmd.exe shells)
 """
 import logging
+import re
 import shlex
 from .config import FLEET_MACHINES
 
 log = logging.getLogger("claude_manager.command_adapter")
+
+
+def sanitize_mux_name(name: str) -> str:
+    """Make a name safe for tmux AND psmux session names.
+
+    Both muxes treat '.' and ':' as special (tmux treats '.' as pane separator,
+    both treat ':' as window separator). psmux also rejects '/'. Whitespace is
+    fragile across shells. Replace every unsafe char with '-', collapse runs of
+    '-', strip leading/trailing '-'. Empty result becomes 'session'.
+    """
+    sanitized = re.sub(r'[^A-Za-z0-9_-]+', '-', name).strip('-') or 'session'
+    if sanitized != name:
+        log.info("sanitize_mux_name: %r -> %r", name, sanitized)
+    return sanitized
 
 
 class CommandAdapter:
@@ -200,7 +215,6 @@ class CommandAdapter:
         Format: {machine}_{project}-session-{NN}
         Uses underscore (not slash) — tmux/psmux reject / in names.
         """
-        import re
         base = f"{machine}_{project_folder}-session"
         max_n = 0
         for name in existing_names:
