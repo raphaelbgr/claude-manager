@@ -5,11 +5,23 @@ that was duplicated across tmux_manager, scanner, and fleet.
 """
 from __future__ import annotations
 
+import hashlib
+import os
 import shlex
 from typing import Protocol
 
 from .config import FLEET_MACHINES, SSH_TIMEOUT, detect_local_machine
 from .subprocess_utils import run_with_timeout
+
+
+def _ssh_control_path(machine: str) -> str:
+    """Return a stable, short, user-isolated ControlPath socket path.
+
+    macOS enforces a 104-char limit on Unix socket paths; hashing the machine
+    name keeps the path well under that limit regardless of alias length.
+    """
+    h = hashlib.sha256(machine.encode()).hexdigest()[:10]
+    return f"/tmp/cm-ssh-{os.getuid()}-{h}"
 
 # PATH prefix injected before commands on Unix SSH targets so that
 # Homebrew (/opt/homebrew/bin), snap (/snap/bin), etc. are found in
@@ -75,6 +87,18 @@ class SSHExecutor:
         self._is_windows: bool = info.get("os") == "win32"
         self._path_prefix: str = _path_prefix_for(machine)
 
+    def _ssh_base_opts(self) -> list[str]:
+        """Return shared SSH options including ControlMaster multiplexing."""
+        ctl = _ssh_control_path(self.machine)
+        return [
+            "-o", "BatchMode=yes",
+            "-o", f"ConnectTimeout={SSH_TIMEOUT}",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "ControlMaster=auto",
+            "-o", f"ControlPath={ctl}",
+            "-o", "ControlPersist=60s",
+        ]
+
     def _build_ssh_cmd(self, remote_cmd: list[str]) -> list[str]:
         if self._is_windows:
             # PowerShell: space-join, no PATH prefix
@@ -82,14 +106,7 @@ class SSHExecutor:
         else:
             # Unix: shlex-quote each token, prepend PATH export
             remote_str = self._path_prefix + " ".join(shlex.quote(t) for t in remote_cmd)
-        return [
-            "ssh",
-            "-o", "BatchMode=yes",
-            "-o", f"ConnectTimeout={SSH_TIMEOUT}",
-            "-o", "StrictHostKeyChecking=no",
-            self._ssh_alias,
-            remote_str,
-        ]
+        return ["ssh", *self._ssh_base_opts(), self._ssh_alias, remote_str]
 
     def _build_ssh_cmd_raw(self, remote_shell_str: str) -> list[str]:
         """Build SSH command from a pre-assembled shell string (no per-token quoting).
@@ -99,14 +116,23 @@ class SSHExecutor:
         The PATH prefix is still prepended for Unix targets.
         """
         remote_str = self._path_prefix + remote_shell_str if not self._is_windows else remote_shell_str
-        return [
-            "ssh",
-            "-o", "BatchMode=yes",
-            "-o", f"ConnectTimeout={SSH_TIMEOUT}",
-            "-o", "StrictHostKeyChecking=no",
-            self._ssh_alias,
-            remote_str,
-        ]
+        return ["ssh", *self._ssh_base_opts(), self._ssh_alias, remote_str]
+
+    @staticmethod
+    def shutdown_connections(machine: str) -> None:
+        """Force-close the ControlMaster multiplexer socket for a machine.
+
+        Runs `ssh -O exit` against the control socket.  Safe to call even if
+        no master is running (ssh exits non-zero but causes no side effects).
+        """
+        import subprocess
+        ctl = _ssh_control_path(machine)
+        info = FLEET_MACHINES.get(machine, {})
+        alias = info.get("ssh_alias", machine)
+        subprocess.run(
+            ["ssh", "-O", "exit", "-o", f"ControlPath={ctl}", alias],
+            capture_output=True,
+        )
 
     async def exec(
         self,
