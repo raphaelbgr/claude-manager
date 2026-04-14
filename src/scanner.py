@@ -57,6 +57,7 @@ class ClaudeSession:
     subprocess_count: int = 0 # number of child processes (recursive)
     git_remote: str = ""      # raw git remote.origin.url (empty if not a git repo)
     git_commits: int = 0      # total commit count in the repo (rev-list --count HEAD)
+    last_user_message: str = ""  # last user prompt in the session (160 char max)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -122,6 +123,7 @@ def parse_session(
     cwd = ""
     git_branch = ""
     first_message = ""
+    last_user_message = ""
     line_count = 0
     tokens = 0
     metadata_found = False
@@ -140,6 +142,22 @@ def parse_session(
             d = json.loads(raw)
         except json.JSONDecodeError:
             continue
+
+        # Track the LAST user prompt across the whole file (skip tool_result / meta blocks)
+        if d.get("type") == "user":
+            content = d.get("message", {}).get("content", "")
+            text = ""
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        text = block.get("text", "") or ""
+                        break
+            elif isinstance(content, str):
+                text = content
+            text = text.strip()
+            # Skip tool results, command-stdout, and empty/meta prompts
+            if text and not text.startswith("<") and "tool_use_id" not in text:
+                last_user_message = text[:160]
 
         # Sum tokens from assistant messages (every line)
         if d.get("type") == "assistant":
@@ -192,6 +210,7 @@ def parse_session(
         file_size=file_size,
         tokens=tokens,
         git_branch=git_branch,
+        last_user_message=last_user_message,
     )
 
 
@@ -450,6 +469,7 @@ if projects_dir.is_dir():
                 stat = jf.stat()
                 mod = datetime.datetime.fromtimestamp(stat.st_mtime).astimezone().isoformat()
                 slug = ''; cwd = ''; git_branch = ''; summary = ''; line_count = 0; tokens = 0
+                last_user_msg = ''
                 meta_done = False
                 with open(jf, encoding='utf-8', errors='replace') as fh:
                     all_lines = fh.readlines()
@@ -462,6 +482,20 @@ if projects_dir.is_dir():
                         d = json.loads(raw)
                     except Exception:
                         continue
+                    # Track last user prompt (skip tool results / meta blocks)
+                    if d.get('type') == 'user':
+                        c = d.get('message', {}).get('content', '')
+                        t = ''
+                        if isinstance(c, list):
+                            for b in c:
+                                if isinstance(b, dict) and b.get('type') == 'text':
+                                    t = b.get('text', '') or ''
+                                    break
+                        elif isinstance(c, str):
+                            t = c
+                        t = t.strip()
+                        if t and not t.startswith('<') and 'tool_use_id' not in t:
+                            last_user_msg = t[:160]
                     # Tokens — every line
                     if d.get('type') == 'assistant':
                         u = d.get('message', {}).get('usage', {}) or {}
@@ -502,6 +536,7 @@ if projects_dir.is_dir():
                     'tokens': tokens,
                     'name': session_names.get(sid, ''),
                     'git_branch': git_branch,
+                    'last_user_message': last_user_msg,
                 })
             except Exception:
                 pass
@@ -574,6 +609,7 @@ async def scan_remote_via_api(machine_name: str, ip: str, dispatch_port: int) ->
                         subprocess_count=item.get("subprocess_count", 0),
                         git_remote=item.get("git_remote", ""),
                         git_commits=item.get("git_commits", 0),
+                        last_user_message=item.get("last_user_message", ""),
                     )
                     sessions.append(s)
                 log.info("scan_remote(%s): %d sessions via api", machine_name, len(sessions))

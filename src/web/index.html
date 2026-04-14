@@ -779,15 +779,29 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
     // Status dot
     h(StatusDot, { status: session.status, pulse: true }),
 
-    // Project name (bold)
-    h('span', {
+    // Project name (bold) + last user prompt underneath (if available), both vertically centered
+    h('div', {
       style: {
-        fontWeight: 600, fontSize: '0.82rem', color: '#e6edf3',
-        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-        maxWidth: '28%', flexShrink: 0,
+        display: 'flex', flexDirection: 'column', justifyContent: 'center',
+        maxWidth: '28%', flexShrink: 0, minWidth: 0, lineHeight: 1.15,
       },
-      title: effectivePath,
-    }, projectName),
+    },
+      h('span', {
+        style: {
+          fontWeight: 600, fontSize: '0.82rem', color: '#e6edf3',
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        },
+        title: effectivePath,
+      }, projectName),
+      session.last_user_message && h('span', {
+        style: {
+          fontSize: '0.68rem', color: '#8b949e', fontStyle: 'italic',
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          marginTop: 1,
+        },
+        title: session.last_user_message,
+      }, session.last_user_message),
+    ),
 
     // Custom session name in parentheses (muted) — suppressed in ProjectsView
     // because the main label already uses session.name.
