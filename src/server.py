@@ -643,6 +643,65 @@ async def handle_sessions_all(request: web.Request) -> web.Response:
     return web.json_response(_sessions_by_machine(store.sessions()))
 
 
+async def handle_projects(request: web.Request) -> web.Response:
+    """GET /api/projects — sessions grouped by project identity (cross-machine).
+
+    Reads from in-memory sessions (no re-scan). Groups by canonical project id
+    (git remote → normalized URL, else directory basename). Sorts outer array
+    by latest_modified desc.
+    """
+    from .project_identity import project_id as _pid, project_display_name as _pdn
+
+    state = request.app["state"]
+    sessions: list[ClaudeSession] = state["sessions"]
+
+    # Accumulate per project
+    proj_sessions: dict[str, list] = {}
+    proj_meta: dict[str, dict] = {}
+
+    for sess in sessions:
+        pid = _pid(sess)
+        if pid not in proj_sessions:
+            proj_sessions[pid] = []
+            proj_meta[pid] = {
+                "project_id": pid,
+                "display_name": _pdn(pid),
+                "git_remote": sess.git_remote or "",
+                "machines": set(),
+                "latest_modified": sess.modified or "",
+            }
+        proj_sessions[pid].append(sess)
+        meta = proj_meta[pid]
+        meta["machines"].add(sess.machine)
+        if sess.modified and sess.modified > meta["latest_modified"]:
+            meta["latest_modified"] = sess.modified
+        # Prefer non-empty git_remote
+        if not meta["git_remote"] and sess.git_remote:
+            meta["git_remote"] = sess.git_remote
+
+    result_list = []
+    for pid, sess_list in proj_sessions.items():
+        meta = proj_meta[pid]
+        # sessions already sorted by modified desc from scan_all
+        sorted_sessions = sorted(sess_list, key=lambda s: s.modified or "", reverse=True)
+        result_list.append({
+            "project_id": pid,
+            "display_name": meta["display_name"],
+            "git_remote": meta["git_remote"],
+            "session_count": len(sess_list),
+            "machines": sorted(meta["machines"]),
+            "latest_modified": meta["latest_modified"],
+            "sessions": [s.to_dict() for s in sorted_sessions],
+        })
+
+    result_list.sort(key=lambda p: p["latest_modified"], reverse=True)
+
+    return web.json_response({
+        "projects": result_list,
+        "generated": _now_iso(),
+    })
+
+
 async def handle_sessions_machine(request: web.Request) -> web.Response:
     machine = request.match_info["machine"]
     store: StateStore = request.app["store"]
@@ -2237,6 +2296,7 @@ def create_app(
     app.router.add_post("/api/update/apply", handle_update_apply)
     app.router.add_get("/api/logs", handle_logs)
     app.router.add_get("/api/sessions", handle_sessions_all)
+    app.router.add_get("/api/projects", handle_projects)
     app.router.add_get("/api/sessions/{machine}", handle_sessions_machine)
     app.router.add_post("/api/sessions/scan", handle_sessions_scan)
     app.router.add_post("/api/sessions/launch", handle_sessions_launch)

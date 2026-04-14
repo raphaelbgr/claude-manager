@@ -55,6 +55,7 @@ class ClaudeSession:
     cpu_percent: float = 0.0  # CPU usage if active (0.0 if idle/not measured)
     git_branch: str = ""      # git branch from JSONL gitBranch field
     subprocess_count: int = 0 # number of child processes (recursive)
+    git_remote: str = ""      # raw git remote.origin.url (empty if not a git repo)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -352,6 +353,23 @@ def scan_local(
             continue
 
     _mark_active_sessions(all_sessions, active_pids, session_names)
+    # Detect git remotes for each unique cwd (memoized per scan)
+    _remote_cache: dict[str, str] = {}
+    for sess in all_sessions:
+        cwd_key = sess.cwd or sess.project_path
+        if not cwd_key:
+            continue
+        if cwd_key not in _remote_cache:
+            try:
+                result = subprocess.run(
+                    ["git", "-C", cwd_key, "config", "--get", "remote.origin.url"],
+                    capture_output=True, text=True, timeout=2,
+                )
+                _remote_cache[cwd_key] = result.stdout.strip() if result.returncode == 0 else ""
+            except Exception:
+                _remote_cache[cwd_key] = ""
+        sess.git_remote = _remote_cache[cwd_key]
+
     all_sessions.sort(key=lambda s: s.modified, reverse=True)
     log.info("scan_local: found %d sessions", len(all_sessions))
     return all_sessions
@@ -477,6 +495,24 @@ if projects_dir.is_dir():
                 pass
 
 results.sort(key=lambda s: s['modified'], reverse=True)
+
+# Detect git remotes (memoized per cwd)
+import subprocess as _sp
+_remote_cache = {}
+for r in results:
+    cwd_key = r.get('cwd') or r.get('project_path', '')
+    if not cwd_key:
+        r['git_remote'] = ''
+        continue
+    if cwd_key not in _remote_cache:
+        try:
+            pr = _sp.run(['git', '-C', cwd_key, 'config', '--get', 'remote.origin.url'],
+                         capture_output=True, text=True, timeout=2)
+            _remote_cache[cwd_key] = pr.stdout.strip() if pr.returncode == 0 else ''
+        except Exception:
+            _remote_cache[cwd_key] = ''
+    r['git_remote'] = _remote_cache[cwd_key]
+
 print(json.dumps(results))
 """
 
@@ -514,6 +550,7 @@ async def scan_remote_via_api(machine_name: str, ip: str, dispatch_port: int) ->
                         name=item.get("name", ""),
                         git_branch=item.get("git_branch", ""),
                         subprocess_count=item.get("subprocess_count", 0),
+                        git_remote=item.get("git_remote", ""),
                     )
                     sessions.append(s)
                 log.info("scan_remote(%s): %d sessions via api", machine_name, len(sessions))
@@ -582,6 +619,7 @@ async def scan_remote(
                 name=item.get("name", ""),
                 git_branch=item.get("git_branch", ""),
                 subprocess_count=item.get("subprocess_count", 0),
+                git_remote=item.get("git_remote", ""),
             )
             sessions.append(sess)
         except (KeyError, TypeError):
@@ -696,4 +734,90 @@ async def scan_all(
             all_sessions.extend(result)
 
     all_sessions.sort(key=lambda s: s.modified, reverse=True)
+
+    # Update the on-disk project identity cache
+    try:
+        from .project_identity import project_id as _pid, project_display_name as _pdn, normalize_remote as _nr
+        _update_project_cache(all_sessions, _pid, _pdn)
+    except Exception as _exc:
+        log.debug("project cache update failed: %s", _exc)
+
     return all_sessions
+
+
+# ---------------------------------------------------------------------------
+# Project identity cache (written to temp dir, read by /api/projects)
+# ---------------------------------------------------------------------------
+
+import os
+import tempfile
+
+_PROJECT_CACHE_DIR = Path(tempfile.gettempdir()) / "claude-manager"
+_PROJECT_CACHE_FILE = _PROJECT_CACHE_DIR / "project-cache.json"
+
+
+def _load_project_cache() -> dict:
+    """Load the project cache from disk. Returns empty dict on missing/corrupt."""
+    try:
+        if _PROJECT_CACHE_FILE.is_file():
+            data = json.loads(_PROJECT_CACHE_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and data.get("version") == 1:
+                return data
+    except Exception as exc:
+        log.warning("project cache load failed (resetting): %s", exc)
+    return {"version": 1, "updated": "", "projects": {}}
+
+
+def _save_project_cache(cache: dict) -> None:
+    """Save the project cache atomically."""
+    try:
+        _PROJECT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = _PROJECT_CACHE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(cache, indent=2), encoding="utf-8")
+        os.replace(str(tmp), str(_PROJECT_CACHE_FILE))
+    except Exception as exc:
+        log.warning("project cache save failed: %s", exc)
+
+
+def _update_project_cache(
+    sessions: list[ClaudeSession],
+    pid_fn: Any,
+    pdn_fn: Any,
+) -> None:
+    """Update the project cache with the current session list."""
+    now = datetime.now(timezone.utc).isoformat()
+    cache = _load_project_cache()
+    projects = cache.setdefault("projects", {})
+
+    # Collect info per project_id
+    seen: dict[str, dict] = {}
+    for sess in sessions:
+        pid = pid_fn(sess)
+        if pid not in seen:
+            seen[pid] = {
+                "display_name": pdn_fn(pid),
+                "git_remote": sess.git_remote or "",
+                "machines": set(),
+                "last_seen": sess.modified or now,
+                "first_seen": sess.modified or now,
+            }
+        entry = seen[pid]
+        entry["machines"].add(sess.machine)
+        if sess.modified and sess.modified > entry["last_seen"]:
+            entry["last_seen"] = sess.modified
+        if sess.modified and sess.modified < entry["first_seen"]:
+            entry["first_seen"] = sess.modified
+
+    # Merge into cache
+    for pid, info in seen.items():
+        existing = projects.get(pid, {})
+        projects[pid] = {
+            "display_name": info["display_name"],
+            "git_remote": info["git_remote"] or existing.get("git_remote", ""),
+            "first_seen": existing.get("first_seen") or info["first_seen"],
+            "last_seen": info["last_seen"],
+            "machines": sorted(info["machines"]),
+        }
+
+    cache["updated"] = now
+    _save_project_cache(cache)
