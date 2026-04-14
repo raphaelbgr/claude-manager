@@ -533,6 +533,22 @@ function formatTokens(n) {
   return (n / 1000000).toFixed(2).replace(/\.00$/, '') + 'M tok';
 }
 
+// ─── Machine color (stable hue derived from machine name) ────────────────────
+
+function machineColor(machine) {
+  // Hash machine name to a hue in [0, 360)
+  let h = 0;
+  for (let i = 0; i < machine.length; i++) {
+    h = (h * 31 + machine.charCodeAt(i)) & 0xffff;
+  }
+  const hue = (h % 360 + 360) % 360;
+  return {
+    color:  `hsl(${hue}, 60%, 70%)`,
+    bg:     `hsl(${hue}, 40%, 14%)`,
+    border: `hsl(${hue}, 40%, 24%)`,
+  };
+}
+
 // ─── Badge Component ──────────────────────────────────────────────────────────
 
 function Badge({ text, color = '#8b949e', bg = '#21262d', border = '#30363d', icon, title }) {
@@ -2123,6 +2139,146 @@ function PinnedSection({ sessions, pinnedIds, onLaunch, launchingId, onTmuxLaunc
   );
 }
 
+// ─── Projects View ────────────────────────────────────────────────────────────
+
+function ProjectsView({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaunchingId, skipPermissions, scanning, pinnedIds, onPin, onUnpin, onArchive, onUnarchive, archivedIds, expandedCards, onToggleExpand, hwCache, fetchHardware, wsUpdateCount }) {
+  const [projects, setProjects] = useState([]);
+  const [projectsLoading, setProjectsLoading] = useState(true);
+  const [expandedProjects, setExpandedProjects] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('expandedProjects') || '{}'); } catch { return {}; }
+  });
+  const debounceRef = useRef(null);
+
+  const fetchProjects = useCallback(() => {
+    apiFetch('/api/projects')
+      .then(r => r.json())
+      .then(data => {
+        setProjects(data.projects || []);
+        setProjectsLoading(false);
+      })
+      .catch(() => setProjectsLoading(false));
+  }, []);
+
+  // Initial fetch
+  useEffect(() => { fetchProjects(); }, [fetchProjects]);
+
+  // Re-fetch on WS sessions update, debounced 300ms
+  useEffect(() => {
+    if (wsUpdateCount === 0) return;
+    clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(fetchProjects, 300);
+    return () => clearTimeout(debounceRef.current);
+  }, [wsUpdateCount, fetchProjects]);
+
+  const toggleProject = useCallback((pid) => {
+    setExpandedProjects(prev => {
+      const next = { ...prev, [pid]: !prev[pid] };
+      try { localStorage.setItem('expandedProjects', JSON.stringify(next)); } catch {}
+      return next;
+    });
+  }, []);
+
+  if (projectsLoading) {
+    return h('div', {
+      style: { display: 'flex', alignItems: 'center', gap: 8, padding: '24px 16px', color: '#484f58', fontSize: '0.82rem' }
+    },
+      h('span', { style: { display: 'inline-block', animation: 'spin 0.8s linear infinite' } }, '↻'),
+      'Loading projects…',
+    );
+  }
+
+  if (!projects.length) {
+    return h('div', {
+      style: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '200px', gap: 8, color: '#484f58' }
+    },
+      h('span', { className: 'material-icons-round', style: { fontSize: '2rem' } }, 'folder_off'),
+      h('span', { style: { fontSize: '0.875rem' } }, 'No projects found'),
+    );
+  }
+
+  return h('div', null,
+    scanning && h('div', {
+      style: { display: 'flex', alignItems: 'center', gap: 6, padding: '6px 4px 8px', fontSize: '0.72rem', color: '#58a6ff' }
+    },
+      h('span', { style: { display: 'inline-block', animation: 'spin 0.8s linear infinite' } }, '↻'),
+      h('span', null, 'Scanning fleet…'),
+    ),
+    projects.map(proj => {
+      const isOpen = !!expandedProjects[proj.project_id];
+      const latestSession = (proj.sessions || [])[0];
+      return h('div', { key: proj.project_id, className: 'machine-section' },
+        // Project header row
+        h('div', {
+          className: 'machine-header',
+          onClick: () => toggleProject(proj.project_id),
+          style: { justifyContent: 'flex-start', gap: 8 },
+        },
+          h('span', {
+            className: 'material-icons-round',
+            style: { fontSize: '14px', color: '#484f58', transition: 'transform 0.15s', transform: isOpen ? 'rotate(90deg)' : 'none' },
+          }, 'chevron_right'),
+          h('span', {
+            className: 'material-icons-round',
+            style: { fontSize: '14px', color: '#58a6ff' },
+          }, 'folder'),
+          h('span', {
+            style: { fontWeight: 700, color: '#e6edf3', fontSize: '0.82rem', letterSpacing: 0, textTransform: 'none' },
+            title: proj.git_remote || proj.project_id,
+          }, proj.display_name),
+          h('span', {
+            style: { background: '#161b22', color: '#484f58', fontSize: '0.6rem', borderRadius: 10, padding: '1px 6px', marginLeft: 2 }
+          }, proj.session_count),
+          latestSession && h('span', {
+            style: { fontSize: '0.62rem', color: '#484f58', fontFamily: 'monospace', marginLeft: 4 }
+          }, relativeTime(proj.latest_modified)),
+          // Machine badges strip
+          h('div', { style: { display: 'flex', gap: 4, marginLeft: 4, flexWrap: 'wrap' } },
+            (proj.machines || []).map(m => {
+              const mc = machineColor(m);
+              return h('span', {
+                key: m,
+                title: m,
+                style: {
+                  fontSize: '0.58rem', fontWeight: 700, padding: '1px 6px',
+                  borderRadius: 10, border: `1px solid ${mc.border}`,
+                  background: mc.bg, color: mc.color, whiteSpace: 'nowrap',
+                  fontFamily: '"SF Mono", "Fira Code", Consolas, monospace',
+                }
+              }, m);
+            })
+          ),
+          h('div', { style: { flex: 1 } }),
+        ),
+        // Expanded: list sessions
+        isOpen && h('div', { style: { paddingLeft: 4 } },
+          (proj.sessions || []).map(s =>
+            h(SessionCardMemo, {
+              key: s.session_id,
+              session: s,
+              onLaunch,
+              onTmuxLaunch,
+              launching: launchingId === s.session_id,
+              tmuxLaunching: tmuxLaunchingId === s.session_id,
+              skipPermissions,
+              onPin,
+              onUnpin,
+              isPinned: (pinnedIds || []).includes(s.session_id),
+              onArchive,
+              onUnarchive,
+              isArchived: (archivedIds || new Set()).has(s.session_id),
+              expanded: (expandedCards || new Set()).has(s.session_id),
+              onToggleExpand: () => onToggleExpand(s.session_id),
+              inMachineSection: false,
+              hwCache,
+              fetchHardware,
+            })
+          )
+        ),
+      );
+    })
+  );
+}
+
 // ─── Sessions Panel ───────────────────────────────────────────────────────────
 
 function SessionsPanel({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaunchingId, skipPermissions, scanning, collapseState, setCollapseState, pinnedIds, onPin, onUnpin, onArchive, onUnarchive, archivedIds, expandedCards, onToggleExpand, hwCache, fetchHardware, onNewSessionInProject, onNewTmuxInProject }) {
@@ -3401,6 +3557,10 @@ function App() {
   const [showSecurity, setShowSecurity]   = useState(false);
   const [updateStatus, setUpdateStatus]   = useState(null);
   const [applyingUpdate, setApplyingUpdate] = useState(false);
+  const [sessionsView, setSessionsView] = useState(() => {
+    try { return localStorage.getItem('sessionsView') || 'project'; } catch { return 'project'; }
+  });
+  const [wsSessionUpdateCount, setWsSessionUpdateCount] = useState(0);
 
   // ── Auth config on startup ────────────────────────────────────────────────
   useEffect(() => {
@@ -3630,6 +3790,7 @@ function App() {
           }
           return newSessions;
         });
+        setWsSessionUpdateCount(n => n + 1);
       }
     } else if (msg.channel === 'fleet') {
       const data = msg.data;
@@ -4185,9 +4346,37 @@ function App() {
             h('span', {
               style: {
                 fontSize: '0.7rem', fontWeight: 700, letterSpacing: '0.08em',
-                textTransform: 'uppercase', color: '#484f58', flex: 1,
+                textTransform: 'uppercase', color: '#484f58',
               }
             }, 'Sessions'),
+            // Project | Machine segmented toggle
+            h('div', {
+              style: {
+                display: 'flex', borderRadius: 6, overflow: 'hidden',
+                border: '1px solid #30363d', marginLeft: 8,
+              }
+            },
+              ['project', 'machine'].map(v =>
+                h('button', {
+                  key: v,
+                  className: 'btn',
+                  onClick: () => {
+                    setSessionsView(v);
+                    try { localStorage.setItem('sessionsView', v); } catch {}
+                  },
+                  title: v === 'project' ? 'Group sessions by project (cross-machine)' : 'Group sessions by machine',
+                  style: {
+                    padding: '2px 10px', fontSize: '0.65rem', fontWeight: 600,
+                    border: 'none', cursor: 'pointer', letterSpacing: '0.04em',
+                    background: sessionsView === v ? '#1f3a5f' : 'none',
+                    color: sessionsView === v ? '#58a6ff' : '#484f58',
+                    textTransform: 'capitalize',
+                    transition: 'background 0.15s, color 0.15s',
+                  },
+                }, v)
+              ),
+            ),
+            h('div', { style: { flex: 1 } }),
             h('button', {
               className: 'btn',
               onClick: handleExpandAll,
@@ -4225,29 +4414,50 @@ function App() {
                   h('span', { style: { fontSize: '0.875rem' } }, 'Scanning fleet...'),
                   h('span', { style: { fontSize: '0.78rem', textAlign: 'center' } }, 'Discovering machines\nand sessions'),
                 )
-              : h(SessionsPanel, {
-                  sessions: filteredSessions,
-                  onLaunch: handleLaunch,
-                  onTmuxLaunch: handleTmuxLaunch,
-                  launchingId,
-                  tmuxLaunchingId,
-                  skipPermissions,
-                  scanning,
-                  collapseState,
-                  setCollapseState,
-                  pinnedIds,
-                  onPin: handlePin,
-                  onUnpin: handleUnpin,
-                  onArchive: handleArchive,
-                  onUnarchive: handleUnarchive,
-                  archivedIds,
-                  expandedCards,
-                  onToggleExpand: handleToggleExpand,
-                  hwCache,
-                  fetchHardware,
-                  onNewSessionInProject: handleNewSessionInProject,
-                  onNewTmuxInProject: handleNewTmuxInProject,
-                }),
+              : sessionsView === 'project'
+                ? h(ProjectsView, {
+                    sessions: filteredSessions,
+                    onLaunch: handleLaunch,
+                    onTmuxLaunch: handleTmuxLaunch,
+                    launchingId,
+                    tmuxLaunchingId,
+                    skipPermissions,
+                    scanning,
+                    pinnedIds,
+                    onPin: handlePin,
+                    onUnpin: handleUnpin,
+                    onArchive: handleArchive,
+                    onUnarchive: handleUnarchive,
+                    archivedIds,
+                    expandedCards,
+                    onToggleExpand: handleToggleExpand,
+                    hwCache,
+                    fetchHardware,
+                    wsUpdateCount: wsSessionUpdateCount,
+                  })
+                : h(SessionsPanel, {
+                    sessions: filteredSessions,
+                    onLaunch: handleLaunch,
+                    onTmuxLaunch: handleTmuxLaunch,
+                    launchingId,
+                    tmuxLaunchingId,
+                    skipPermissions,
+                    scanning,
+                    collapseState,
+                    setCollapseState,
+                    pinnedIds,
+                    onPin: handlePin,
+                    onUnpin: handleUnpin,
+                    onArchive: handleArchive,
+                    onUnarchive: handleUnarchive,
+                    archivedIds,
+                    expandedCards,
+                    onToggleExpand: handleToggleExpand,
+                    hwCache,
+                    fetchHardware,
+                    onNewSessionInProject: handleNewSessionInProject,
+                    onNewTmuxInProject: handleNewTmuxInProject,
+                  }),
           ),
         ),
 
