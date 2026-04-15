@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "name": "claude-manager",
+  "display_name": "Claude Manager",
+  "description": "Fleet SSH + terminal management UI for Claude sessions",
+  "repo": "github.com/raphaelbgr/claude-manager",
+  "branch": "master",
+  "install_dir": "~/.fastsoftware-apps/claude-manager",
+  "install_cmd": [["python", "-m", "venv", ".venv"], [".venv/bin/pip", "install", "-e", "."]],
+  "launch_cmd": [".venv/bin/python", "-m", "src.main"],
+  "launch_as_service": true,
+  "health_url": "http://127.0.0.1:44740/health",
+  "icon": null,
+  "desktop_shortcut": false,
+  "auto_update": true,
+  "platforms": ["darwin", "linux", "win32"],
+  "managed_by": "fleet-watchdog>=1.0.0",
+  "version_file": "VERSION.json"
+}
