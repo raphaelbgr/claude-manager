@@ -2773,7 +2773,6 @@ def create_app(
     app.router.add_get("/ws", handle_ws)
 
     # Static web UI — serve index.html at / and static assets
-    import pathlib
     web_dir = pathlib.Path(__file__).parent / "web"
     if web_dir.is_dir():
         index_html = web_dir / "index.html"
