@@ -10,3 +10,7 @@ venv/
 *.egg
 .remember/
 .claude-manager-prefs.json
+
+# Fleet watchdog version file (generated, not committed)
+VERSION.json
+VERSION.json.bak
