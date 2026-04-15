@@ -26,7 +26,7 @@ from typing import Any, Callable
 
 import psutil
 
-from .subprocess_utils import run_with_timeout
+from .subprocess_utils import run_with_timeout, _win32_kwargs
 from .executor import SSHExecutor
 
 log = logging.getLogger("claude_manager.scanner")
@@ -386,6 +386,7 @@ def scan_local(
                 result = subprocess.run(
                     ["git", "-C", cwd_key, "config", "--get", "remote.origin.url"],
                     capture_output=True, text=True, timeout=2,
+                    **_win32_kwargs(),
                 )
                 _remote_cache[cwd_key] = result.stdout.strip() if result.returncode == 0 else ""
             except Exception:
@@ -396,6 +397,7 @@ def scan_local(
                 result = subprocess.run(
                     ["git", "-C", cwd_key, "rev-list", "--count", "HEAD"],
                     capture_output=True, text=True, timeout=2,
+                    **_win32_kwargs(),
                 )
                 _commits_cache[cwd_key] = int(result.stdout.strip()) if result.returncode == 0 else 0
             except Exception:

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 
 from .base import TerminalAdapter
+from ..subprocess_utils import _win32_asyncio_kwargs
 
 
 async def _spawn_shell(shell_cmd: str) -> dict:
@@ -17,6 +18,7 @@ async def _spawn_shell(shell_cmd: str) -> dict:
             shell_cmd,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
+            **_win32_asyncio_kwargs(),
         )
         try:
             _, stderr = await asyncio.wait_for(proc.communicate(), timeout=5)

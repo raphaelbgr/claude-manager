@@ -43,7 +43,7 @@ from .fleet import discover_fleet
 from .launcher import launch_claude_session, launch_tmux_attach, launch_tmux_attach_remote, launch_new_tmux_and_attach, launch_terminal, _ssh_path_prefix
 from .scanner import ClaudeSession, scan_all
 from .state_store import StateStore
-from .subprocess_utils import run_with_timeout
+from .subprocess_utils import run_with_timeout, _win32_kwargs
 from .tmux_manager import TmuxSession, list_all_tmux, create_tmux_session, kill_tmux_session
 
 log = logging.getLogger("claude_manager.server")
@@ -1358,6 +1358,7 @@ async def handle_projects_create(request: web.Request) -> web.Response:
                     capture_output=True,
                     text=True,
                     timeout=10,
+                    **_win32_kwargs(),
                 )
                 if result.returncode != 0:
                     return web.json_response({

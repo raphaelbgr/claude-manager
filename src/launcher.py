@@ -6,6 +6,7 @@ import shutil
 import sys
 from .command_adapter import get_adapter, sanitize_mux_name
 from .config import FLEET_MACHINES, detect_local_machine, SSH_TIMEOUT
+from .subprocess_utils import _win32_asyncio_kwargs
 
 log = logging.getLogger("claude_manager.launcher")
 
@@ -277,6 +278,7 @@ async def _launch_windows(command: str) -> dict:
             full_cmd,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
+            **_win32_asyncio_kwargs(),
         )
         try:
             _, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
@@ -387,6 +389,7 @@ async def _ensure_claude_running(machine: str, session_name: str, skip_permissio
                 send_keys,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                **_win32_asyncio_kwargs(),
             )
             await asyncio.wait_for(proc.communicate(), timeout=5)
         except Exception as exc:
@@ -408,6 +411,7 @@ async def _ensure_claude_running(machine: str, session_name: str, skip_permissio
             *ssh_args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            **_win32_asyncio_kwargs(),
         )
         _, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
         if proc.returncode != 0:
@@ -559,6 +563,7 @@ exit 1
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            **_win32_asyncio_kwargs(),
         )
         try:
             stdout, stderr = await asyncio.wait_for(

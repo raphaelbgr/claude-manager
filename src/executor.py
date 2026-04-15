@@ -12,7 +12,7 @@ import sys
 from typing import Protocol
 
 from .config import FLEET_MACHINES, SSH_TIMEOUT, detect_local_machine
-from .subprocess_utils import run_with_timeout
+from .subprocess_utils import run_with_timeout, _win32_kwargs
 
 
 # Hardcoded native-OS PATH fallbacks so the daemon finds tmux/psmux/claude/git
@@ -208,6 +208,7 @@ class SSHExecutor:
         subprocess.run(
             ["ssh", "-O", "exit", "-o", f"ControlPath={ctl}", alias],
             capture_output=True,
+            **_win32_kwargs(),
         )
 
     async def exec(
