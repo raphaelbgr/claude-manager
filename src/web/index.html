@@ -3827,12 +3827,23 @@ function Header({ health, sessions, tmuxSessions, fleet, onScan, scanning, scanP
         }
         clearTimeout(exitTimerRef.current);
         setExitConfirm(false);
-        // keepalive lets the POST complete even though the server kills
-        // itself 500ms later via os._exit(0).
+        // sendBeacon is the reliable way to fire-and-forget a POST that may
+        // outlive the page: the browser queues it even if the socket dies
+        // when the server calls os._exit(0). fetch({keepalive:true}) was
+        // unreliable inside pywebview's WKWebView on macOS.
+        let sent = false;
         try {
-          const headers = { 'Content-Type': 'application/json', ...authHeaders() };
-          fetch('/api/exit', { method: 'POST', headers, keepalive: true }).catch(() => {});
+          if (navigator.sendBeacon) {
+            const blob = new Blob(['{}'], { type: 'application/json' });
+            sent = navigator.sendBeacon('/api/exit', blob);
+          }
         } catch {}
+        if (!sent) {
+          try {
+            const headers = { 'Content-Type': 'application/json', ...authHeaders() };
+            fetch('/api/exit', { method: 'POST', headers, keepalive: true }).catch(() => {});
+          } catch {}
+        }
         toast('Shutting down…', 'success');
       },
       title: exitConfirm
