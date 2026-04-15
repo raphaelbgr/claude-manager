@@ -29,6 +29,7 @@
   "health_url": "http://127.0.0.1:44740/health",
   "icon": null,
   "desktop_shortcut": false,
+  "scope": "user",
   "auto_update": true,
   "platforms": [
     "darwin",
