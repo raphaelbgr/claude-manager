@@ -46,6 +46,39 @@ from .state_store import StateStore
 from .subprocess_utils import run_with_timeout, _win32_kwargs
 from .tmux_manager import TmuxSession, list_all_tmux, create_tmux_session, kill_tmux_session
 
+
+async def _pool_exec(
+    machine: str,
+    cmd: str,
+    *,
+    timeout: float,
+    input: bytes | None = None,
+) -> tuple[int, bytes, bytes]:
+    """Run a shell command on a fleet machine via the asyncssh pool.
+
+    Primary path for all ad-hoc API endpoints — replaces the subprocess `ssh`
+    calls that leaked sshd sessions on Windows targets (no ControlMaster
+    multiplexing on Windows OpenSSH). Reuses one long-lived connection per
+    machine for the app's lifetime.
+
+    Falls back to subprocess `ssh` only if asyncssh is missing or the pool
+    is in its reconnect backoff window.
+    """
+    from .ssh_pool import default_pool, asyncssh as _asyncssh
+    info = FLEET_MACHINES.get(machine, {})
+    if _asyncssh is not None:
+        try:
+            return await default_pool().run(machine, cmd, timeout=timeout, input=input)
+        except Exception as exc:
+            log.debug("_pool_exec(%s) pool failed, falling back to subprocess: %s", machine, exc)
+    ssh_alias = info.get("ssh_alias", machine)
+    return await run_with_timeout(
+        ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes",
+         "-o", "StrictHostKeyChecking=no", ssh_alias, "bash", "-c", cmd],
+        timeout=timeout,
+        input=input,
+    )
+
 log = logging.getLogger("claude_manager.server")
 
 
@@ -1230,10 +1263,8 @@ except ImportError:
 """
 
     try:
-        rc, stdout, stderr = await run_with_timeout(
-            ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", ssh_alias, "python3", "-"],
-            timeout=15,
-            input=py_script.encode(),
+        rc, stdout, stderr = await _pool_exec(
+            machine, "python3 -", timeout=15, input=py_script.encode(),
         )
     except asyncio.TimeoutError:
         return web.json_response({"ok": False, "error": "SSH timeout"}, status=504)
@@ -1304,10 +1335,8 @@ async def handle_mkdir(request: web.Request) -> web.Response:
     )
 
     try:
-        rc, stdout, stderr = await run_with_timeout(
-            ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", ssh_alias, "python3", "-"],
-            timeout=10,
-            input=py_script.encode(),
+        rc, stdout, stderr = await _pool_exec(
+            machine, "python3 -", timeout=10, input=py_script.encode(),
         )
     except asyncio.TimeoutError:
         return web.json_response({"ok": False, "error": "SSH timeout"}, status=504)
@@ -1398,11 +1427,8 @@ async def handle_projects_create(request: web.Request) -> web.Response:
                 "Write-Output \"created=$(!$exists)\""
             )
         try:
-            rc, stdout, stderr = await run_with_timeout(
-                ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes",
-                 ssh_alias, "powershell", "-NoProfile", "-Command", ps_cmd],
-                timeout=15,
-            )
+            # Windows SSH login shell is PowerShell — send the PS command directly.
+            rc, stdout, stderr = await _pool_exec(machine, ps_cmd, timeout=15)
         except asyncio.TimeoutError:
             return web.json_response({"ok": False, "error": "SSH timeout"}, status=504)
         if rc != 0:
@@ -1425,10 +1451,7 @@ async def handle_projects_create(request: web.Request) -> web.Response:
         else:
             shell_cmd = f"mkdir -p '{esc}' && echo git_initialized=false"
         try:
-            rc, stdout, stderr = await run_with_timeout(
-                ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", ssh_alias, shell_cmd],
-                timeout=15,
-            )
+            rc, stdout, stderr = await _pool_exec(machine, shell_cmd, timeout=15)
         except asyncio.TimeoutError:
             return web.json_response({"ok": False, "error": "SSH timeout"}, status=504)
         if rc != 0:
@@ -1534,10 +1557,8 @@ print(json.dumps({{"path": str(p), "parent": str(p.parent), "drive": drive, "dir
 """
 
     try:
-        rc, stdout, stderr = await run_with_timeout(
-            ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", ssh_alias, "python3", "-"],
-            timeout=10,
-            input=py_script.encode(),
+        rc, stdout, stderr = await _pool_exec(
+            machine, "python3 -", timeout=10, input=py_script.encode(),
         )
     except asyncio.TimeoutError:
         return web.json_response({"ok": False, "error": "SSH timeout"}, status=504)
@@ -1566,6 +1587,75 @@ async def handle_logs(request: web.Request) -> web.Response:
         return web.json_response({"logs": []})
     logs = handler.get_logs(limit=limit, level=level)
     return web.json_response({"logs": logs})
+
+
+async def handle_logs_tail(request: web.Request) -> web.Response:
+    """GET /api/logs/tail?lines=N — tail the rotating log file on disk.
+
+    The file is capped at 5 MB with 2 rotated backups. Text/plain response
+    matches `tail -n` so curl | less works.
+    """
+    try:
+        lines = int(request.query.get("lines", "500"))
+    except (ValueError, TypeError):
+        lines = 500
+    lines = max(1, min(lines, 20000))
+    log_path: pathlib.Path | None = request.app.get("log_file_path")
+    if not log_path or not log_path.exists():
+        return web.Response(text="", content_type="text/plain")
+    # Read tail efficiently from end of file.
+    try:
+        with log_path.open("rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            block = 8192
+            data = b""
+            while size > 0 and data.count(b"\n") <= lines:
+                read_size = min(block, size)
+                size -= read_size
+                f.seek(size)
+                data = f.read(read_size) + data
+        text = data.decode("utf-8", errors="replace")
+        tail = "\n".join(text.splitlines()[-lines:])
+    except Exception as exc:
+        return web.Response(text=f"error reading log: {exc}\n", content_type="text/plain", status=500)
+    return web.Response(text=tail + "\n", content_type="text/plain")
+
+
+async def handle_update_watchdog(request: web.Request) -> web.Response:
+    """GET /api/update/watchdog — proxy fleet-watchdog's view of this app.
+
+    Hits http://127.0.0.1:44732/apps/claude-manager. If the watchdog is not
+    running locally, returns {ok: false, watchdog_available: false}. Clients
+    should fall back to /api/update/check (direct GitHub poll).
+    """
+    import aiohttp as _aiohttp
+    url = "http://127.0.0.1:44732/apps/claude-manager"
+    try:
+        timeout = _aiohttp.ClientTimeout(total=3)
+        async with _aiohttp.ClientSession(timeout=timeout) as sess:
+            async with sess.get(url) as resp:
+                if resp.status != 200:
+                    return web.json_response({
+                        "ok": False, "watchdog_available": True,
+                        "error": f"watchdog returned {resp.status}",
+                    })
+                data = await resp.json()
+    except Exception as exc:
+        return web.json_response({
+            "ok": False, "watchdog_available": False,
+            "error": f"watchdog unreachable: {exc}",
+        })
+    installed = data.get("installed_version")
+    remote = data.get("remote_version")
+    return web.json_response({
+        "ok": True,
+        "watchdog_available": True,
+        "installed_version": installed,
+        "remote_version": remote,
+        "update_available": bool(installed is not None and remote is not None and remote > installed),
+        "raw": data,
+    })
 
 
 async def handle_restart(request: web.Request) -> web.Response:
@@ -2042,11 +2132,8 @@ async def handle_hardware(request: web.Request) -> web.Response:
 
     script = _REMOTE_HW_SCRIPT.strip()
     try:
-        rc, stdout, stderr = await run_with_timeout(
-            ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
-             ssh_alias, "python3", "-"],
-            timeout=20,
-            input=script.encode(),
+        rc, stdout, stderr = await _pool_exec(
+            machine, "python3 -", timeout=20, input=script.encode(),
         )
     except asyncio.TimeoutError:
         return web.json_response({"ok": False, "error": "SSH timeout"}, status=504)
@@ -2176,11 +2263,8 @@ print(json.dumps({{'ok': True, 'name': name}}))
 """
 
     try:
-        rc, stdout, stderr = await run_with_timeout(
-            ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
-             ssh_alias, "python3", "-"],
-            timeout=15,
-            input=py_script.encode(),
+        rc, stdout, stderr = await _pool_exec(
+            machine, "python3 -", timeout=15, input=py_script.encode(),
         )
     except asyncio.TimeoutError:
         return web.json_response({"ok": False, "error": "SSH timeout"}, status=504)
@@ -2594,6 +2678,27 @@ def create_app(
     cm_logger.addHandler(mem_handler)
     app["log_handler"] = mem_handler
 
+    # Rotating file log — 5 MB cap, 2 backups, oldest entries drop automatically.
+    # Tailable via GET /api/logs/tail.
+    from logging.handlers import RotatingFileHandler
+    log_dir = pathlib.Path.home() / ".claude-manager" / "logs"
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / "claude-manager.log"
+        file_handler = RotatingFileHandler(
+            str(log_file), maxBytes=5 * 1024 * 1024, backupCount=2, encoding="utf-8"
+        )
+        file_handler.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)s %(name)s: %(message)s"
+        ))
+        # Attach to root so subprocess/aiohttp/asyncssh logs land there too.
+        logging.getLogger().addHandler(file_handler)
+        app["log_file_path"] = log_file
+        log.info("rotating log file: %s (5MB x 2 backups)", log_file)
+    except Exception as exc:
+        log.warning("failed to set up rotating log file: %s", exc)
+        app["log_file_path"] = None
+
     # Load auth config from ~/.claude-manager/auth.json
     from .auth import load_auth_config
     auth_cfg = load_auth_config()
@@ -2629,6 +2734,8 @@ def create_app(
     app.router.add_get("/api/update/check", handle_update_check)
     app.router.add_post("/api/update/apply", handle_update_apply)
     app.router.add_get("/api/logs", handle_logs)
+    app.router.add_get("/api/logs/tail", handle_logs_tail)
+    app.router.add_get("/api/update/watchdog", handle_update_watchdog)
     app.router.add_get("/api/sessions", handle_sessions_all)
     app.router.add_get("/api/projects", handle_projects)
     app.router.add_get("/api/sessions/{machine}", handle_sessions_machine)
