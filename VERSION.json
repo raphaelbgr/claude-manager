@@ -1,8 +1,8 @@
 {
-  "version": 143,
-  "commit": "5418862",
-  "commit_full": "54188621004b72a2d084fcc7bee3999c1391e0fe",
+  "version": 146,
+  "commit": "043608c",
+  "commit_full": "043608c8c69b342d8239ba4c7ae81961db8b6dd4",
   "branch": "master",
-  "date": "2026-04-15T13:00:47-03:00",
-  "message": "fix(fleet-app): install [all] extras so desktop+tray+tui deps land"
+  "date": "2026-04-15T17:16:43-03:00",
+  "message": "Merge feat/fleet-watchdog-scope-20260415-1348 into master"
 }
