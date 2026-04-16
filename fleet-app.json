@@ -25,7 +25,7 @@
     "-m",
     "src.main"
   ],
-  "launch_as_service": true,
+  "launch_as_service": false,
   "health_url": "http://127.0.0.1:44740/health",
   "icon": null,
   "desktop_shortcut": false,
