@@ -33,6 +33,59 @@ log = logging.getLogger("claude_manager.scanner")
 
 
 # ---------------------------------------------------------------------------
+# Filters
+# ---------------------------------------------------------------------------
+
+# Case-insensitive prefix markers for OS temp directories — any session whose
+# cwd resolves under one of these is a throwaway that pollutes the Project tab.
+# Unix covers /tmp, /var/tmp, macOS's /private/tmp and the per-user TemporaryItems
+# tree. Windows covers the system temp, per-user Local\Temp, and the %TEMP%/%TMP%
+# env-resolved paths. Check on normalized (forward-slash, lowercase) strings.
+_TMP_PREFIXES_UNIX = (
+    "/tmp/",
+    "/var/tmp/",
+    "/private/tmp/",
+    "/private/var/folders/",
+)
+_TMP_PREFIXES_WIN = (
+    "c:/windows/temp/",
+    # Per-user: C:\Users\<name>\AppData\Local\Temp\ — match by substring below.
+)
+
+
+def _is_tmp_path(cwd: str) -> bool:
+    """True if `cwd` looks like an OS temp directory on any supported OS.
+
+    Called at scan time to drop sessions whose working directory is a
+    throwaway location — short-lived runs, ad-hoc /tmp editing, Windows
+    installer scratch dirs. These sessions can never be resumed usefully
+    and just clutter the Project tab.
+    """
+    if not cwd:
+        return False
+    norm = cwd.replace("\\", "/").lower()
+    for p in _TMP_PREFIXES_UNIX:
+        if norm.startswith(p):
+            return True
+    for p in _TMP_PREFIXES_WIN:
+        if norm.startswith(p):
+            return True
+    # Per-user Windows temp — appears anywhere under Local\Temp
+    if "/appdata/local/temp/" in norm:
+        return True
+    # Env-resolved %TEMP% / %TMP% fallback. Only apply on Windows (on Unix,
+    # TEMP/TMP may be set to non-temp paths; we've already covered /tmp etc.).
+    if sys.platform == "win32":
+        for var in ("TEMP", "TMP"):
+            env_val = os.environ.get(var, "")
+            if env_val:
+                env_norm = env_val.replace("\\", "/").lower().rstrip("/") + "/"
+                if norm.startswith(env_norm):
+                    return True
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Data model
 # ---------------------------------------------------------------------------
 
@@ -369,6 +422,10 @@ def scan_local(
             # lossy dash-to-slash decode ambiguity (e.g. "claude-manager" → "claude/manager").
             if sess.cwd:
                 sess.project_path = sess.cwd
+            # Drop throwaway sessions whose cwd points at an OS temp dir —
+            # they clutter the Project tab and can never be resumed usefully.
+            if _is_tmp_path(sess.cwd or sess.project_path):
+                continue
             all_sessions.append(sess)
         except Exception:
             continue
@@ -448,6 +505,29 @@ def decode(folder):
         result += sep if folder[i] == '-' else folder[i]
         i += 1
     return result
+
+def is_tmp(cwd):
+    # Mirror of scanner._is_tmp_path - inlined because this script ships raw
+    # and cannot import from the host.
+    if not cwd:
+        return False
+    norm = cwd.replace('\\', '/').lower()
+    unix = ('/tmp/', '/var/tmp/', '/private/tmp/', '/private/var/folders/')
+    for p in unix:
+        if norm.startswith(p):
+            return True
+    if norm.startswith('c:/windows/temp/'):
+        return True
+    if '/appdata/local/temp/' in norm:
+        return True
+    if sys.platform == 'win32':
+        for var in ('TEMP', 'TMP'):
+            v = os.environ.get(var, '')
+            if v:
+                ev = v.replace('\\', '/').lower().rstrip('/') + '/'
+                if norm.startswith(ev):
+                    return True
+    return False
 
 def pid_alive(pid):
     try:
@@ -545,6 +625,10 @@ if projects_dir.is_dir():
                             meta_done = True
                 sid = jf.stem
                 pid = active_pids.get(sid)
+                # Drop throwaway sessions in OS temp dirs — same rule as
+                # scanner._is_tmp_path on the local side.
+                if is_tmp(cwd or proj_path):
+                    continue
                 results.append({
                     'session_id': sid,
                     'project_folder': fn,
@@ -579,6 +663,30 @@ if sys.platform == 'win32':
     _si.dwFlags |= 0x00000001  # STARTF_USESHOWWINDOW
     _si.wShowWindow = 0         # SW_HIDE
     _win_kw = {'creationflags': 0x08000000, 'startupinfo': _si}  # CREATE_NO_WINDOW
+
+# Resolve the full path to git.exe on Windows. The sshd-inherited PATH is
+# stripped and doesn't include C:\Program Files\Git\cmd, so bare 'git' would
+# FileNotFoundError and leave git_remote=''. An empty remote breaks the
+# cross-machine project-id merge in project_identity.py — /streams-android
+# on mac-mini (with normalized github.com/.../streams-android id) then
+# renders as a separate card from \streams-android on avell-i7 (which falls
+# back to basename-only id). shutil.which first; fall back to the two
+# well-known install locations.
+import shutil as _shutil
+_GIT = 'git'
+if sys.platform == 'win32':
+    _candidate = (_shutil.which('git')
+                  or _shutil.which('git.exe')
+                  or r'C:\Program Files\Git\cmd\git.exe'
+                  or r'C:\Program Files\Git\bin\git.exe')
+    for _p in (_shutil.which('git'),
+               _shutil.which('git.exe'),
+               r'C:\Program Files\Git\cmd\git.exe',
+               r'C:\Program Files\Git\bin\git.exe'):
+        if _p and os.path.isfile(_p):
+            _GIT = _p
+            break
+
 _remote_cache = {}
 _commits_cache = {}
 for r in results:
@@ -589,7 +697,7 @@ for r in results:
         continue
     if cwd_key not in _remote_cache:
         try:
-            pr = _sp.run(['git', '-C', cwd_key, 'config', '--get', 'remote.origin.url'],
+            pr = _sp.run([_GIT, '-C', cwd_key, 'config', '--get', 'remote.origin.url'],
                          capture_output=True, text=True, timeout=2, **_win_kw)
             _remote_cache[cwd_key] = pr.stdout.strip() if pr.returncode == 0 else ''
         except Exception:
@@ -597,7 +705,7 @@ for r in results:
     r['git_remote'] = _remote_cache[cwd_key]
     if cwd_key not in _commits_cache:
         try:
-            pr = _sp.run(['git', '-C', cwd_key, 'rev-list', '--count', 'HEAD'],
+            pr = _sp.run([_GIT, '-C', cwd_key, 'rev-list', '--count', 'HEAD'],
                          capture_output=True, text=True, timeout=2, **_win_kw)
             _commits_cache[cwd_key] = int(pr.stdout.strip()) if pr.returncode == 0 else 0
         except Exception:
