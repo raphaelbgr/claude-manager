@@ -1,8 +1,8 @@
 {
-  "version": 151,
-  "commit": "b4d3a68",
-  "commit_full": "b4d3a68ab781f36d43c1ae0ecb094eb9436f19bc",
+  "version": 156,
+  "commit": "1bfa6da",
+  "commit_full": "1bfa6daea5117964da994be5aac4bd77a8b34eb1",
   "branch": "master",
-  "date": "2026-04-16T12:43:14-03:00",
-  "message": "fix(fleet-app): set launch_as_service=false to prevent headless crash-loops"
+  "date": "2026-04-22T12:33:42-03:00",
+  "message": "test(command-adapter): cover sanitize_mux_name edge cases"
 }
