@@ -651,3 +651,233 @@ class TestGetAdapter:
     def test_returns_command_adapter_instance(self):
         adapter = get_adapter("mac-mini")
         assert isinstance(adapter, CommandAdapter)
+
+
+class TestBuildPaneCommand:
+    """build_pane_command emits shell-appropriate cd + claude for the pane.
+
+    psmux on Windows → PowerShell pane (modern default): `Set-Location '...'; claude`.
+    tmux on Unix → bash pane: `cd '...' && claude`.
+
+    Regression guard: the old code emitted `cd /d C:\\path && claude` for psmux
+    which fails inside PowerShell panes (`/d` is not a switch on Set-Location,
+    `&&` isn't supported in PS 5.1). Result: Claude launched at the home
+    directory instead of the project directory.
+    """
+
+    def test_psmux_new_session_uses_powershell(self):
+        a = CommandAdapter(target_os="win32", mux_type="psmux")
+        cmd = a.build_pane_command("C:\\Users\\rbgnr\\git\\smart-kanban")
+        assert cmd == "Set-Location 'C:\\Users\\rbgnr\\git\\smart-kanban'; claude"
+        assert "cd /d" not in cmd
+        assert "&&" not in cmd  # PS 5.1 doesn't support it
+
+    def test_psmux_resume_uses_powershell(self):
+        a = CommandAdapter(target_os="win32", mux_type="psmux")
+        cmd = a.build_pane_command("C:\\proj", session_id="abc-123")
+        assert cmd.startswith("Set-Location 'C:\\proj'; claude --resume")
+        assert "abc-123" in cmd
+
+    def test_psmux_skip_permissions_flag(self):
+        a = CommandAdapter(target_os="win32", mux_type="psmux")
+        cmd = a.build_pane_command("C:\\proj", skip_permissions=True)
+        assert "--dangerously-skip-permissions" in cmd
+
+    def test_psmux_escapes_single_quote_in_path(self):
+        """PowerShell single-quoted strings escape ' by doubling."""
+        a = CommandAdapter(target_os="win32", mux_type="psmux")
+        cmd = a.build_pane_command("C:\\foo's\\bar")
+        assert "'C:\\foo''s\\bar'" in cmd
+
+    def test_tmux_unix_uses_bash_syntax(self):
+        a = CommandAdapter(target_os="darwin", mux_type="tmux")
+        cmd = a.build_pane_command("/Users/rbgnr/git/proj")
+        # shlex.quote omits quotes for paths with no special chars
+        assert "cd /Users/rbgnr/git/proj" in cmd
+        assert "&&" in cmd
+
+    def test_tmux_unix_resume(self):
+        a = CommandAdapter(target_os="linux", mux_type="tmux")
+        cmd = a.build_pane_command("/home/rbgnr/proj", session_id="u1")
+        assert "cd /home/rbgnr/proj" in cmd
+        assert "&&" in cmd
+        assert "--resume" in cmd and "u1" in cmd
+
+    def test_tmux_unix_quotes_path_with_spaces(self):
+        a = CommandAdapter(target_os="darwin", mux_type="tmux")
+        cmd = a.build_pane_command("/Users/rbgnr/my code/proj")
+        assert "'/Users/rbgnr/my code/proj'" in cmd
+
+    def test_empty_session_id_is_fresh(self):
+        """session_id None → fresh `claude`, no --resume."""
+        a = CommandAdapter(target_os="win32", mux_type="psmux")
+        cmd = a.build_pane_command("C:\\proj", session_id=None)
+        assert "--resume" not in cmd
+        assert cmd.endswith("; claude")
+
+
+class TestMuxSendKeysPowerShell:
+    """mux_send_keys_ps produces PowerShell-safe quoting.
+
+    Regression: mux_send_keys uses POSIX shlex.quote which wraps embedded
+    single quotes as `'\"'\"'`. PowerShell parses that as FIVE separate
+    string-literal arguments, so the psmux command's text payload gets split
+    into pieces and the pane never receives the intended Set-Location.
+    Result: claude started at the home dir instead of the project dir.
+    The _ps variant uses PowerShell's own rule: double internal `'` to `''`.
+    """
+
+    def _adapter(self):
+        return CommandAdapter(target_os="win32", mux_type="psmux")
+
+    def test_wraps_text_in_single_quotes(self):
+        out = self._adapter().mux_send_keys_ps("sess", "claude")
+        assert out == "psmux send-keys -t 'sess' 'claude' Enter"
+
+    def test_doubles_internal_single_quote(self):
+        """Set-Location 'C:\\x'; claude → escape ' as ''. No POSIX '\"'\"' sequence."""
+        a = self._adapter()
+        out = a.mux_send_keys_ps("sess", "Set-Location 'C:\\x'; claude")
+        assert out == "psmux send-keys -t 'sess' 'Set-Location ''C:\\x''; claude' Enter"
+        # POSIX escape must NOT appear — that's the bug.
+        assert "'\"'\"'" not in out
+
+    def test_preserves_backslashes(self):
+        """Windows paths contain \\ — PowerShell single-quoted strings treat
+        \\ literally, so no escaping needed."""
+        a = self._adapter()
+        out = a.mux_send_keys_ps("s", "Set-Location 'C:\\Users\\rbgnr\\git\\Smart-kanban'; claude")
+        assert "C:\\Users\\rbgnr\\git\\Smart-kanban" in out
+
+    def test_session_name_with_quote_is_escaped(self):
+        """If a session name somehow contains ', it must be doubled too."""
+        out = self._adapter().mux_send_keys_ps("sess'name", "claude")
+        assert "'sess''name'" in out
+
+    def test_send_keys_ps_is_not_posix_equivalent(self):
+        """The two variants must differ when the payload has any single quote."""
+        a = self._adapter()
+        cmd_with_quote = "Set-Location 'C:\\x'; claude"
+        posix = a.mux_send_keys("sess", cmd_with_quote)
+        ps = a.mux_send_keys_ps("sess", cmd_with_quote)
+        assert posix != ps
+        # POSIX uses '"'"' to re-quote; PowerShell uses ''.
+        assert "'\"'\"'" in posix
+        assert "'\"'\"'" not in ps
+
+
+# ---------------------------------------------------------------------------
+# TestSanitizeMuxName — covers the "no slash in mux session names" rule.
+# Both tmux AND psmux reject '/'. Also '.', ':', whitespace.  Every call site
+# that feeds a name to {tmux,psmux} new-session/kill-session/has-session/etc.
+# must route through this. See memory: feedback_no_slash_in_mux_session_names.md.
+# ---------------------------------------------------------------------------
+
+from src.command_adapter import sanitize_mux_name  # noqa: E402
+
+
+class TestSanitizeMuxName:
+    def test_plain_alphanumeric_passes_through(self):
+        assert sanitize_mux_name("project01") == "project01"
+
+    def test_underscore_and_dash_allowed(self):
+        assert sanitize_mux_name("my_project-session-01") == "my_project-session-01"
+
+    def test_single_slash_becomes_dash(self):
+        assert sanitize_mux_name("nxs-ensemble/streams-android") == "nxs-ensemble-streams-android"
+
+    def test_multiple_slashes_collapse_to_single_dash(self):
+        assert sanitize_mux_name("a/b/c/d") == "a-b-c-d"
+
+    def test_backslash_becomes_dash(self):
+        # Windows path separator should also be sanitized.
+        assert sanitize_mux_name("C:\\Users\\rbgnr\\proj") == "C-Users-rbgnr-proj"
+
+    def test_dot_becomes_dash(self):
+        # tmux treats '.' as pane-index separator.
+        assert sanitize_mux_name("my.project.name") == "my-project-name"
+
+    def test_colon_becomes_dash(self):
+        # Both muxes treat ':' as window-index separator.
+        assert sanitize_mux_name("session:1") == "session-1"
+
+    def test_space_becomes_dash(self):
+        assert sanitize_mux_name("my project name") == "my-project-name"
+
+    def test_mixed_whitespace_collapses(self):
+        assert sanitize_mux_name("my\t\nproject \t name") == "my-project-name"
+
+    def test_leading_slash_stripped(self):
+        # Leading unsafe chars get replaced, then leading dashes stripped.
+        assert sanitize_mux_name("/absolute/path") == "absolute-path"
+
+    def test_trailing_slash_stripped(self):
+        assert sanitize_mux_name("project/") == "project"
+
+    def test_all_unsafe_becomes_default(self):
+        # If sanitization reduces to empty, fall back to 'session'.
+        assert sanitize_mux_name("///") == "session"
+        assert sanitize_mux_name("...") == "session"
+        assert sanitize_mux_name(":::") == "session"
+        assert sanitize_mux_name("   ") == "session"
+
+    def test_empty_string_becomes_default(self):
+        assert sanitize_mux_name("") == "session"
+
+    def test_repeated_unsafe_chars_collapse_to_single_dash(self):
+        assert sanitize_mux_name("a//b") == "a-b"
+        assert sanitize_mux_name("a!!@@##b") == "a-b"
+        assert sanitize_mux_name("a///b///c") == "a-b-c"
+
+    def test_mixed_unsafe_chars_all_converted(self):
+        # Realistic nasty input: path with slashes, dots, spaces, colons.
+        raw = "nxs-ensemble/streams-android:main feat.v2"
+        # Expected: every run of unsafe chars becomes a single dash.
+        assert sanitize_mux_name(raw) == "nxs-ensemble-streams-android-main-feat-v2"
+
+    def test_windows_drive_letter_form(self):
+        # "C:/Users/..." form (mixed slashes) — same sanitization.
+        assert sanitize_mux_name("C:/Users/rbgnr/git/streams-android") == "C-Users-rbgnr-git-streams-android"
+
+    def test_unicode_rejected(self):
+        # Only ASCII [A-Za-z0-9_-] survives; unicode → dash.
+        assert sanitize_mux_name("projëct") == "proj-ct"
+        assert sanitize_mux_name("项目") == "session"
+
+    def test_numeric_only_passes_through(self):
+        assert sanitize_mux_name("12345") == "12345"
+
+    def test_already_sanitized_idempotent(self):
+        # Running twice must produce the same output.
+        once = sanitize_mux_name("foo/bar.baz:qux")
+        twice = sanitize_mux_name(once)
+        assert once == twice == "foo-bar-baz-qux"
+
+    def test_shell_metacharacters_all_stripped(self):
+        # Would break `<mux> -t NAME` if not sanitized.
+        for meta in ["$", "`", "\"", "'", "(", ")", "[", "]", "{", "}", "|", "&", ";", "*", "?", "<", ">"]:
+            result = sanitize_mux_name(f"pre{meta}post")
+            assert "/" not in result
+            assert meta not in result, f"metacharacter {meta!r} leaked through"
+            assert result == "pre-post", f"unexpected shape for {meta!r}: {result!r}"
+
+    def test_invariant_no_slash_ever_in_output(self):
+        # Fundamental rule: the output must NEVER contain '/' or '\\'.
+        samples = [
+            "a/b", "a\\b", "/leading", "trailing/",
+            "a/b/c/d/e", "///", "path/with/slashes",
+            "C:\\Windows\\Path",
+        ]
+        for s in samples:
+            out = sanitize_mux_name(s)
+            assert "/" not in out, f"slash leaked for {s!r}: {out!r}"
+            assert "\\" not in out, f"backslash leaked for {s!r}: {out!r}"
+
+    def test_generate_mux_session_name_never_introduces_slash(self):
+        # Integration: confirm generate_mux_session_name output is always safe
+        # even when given project_folder strings that happen to look path-like.
+        adapter = CommandAdapter("win32", "psmux")
+        result = adapter.generate_mux_session_name("avell-i7", "streams-android", [])
+        assert "/" not in result
+        assert "\\" not in result
+        assert result == "avell-i7_streams-android-session-01"
