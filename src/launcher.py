@@ -396,25 +396,15 @@ async def _ensure_claude_running(machine: str, session_name: str, skip_permissio
             log.warning("ensure_claude: local send-keys failed: %s", exc)
         return
 
-    info = FLEET_MACHINES.get(machine, {})
-    alias = info.get("ssh_alias", machine)
-    ssh_args = [
-        "ssh",
-        "-o", f"ConnectTimeout={SSH_TIMEOUT}",
-        "-o", "BatchMode=yes",
-        "-o", "StrictHostKeyChecking=no",
-        alias,
-        _ssh_path_prefix(machine) + send_keys,
-    ]
+    # Route the pre-attach keystroke through the asyncssh pool so Windows
+    # targets don't spawn a fresh sshd-session (and its conhost child) per
+    # attach. exec_shell falls back to subprocess-ssh only if the pool is
+    # unavailable or in backoff.
+    from .executor import SSHExecutor
+    executor = SSHExecutor(machine)
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *ssh_args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            **_win32_asyncio_kwargs(),
-        )
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
-        if proc.returncode != 0:
+        rc, _, stderr = await executor.exec_shell(send_keys, timeout=10)
+        if rc != 0:
             log.warning(
                 "ensure_claude: remote send-keys failed on %s: %s",
                 machine, stderr.decode(errors="replace").strip(),

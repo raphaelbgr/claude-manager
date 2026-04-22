@@ -218,8 +218,15 @@ class SSHExecutor:
         timeout: float,
         input: bytes | None = None,
     ) -> tuple[int, bytes, bytes]:
-        ssh_cmd = self._build_ssh_cmd(cmd)
-        return await run_with_timeout(ssh_cmd, timeout=timeout, input=input)
+        # Route through exec_shell so argv calls share the pool-first /
+        # subprocess-ssh-fallback path — no extra sshd-session per call on
+        # Windows targets. Join per target shell; exec_shell re-applies the
+        # Unix PATH prefix itself.
+        if self._is_windows:
+            shell_str = " ".join(cmd)
+        else:
+            shell_str = " ".join(shlex.quote(t) for t in cmd)
+        return await self.exec_shell(shell_str, timeout=timeout, input=input)
 
     async def exec_shell(
         self,
