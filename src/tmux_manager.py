@@ -20,7 +20,8 @@ class TmuxSession:
     windows: int
     attached: bool
     is_local: bool
-    cwd: str = ""  # pane current directory (empty if unavailable)
+    cwd: str = ""                   # pane current directory (empty if unavailable)
+    pane_current_command: str = ""  # foreground process name in the pane (e.g. "node", "bash")
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -38,6 +39,7 @@ def _dicts_to_sessions(parsed: list[dict], machine: str, is_local: bool) -> list
             attached=d.get("attached", False),
             is_local=is_local,
             cwd=d.get("cwd") or "",
+            pane_current_command=d.get("pane_current_command") or "",
         ))
     return sessions
 
@@ -45,7 +47,7 @@ def _dicts_to_sessions(parsed: list[dict], machine: str, is_local: bool) -> list
 async def list_local_tmux() -> list[TmuxSession]:
     """List all tmux sessions on the local machine."""
     machine = detect_local_machine()
-    fmt = "#{session_name}|#{session_created}|#{session_windows}|#{session_attached}|#{pane_current_path}"
+    fmt = "#{session_name}|#{session_created}|#{session_windows}|#{session_attached}|#{pane_current_path}|#{pane_current_command}"
     try:
         rc, stdout, _ = await run_with_timeout(
             ["tmux", "list-sessions", "-F", fmt],
@@ -79,6 +81,7 @@ async def list_remote_tmux_via_api(machine_name: str, ip: str, dispatch_port: in
                     attached=item.get("attached", False),
                     is_local=False,
                     cwd=item.get("cwd", "") or "",
+                    pane_current_command=item.get("pane_current_command", "") or "",
                 ) for item in data]
     except Exception as exc:
         log.warning("list_remote_tmux(%s): api failed: %s", machine_name, exc)
@@ -87,7 +90,7 @@ async def list_remote_tmux_via_api(machine_name: str, ip: str, dispatch_port: in
 
 async def list_remote_tmux(machine_name: str, ssh_alias: str, mux: str) -> list[TmuxSession]:
     """List tmux/psmux sessions on a remote machine via SSH."""
-    fmt = "#{session_name}|#{session_created}|#{session_windows}|#{session_attached}|#{pane_current_path}"
+    fmt = "#{session_name}|#{session_created}|#{session_windows}|#{session_attached}|#{pane_current_path}|#{pane_current_command}"
     executor = SSHExecutor(machine_name)
 
     async def _run_remote(cmd_str: str) -> tuple[int, str]:
@@ -154,15 +157,28 @@ async def list_all_tmux(local_machine: str, fleet_status: dict) -> list[TmuxSess
         dispatch_port = info.get("dispatch_port")
         ssh_alias = info.get("ssh_alias", machine_name)
         mux = info.get("mux", "tmux")
+        # Windows OpenSSH spawns a fresh PowerShell + ConPTY per exec channel,
+        # which briefly renders as a Windows Terminal window. Listing psmux
+        # via SSH at every scan tick turned this into a visible popup storm
+        # on avell-i7 (2026-04-22). Same mitigation as scan_all: on Windows
+        # targets, SSH fallback only fires when claude-dispatch is entirely
+        # unreachable (no dispatch_port). When the API responds but empty /
+        # degraded, accept empty rather than storm the host's desktop.
+        is_windows = info.get("os") == "win32"
         if dispatch_port:
-            # API first, SSH fallback if empty/failed
             async def _api_with_ssh_fallback(
                 _name=machine_name, _ip=info["ip"], _port=dispatch_port,
-                _alias=ssh_alias, _mux=mux,
+                _alias=ssh_alias, _mux=mux, _is_win=is_windows,
             ):
                 sessions = await list_remote_tmux_via_api(_name, _ip, _port)
-                if not sessions:
+                if not sessions and not _is_win:
                     sessions = await list_remote_tmux(_name, _alias, _mux)
+                elif not sessions and _is_win:
+                    log.info(
+                        "list_remote_tmux(%s): Windows + API empty/degraded; "
+                        "skipping SSH fallback to avoid ConPTY popup storm",
+                        _name,
+                    )
                 return sessions
             tasks.append(_api_with_ssh_fallback())
         else:
@@ -198,20 +214,26 @@ async def create_tmux_session(
     adapter = get_adapter(machine)
     executor = get_executor(machine)
 
+    # tmux supports `-c <cwd>` on new-session so the pane spawns directly in
+    # the target directory. psmux does not — fall back to a follow-up `cd`
+    # via send-keys for psmux only.
+    use_c_flag = bool(cwd) and mux == "tmux"
+
     try:
         if executor.is_local:
-            # Step 1: Create detached session (no -c, psmux doesn't support it)
-            _rc_create, _, stderr = await executor.exec(
-                [mux, "new-session", "-d", "-s", name],
-                timeout=15,
-            )
+            # Step 1: Create detached session. Use -c for tmux; psmux gets cd via send-keys.
+            create_argv = [mux, "new-session", "-d", "-s", name]
+            if use_c_flag:
+                create_argv += ["-c", cwd]
+            _rc_create, _, stderr = await executor.exec(create_argv, timeout=15)
             if _rc_create != 0:
                 err = stderr.decode().strip()
                 log.error("create_tmux_session(%s, %s): %s", machine, name, err)
                 return {"ok": False, "error": err}
 
-            # Step 2: cd into the working directory via send-keys
-            if cwd:
+            # Step 2: cd into the working directory via send-keys (psmux only;
+            # tmux already started in cwd via -c).
+            if cwd and not use_c_flag:
                 cd_cmd = adapter.cd_command(cwd)
                 await executor.exec(
                     [mux, "send-keys", "-t", name, cd_cmd, "Enter"],
@@ -234,18 +256,19 @@ async def create_tmux_session(
                 _rc, _, _se = await executor.exec_shell(cmd_str, timeout=15)
                 return _rc, _se.decode().strip()
 
-            # Step 1: Create empty detached session.
+            # Step 1: Create detached session. Pass cwd so tmux gets -c; psmux
+            # ignores cwd here and uses send-keys below.
             # NOTE: psmux returns rc=0 even when the session already exists
             # (only writes "session 'name' already exists" to stderr). Detect
             # that case explicitly and return an error so the UI sees it.
-            rc, err = await _ssh_run(adapter.mux_create_session(name))
+            rc, err = await _ssh_run(adapter.mux_create_session(name, cwd=cwd))
             err_lower = err.lower() if err else ""
             if rc != 0 or "already exists" in err_lower or "duplicate" in err_lower:
                 log.error("create_tmux_session(%s, %s): %s", machine, name, err or "(no stderr)")
                 return {"ok": False, "error": err or f"failed to create session '{name}'"}
 
-            # Step 2: cd into working directory via send-keys
-            if cwd:
+            # Step 2: cd via send-keys (psmux only; tmux started in cwd via -c).
+            if cwd and not use_c_flag:
                 cd_cmd = adapter.cd_command(cwd)
                 await _ssh_run(adapter.mux_send_keys(name, cd_cmd))
 

@@ -678,6 +678,77 @@ class TestScanAll:
         # local session should still appear
         assert any(s.session_id == "local1" for s in result)
 
+    @pytest.mark.asyncio
+    async def test_windows_target_skips_ssh_fallback_when_api_empty(self):
+        """Windows target + dispatch API returns empty → NO SSH fallback.
+        Regression guard for 2026-04-22 ConPTY popup storm on avell-i7."""
+        fleet = {
+            "avell-i7": {"online": True, "os": "win32", "ip": "192.168.7.103"},
+        }
+        api_mock = AsyncMock(return_value=[])  # API reachable but empty
+        ssh_mock = AsyncMock(return_value=[])
+
+        with (
+            patch("src.scanner.scan_local", return_value=[]),
+            patch("src.scanner.scan_remote_via_api", api_mock),
+            patch("src.scanner.scan_remote", ssh_mock),
+        ):
+            result = await scan_all(local_machine=None, fleet=fleet)
+
+        api_mock.assert_called_once()
+        ssh_mock.assert_not_called(), (
+            "Windows + empty API must NOT trigger SSH fallback — that's the popup storm"
+        )
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_linux_target_still_falls_back_to_ssh_when_api_empty(self):
+        """Linux/macOS targets retain the SSH fallback — SSH is cheap on Unix."""
+        fleet = {
+            "ubuntu-desktop": {"online": True, "os": "linux", "ip": "192.168.7.13"},
+        }
+        api_mock = AsyncMock(return_value=[])
+        ssh_sess = ClaudeSession(
+            "s-ssh", "ubuntu-desktop", "-p", "/p", "/p", "slug", "summary", 1,
+            "2026-04-22T00:00:00+00:00", "idle", None,
+        )
+        ssh_mock = AsyncMock(return_value=[ssh_sess])
+
+        with (
+            patch("src.scanner.scan_local", return_value=[]),
+            patch("src.scanner.scan_remote_via_api", api_mock),
+            patch("src.scanner.scan_remote", ssh_mock),
+        ):
+            result = await scan_all(local_machine=None, fleet=fleet)
+
+        api_mock.assert_called_once()
+        ssh_mock.assert_called_once(), "Linux target should fall back to SSH when API empty"
+        assert any(s.session_id == "s-ssh" for s in result)
+
+    @pytest.mark.asyncio
+    async def test_windows_target_uses_api_results_when_nonempty(self):
+        """Happy path: Windows + API returns data → use it, no SSH."""
+        fleet = {
+            "avell-i7": {"online": True, "os": "win32", "ip": "192.168.7.103"},
+        }
+        api_sess = ClaudeSession(
+            "s-api", "avell-i7", "p", "C:\\p", "C:\\p", "slug", "summary", 1,
+            "2026-04-22T00:00:00+00:00", "idle", None,
+        )
+        api_mock = AsyncMock(return_value=[api_sess])
+        ssh_mock = AsyncMock(return_value=[])
+
+        with (
+            patch("src.scanner.scan_local", return_value=[]),
+            patch("src.scanner.scan_remote_via_api", api_mock),
+            patch("src.scanner.scan_remote", ssh_mock),
+        ):
+            result = await scan_all(local_machine=None, fleet=fleet)
+
+        api_mock.assert_called_once()
+        ssh_mock.assert_not_called()
+        assert any(s.session_id == "s-api" for s in result)
+
 
 # ---------------------------------------------------------------------------
 # _load_active_pids / _mark_active_sessions

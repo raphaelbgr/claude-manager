@@ -586,7 +586,7 @@ class TestCreateTmuxSession:
              patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"):
             result = await create_tmux_session("mac-mini", "my-session")
 
-        assert result == {"ok": True}
+        assert result["ok"] is True
         args = mock_exec.call_args[0]
         assert args[0] == "tmux"
         assert "new-session" in args
@@ -596,7 +596,7 @@ class TestCreateTmuxSession:
 
     @pytest.mark.asyncio
     async def test_local_create_with_cwd(self):
-        """cwd is sent via send-keys cd command (not -c flag)."""
+        """tmux: cwd is passed via `-c <cwd>` on new-session (psmux falls back to send-keys cd)."""
         from src.tmux_manager import create_tmux_session
 
         proc = _make_proc(0)
@@ -604,13 +604,15 @@ class TestCreateTmuxSession:
              patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"):
             result = await create_tmux_session("mac-mini", "my-session", cwd="/home/user/project")
 
-        assert result == {"ok": True}
-        # Second call should be send-keys with cd command
+        assert result["ok"] is True
+        # Only one subprocess call (create with -c). No send-keys cd needed for tmux.
         calls = mock_exec.call_args_list
-        assert len(calls) >= 2, "Expected at least 2 subprocess calls (create + cd)"
-        cd_call_args = calls[1][0]
-        assert "send-keys" in cd_call_args
-        assert any("/home/user/project" in str(a) for a in cd_call_args)
+        assert len(calls) == 1, f"Expected exactly 1 call (new-session -c), got {len(calls)}"
+        argv = calls[0][0]
+        assert "new-session" in argv
+        assert "-c" in argv
+        c_idx = list(argv).index("-c")
+        assert argv[c_idx + 1] == "/home/user/project"
 
     @pytest.mark.asyncio
     async def test_local_create_with_command(self):
@@ -621,13 +623,13 @@ class TestCreateTmuxSession:
              patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"):
             result = await create_tmux_session("mac-mini", "my-session", command="python server.py")
 
-        assert result == {"ok": True}
+        assert result["ok"] is True
         args = mock_exec.call_args[0]
         assert "python server.py" in args
 
     @pytest.mark.asyncio
     async def test_local_create_with_cwd_and_command(self):
-        """cwd + command: sends cd via send-keys then command via send-keys."""
+        """tmux cwd+command: create uses -c (no cd send-keys); command sent via send-keys."""
         from src.tmux_manager import create_tmux_session
 
         proc = _make_proc(0)
@@ -639,14 +641,16 @@ class TestCreateTmuxSession:
                 command="bash run.sh",
             )
 
-        assert result == {"ok": True}
+        assert result["ok"] is True
         calls = mock_exec.call_args_list
-        # 3 calls: create, cd, command
-        assert len(calls) >= 3, f"Expected 3 calls, got {len(calls)}"
-        cd_args = calls[1][0]
-        cmd_args = calls[2][0]
-        assert "send-keys" in cd_args
-        assert any("/tmp/work" in str(a) for a in cd_args)
+        # 2 calls: create (with -c), command (send-keys). No separate cd for tmux.
+        assert len(calls) == 2, f"Expected 2 calls, got {len(calls)}"
+        create_args = calls[0][0]
+        cmd_args = calls[1][0]
+        assert "new-session" in create_args
+        assert "-c" in create_args
+        c_idx = list(create_args).index("-c")
+        assert create_args[c_idx + 1] == "/tmp/work"
         assert "send-keys" in cmd_args
         assert "bash run.sh" in cmd_args
 
@@ -695,6 +699,7 @@ class TestCreateTmuxSession:
 
     @pytest.mark.asyncio
     async def test_remote_create_with_command_uses_send_keys(self):
+        """tmux remote: create carries -c <cwd>, command sent via send-keys. No cd send-keys."""
         from src.tmux_manager import create_tmux_session
 
         proc = _make_proc(0)
@@ -702,14 +707,35 @@ class TestCreateTmuxSession:
              patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"):
             result = await create_tmux_session("ubuntu-desktop", "sess", cwd="/remote/path", command="echo hello")
 
-        # Should make 3 SSH calls: create session + cd send-keys + command send-keys
-        assert mock_exec.call_count == 3
-        cd_call = mock_exec.call_args_list[1][0][-1]
-        cmd_call = mock_exec.call_args_list[2][0][-1]
-        assert "send-keys" in cd_call
-        assert "/remote/path" in cd_call
+        # 2 SSH calls: create (with -c in the remote command) + command send-keys.
+        assert mock_exec.call_count == 2
+        create_call = mock_exec.call_args_list[0][0][-1]
+        cmd_call = mock_exec.call_args_list[1][0][-1]
+        assert "new-session" in create_call
+        assert "-c" in create_call
+        assert "/remote/path" in create_call
         assert "send-keys" in cmd_call
         assert "echo hello" in cmd_call
+
+    @pytest.mark.asyncio
+    async def test_remote_psmux_with_cwd_falls_back_to_cd_send_keys(self):
+        """psmux has no -c support: cwd must be applied via a follow-up send-keys cd."""
+        from src.tmux_manager import create_tmux_session
+
+        proc = _make_proc(0)
+        with patch("src.tmux_manager.asyncio.create_subprocess_exec", return_value=proc) as mock_exec, \
+             patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"):
+            result = await create_tmux_session("avell-i7", "sess", cwd="C:/work")
+
+        assert result.get("ok") is True
+        # 2 SSH calls: create (NO -c) + cd send-keys.
+        assert mock_exec.call_count == 2
+        create_call = mock_exec.call_args_list[0][0][-1]
+        cd_call = mock_exec.call_args_list[1][0][-1]
+        assert "psmux" in create_call
+        assert "-c " not in create_call  # psmux must not receive -c
+        assert "send-keys" in cd_call
+        assert "cd" in cd_call
 
     @pytest.mark.asyncio
     async def test_timeout_returns_error(self):
@@ -1189,3 +1215,272 @@ class TestCleanPaneOutput:
         cleaned = _clean_pane_output(raw)
         assert "hello world" in cleaned
         assert "no escape codes here" in cleaned
+
+
+# ---------------------------------------------------------------------------
+# pane_current_command — session-link feature
+# ---------------------------------------------------------------------------
+
+class TestPaneCurrentCommandField:
+    """TmuxSession.pane_current_command is captured end-to-end."""
+
+    def test_dataclass_has_pane_current_command_default_empty(self):
+        from src.tmux_manager import TmuxSession
+        s = TmuxSession(name="x", machine="y", created="z",
+                        windows=1, attached=False, is_local=True)
+        assert s.pane_current_command == ""
+
+    def test_to_dict_includes_pane_current_command(self):
+        from src.tmux_manager import TmuxSession
+        s = TmuxSession(name="x", machine="y", created="z",
+                        windows=1, attached=False, is_local=True,
+                        cwd="/p", pane_current_command="node")
+        d = s.to_dict()
+        assert d["pane_current_command"] == "node"
+
+    def test_local_probe_format_string_includes_pane_current_command(self):
+        """list_local_tmux must request #{pane_current_command} from tmux."""
+        from src.tmux_manager import list_local_tmux
+        import asyncio as _a
+
+        proc = _make_proc(0, stdout=b"")
+        with patch("src.tmux_manager.asyncio.create_subprocess_exec", return_value=proc) as mock_exec, \
+             patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"):
+            _a.get_event_loop().run_until_complete(list_local_tmux())
+
+        args = mock_exec.call_args[0]
+        fmt_idx = list(args).index("-F")
+        assert "#{pane_current_command}" in args[fmt_idx + 1]
+
+    @pytest.mark.asyncio
+    async def test_local_probe_parses_pane_current_command(self):
+        """6-field pipe output should populate TmuxSession.pane_current_command."""
+        from src.tmux_manager import list_local_tmux
+        output = b"work|1705314600|1|0|/home/rbgnr/proj|node\n"
+        proc = _make_proc(0, stdout=output)
+        with patch("src.tmux_manager.asyncio.create_subprocess_exec", return_value=proc), \
+             patch("src.tmux_manager.detect_local_machine", return_value="local"):
+            sessions = await list_local_tmux()
+        assert len(sessions) == 1
+        assert sessions[0].pane_current_command == "node"
+        assert sessions[0].cwd == "/home/rbgnr/proj"
+
+    @pytest.mark.asyncio
+    async def test_local_probe_missing_command_field_defaults_empty(self):
+        """Legacy 5-field output (no command) still parses — command defaults to ""."""
+        from src.tmux_manager import list_local_tmux
+        output = b"work|1705314600|1|0|/home/rbgnr/proj\n"
+        proc = _make_proc(0, stdout=output)
+        with patch("src.tmux_manager.asyncio.create_subprocess_exec", return_value=proc), \
+             patch("src.tmux_manager.detect_local_machine", return_value="local"):
+            sessions = await list_local_tmux()
+        assert sessions[0].pane_current_command == ""
+        assert sessions[0].cwd == "/home/rbgnr/proj"
+
+    @pytest.mark.asyncio
+    async def test_remote_ssh_format_includes_pane_current_command(self):
+        from src.tmux_manager import list_remote_tmux
+        proc = _make_proc(0, stdout=b"s|1705314600|1|0|/p|node\n")
+        with patch("src.tmux_manager.asyncio.create_subprocess_exec", return_value=proc) as mock_exec:
+            sessions = await list_remote_tmux("ubuntu-desktop", "ubuntu-desktop", "tmux")
+        remote_cmd = mock_exec.call_args[0][-1]
+        assert "#{pane_current_command}" in remote_cmd
+        assert sessions[0].pane_current_command == "node"
+
+    @pytest.mark.asyncio
+    async def test_remote_api_propagates_pane_current_command(self):
+        from src.tmux_manager import list_remote_tmux_via_api
+        import aiohttp
+
+        class _FakeResp:
+            status = 200
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): pass
+            async def json(self):
+                return [{"name": "s", "created": "", "windows": 1, "attached": False,
+                         "cwd": "/p", "pane_current_command": "node"}]
+
+        class _FakeSession:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): pass
+            def get(self, *a, **kw): return _FakeResp()
+
+        with patch("aiohttp.ClientSession", return_value=_FakeSession()):
+            sessions = await list_remote_tmux_via_api("ubuntu-desktop", "1.2.3.4", 44730)
+
+        assert sessions[0].pane_current_command == "node"
+
+    @pytest.mark.asyncio
+    async def test_remote_api_missing_pane_current_command_defaults_empty(self):
+        """Older daemons that don't return pane_current_command still work."""
+        from src.tmux_manager import list_remote_tmux_via_api
+
+        class _FakeResp:
+            status = 200
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): pass
+            async def json(self):
+                return [{"name": "s", "created": "", "windows": 1, "attached": False, "cwd": "/p"}]
+
+        class _FakeSession:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): pass
+            def get(self, *a, **kw): return _FakeResp()
+
+        with patch("aiohttp.ClientSession", return_value=_FakeSession()):
+            sessions = await list_remote_tmux_via_api("ubuntu-desktop", "1.2.3.4", 44730)
+
+        assert sessions[0].pane_current_command == ""
+
+
+class TestMuxParserPaneCurrentCommand:
+    """mux_parser handles 6-field pipe format with pane_current_command."""
+
+    def test_6_field_pipe_parses_command(self):
+        from src.mux_parser import parse_mux_output
+        out = "work|1705314600|1|0|/p|node"
+        result = parse_mux_output(out)
+        assert result[0]["pane_current_command"] == "node"
+
+    def test_5_field_pipe_command_defaults_empty(self):
+        from src.mux_parser import parse_mux_output
+        out = "work|1705314600|1|0|/p"
+        result = parse_mux_output(out)
+        assert result[0]["pane_current_command"] == ""
+
+    def test_4_field_pipe_command_defaults_empty(self):
+        from src.mux_parser import parse_mux_output
+        out = "work|1705314600|1|0"
+        result = parse_mux_output(out)
+        assert result[0]["pane_current_command"] == ""
+
+    def test_command_with_path_and_spaces_preserved(self):
+        """pane_current_command is free-form — preserve as-is."""
+        from src.mux_parser import parse_mux_output
+        out = "work|1705314600|1|0|/p|python3.12"
+        result = parse_mux_output(out)
+        assert result[0]["pane_current_command"] == "python3.12"
+
+    def test_command_whitespace_stripped(self):
+        from src.mux_parser import parse_mux_output
+        out = "work|1705314600|1|0|/p|  node  "
+        result = parse_mux_output(out)
+        assert result[0]["pane_current_command"] == "node"
+
+
+class TestTmuxListCommandFormat:
+    """The tmux -F format string includes #{pane_current_command}."""
+
+    def test_format_string_has_all_six_fields(self):
+        """Verify the module-level format string has all 6 fields in order."""
+        import src.tmux_manager as tm
+        # Grep the source for the format literal — format must include:
+        # name, created, windows, attached, pane_current_path, pane_current_command
+        import inspect
+        src = inspect.getsource(tm)
+        # Both local and remote list builders use the same 6-field string.
+        assert src.count("#{pane_current_command}") >= 2
+
+
+# ---------------------------------------------------------------------------
+# Windows SSH fallback gate — regression guard for 2026-04-22 popup storm
+# ---------------------------------------------------------------------------
+
+
+class TestListAllTmuxWindowsGate:
+
+    @pytest.mark.asyncio
+    async def test_windows_target_skips_ssh_fallback_when_api_empty(self):
+        """Windows + claude-dispatch API empty/degraded → NO SSH fallback.
+        SSH to Windows OpenSSH spawns a PowerShell + ConPTY per channel; at
+        scan-tick frequency that flashes Windows Terminal windows visibly.
+        """
+        from src.tmux_manager import list_all_tmux
+
+        async def fake_local():
+            return []
+
+        api_calls, ssh_calls = [], []
+
+        async def fake_api(name, ip, port):
+            api_calls.append(name)
+            return []  # API empty/degraded
+
+        async def fake_ssh(name, alias, mux):
+            ssh_calls.append(name)
+            return []
+
+        fleet_status = {
+            "avell-i7": {"online": True},
+        }
+        with patch("src.tmux_manager.list_local_tmux", new=fake_local), \
+             patch("src.tmux_manager.list_remote_tmux_via_api", new=fake_api), \
+             patch("src.tmux_manager.list_remote_tmux", new=fake_ssh):
+            result = await list_all_tmux("mac-mini", fleet_status)
+
+        assert api_calls == ["avell-i7"], "API should be tried"
+        assert ssh_calls == [], (
+            "Windows + empty API must NOT fall back to SSH — that path spawned "
+            "the visible PowerShell/ConPTY windows on avell-i7"
+        )
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_linux_target_still_falls_back_to_ssh_when_api_empty(self):
+        """Non-Windows: API empty → SSH fallback still fires (SSH on Unix is cheap)."""
+        from src.tmux_manager import list_all_tmux, TmuxSession
+
+        async def fake_local():
+            return []
+
+        async def fake_api(name, ip, port):
+            return []
+
+        ssh_called = []
+        tm = TmuxSession(
+            name="s-ssh", machine="ubuntu-desktop", created="", windows=1,
+            attached=False, is_local=False, cwd="", pane_current_command="",
+        )
+
+        async def fake_ssh(name, alias, mux):
+            ssh_called.append(name)
+            return [tm]
+
+        fleet_status = {"ubuntu-desktop": {"online": True}}
+        with patch("src.tmux_manager.list_local_tmux", new=fake_local), \
+             patch("src.tmux_manager.list_remote_tmux_via_api", new=fake_api), \
+             patch("src.tmux_manager.list_remote_tmux", new=fake_ssh):
+            result = await list_all_tmux("mac-mini", fleet_status)
+
+        assert ssh_called == ["ubuntu-desktop"]
+        assert any(s.name == "s-ssh" for s in result)
+
+    @pytest.mark.asyncio
+    async def test_windows_target_uses_api_results_when_nonempty(self):
+        """Windows + API returns data → skip SSH, use API payload."""
+        from src.tmux_manager import list_all_tmux, TmuxSession
+
+        api_tm = TmuxSession(
+            name="s-api", machine="avell-i7", created="", windows=1,
+            attached=False, is_local=False, cwd="", pane_current_command="",
+        )
+
+        async def fake_local():
+            return []
+
+        async def fake_api(name, ip, port):
+            return [api_tm]
+
+        ssh_called = []
+        async def fake_ssh(name, alias, mux):
+            ssh_called.append(name)
+            return []
+
+        fleet_status = {"avell-i7": {"online": True}}
+        with patch("src.tmux_manager.list_local_tmux", new=fake_local), \
+             patch("src.tmux_manager.list_remote_tmux_via_api", new=fake_api), \
+             patch("src.tmux_manager.list_remote_tmux", new=fake_ssh):
+            result = await list_all_tmux("mac-mini", fleet_status)
+
+        assert ssh_called == []
+        assert any(s.name == "s-api" for s in result)

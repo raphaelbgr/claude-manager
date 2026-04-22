@@ -810,19 +810,38 @@ async def scan_all(
             continue
         info = FLEET_MACHINES[name]
         dispatch_port = info.get("dispatch_port")
+        # Windows OpenSSH spawns a fresh PowerShell with an attached ConPTY
+        # for every exec channel (ControlMaster doesn't exist on Windows, so
+        # the asyncssh pool can dedupe TCP but not shell spawns). Each of
+        # those PowerShell children briefly embeds in Windows Terminal —
+        # causing the visible window pileup seen 2026-04-22 on avell-i7.
+        # Mitigation: on Windows targets, SSH fallback is only used when
+        # claude-dispatch is UNREACHABLE (no dispatch_port). When the API
+        # is configured but degraded (returns empty / times out on /sessions),
+        # skip the SSH fallback and accept empty — better to show nothing
+        # than to storm the host's desktop.
+        is_windows = info.get("os") == "win32"
         if dispatch_port:
             async def _api_with_ssh_fallback(
                 _name: str = name,
                 _ip: str = info["ip"],
                 _port: int = dispatch_port,
                 _ssh_alias: str = info["ssh_alias"],
+                _is_win: bool = is_windows,
             ) -> list[ClaudeSession]:
                 await _call_progress(_name, 0, 0, "querying API...")
                 sessions = await scan_remote_via_api(_name, _ip, _port)
-                if not sessions:
-                    # API failed or returned empty — fall back to SSH
+                if not sessions and not _is_win:
+                    # API failed or returned empty — fall back to SSH for
+                    # non-Windows targets only (SSH on Unix is cheap).
                     await _call_progress(_name, 0, 0, "connecting...")
                     sessions = await scan_remote(_name, _ssh_alias)
+                elif not sessions and _is_win:
+                    log.info(
+                        "scan_remote(%s): Windows + claude-dispatch API empty/degraded; "
+                        "skipping SSH fallback to avoid ConPTY popup storm",
+                        _name,
+                    )
                 await _call_progress(_name, len(sessions), len(sessions), "done")
                 return sessions
             tasks.append(asyncio.ensure_future(_api_with_ssh_fallback()))
