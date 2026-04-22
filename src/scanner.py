@@ -570,6 +570,15 @@ results.sort(key=lambda s: s['modified'], reverse=True)
 
 # Detect git remotes and commit counts (memoized per cwd)
 import subprocess as _sp
+# Windows: suppress conhost popups per git.exe spawn. Without these flags every
+# _sp.run(['git', ...]) allocates a new console because the parent python was
+# started by sshd without an inherited console — the windows accumulate visibly.
+_win_kw = {}
+if sys.platform == 'win32':
+    _si = _sp.STARTUPINFO()
+    _si.dwFlags |= 0x00000001  # STARTF_USESHOWWINDOW
+    _si.wShowWindow = 0         # SW_HIDE
+    _win_kw = {'creationflags': 0x08000000, 'startupinfo': _si}  # CREATE_NO_WINDOW
 _remote_cache = {}
 _commits_cache = {}
 for r in results:
@@ -581,7 +590,7 @@ for r in results:
     if cwd_key not in _remote_cache:
         try:
             pr = _sp.run(['git', '-C', cwd_key, 'config', '--get', 'remote.origin.url'],
-                         capture_output=True, text=True, timeout=2)
+                         capture_output=True, text=True, timeout=2, **_win_kw)
             _remote_cache[cwd_key] = pr.stdout.strip() if pr.returncode == 0 else ''
         except Exception:
             _remote_cache[cwd_key] = ''
@@ -589,7 +598,7 @@ for r in results:
     if cwd_key not in _commits_cache:
         try:
             pr = _sp.run(['git', '-C', cwd_key, 'rev-list', '--count', 'HEAD'],
-                         capture_output=True, text=True, timeout=2)
+                         capture_output=True, text=True, timeout=2, **_win_kw)
             _commits_cache[cwd_key] = int(pr.stdout.strip()) if pr.returncode == 0 else 0
         except Exception:
             _commits_cache[cwd_key] = 0
