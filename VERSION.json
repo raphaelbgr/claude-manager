@@ -1,8 +1,8 @@
 {
-  "version": 158,
-  "commit": "bfb0b2a",
-  "commit_full": "bfb0b2a0f7ef8c0489bb7b69ef8916040764a890",
+  "version": 160,
+  "commit": "862612e",
+  "commit_full": "862612eb43554a9e82b4848dd85a1683ae1310e8",
   "branch": "master",
-  "date": "2026-04-22T12:38:29-03:00",
-  "message": "test(version-manifest): enforce VERSION.json freshness + schema invariants"
+  "date": "2026-04-22T12:39:28-03:00",
+  "message": "docs: capture todo \u2014 fleet-watchdog ls-remote fallback + 14 tests"
 }
