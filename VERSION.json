@@ -1,8 +1,8 @@
 {
-  "version": 156,
-  "commit": "1bfa6da",
-  "commit_full": "1bfa6daea5117964da994be5aac4bd77a8b34eb1",
+  "version": 158,
+  "commit": "bfb0b2a",
+  "commit_full": "bfb0b2a0f7ef8c0489bb7b69ef8916040764a890",
   "branch": "master",
-  "date": "2026-04-22T12:33:42-03:00",
-  "message": "test(command-adapter): cover sanitize_mux_name edge cases"
+  "date": "2026-04-22T12:38:29-03:00",
+  "message": "test(version-manifest): enforce VERSION.json freshness + schema invariants"
 }
