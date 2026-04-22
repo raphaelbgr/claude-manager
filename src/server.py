@@ -1828,6 +1828,23 @@ async def handle_machine_terminals(request: web.Request) -> web.Response:
     local_machine = request.app.get("local_machine")
     is_local = (machine == local_machine)
 
+    # Remote Windows gate: every SSH exec to a Windows target spawns a fresh
+    # powershell.exe + ConPTY on the remote desktop (no ControlMaster on
+    # Windows OpenSSH — see commit 2483c7e). Probing 5 adapters = 5 popup
+    # flashes per UI terminal-pick. Skip the probe and return only the
+    # adapters guaranteed to exist on every Windows install. wt/pwsh/git-bash
+    # are omitted to avoid false-positives; users who need them can run the
+    # daemon locally on that Windows box so is_local kicks in.
+    if reg_os == "win32" and not is_local:
+        static_adapters = [
+            {"id": "powershell", "name": "PowerShell (classic window)", "priority": 80},
+            {"id": "cmd",        "name": "Command Prompt",               "priority": 30},
+        ]
+        _TERMINAL_CACHE[machine] = (now, static_adapters)
+        return web.json_response({
+            "ok": True, "machine": machine, "os": reg_os, "terminals": static_adapters,
+        })
+
     # Runner shape: async (shell_string) -> (rc, stdout, stderr).
     if is_local:
         # Native shell per OS. Daemon's host OS may differ from reg_os if the

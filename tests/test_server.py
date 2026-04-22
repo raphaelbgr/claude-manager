@@ -1842,3 +1842,138 @@ class TestGetLocalHardware:
             result = _srv._get_local_hardware()
 
         assert result["cpu"]["temp_c"] == 65.0
+
+
+# ---------------------------------------------------------------------------
+# /api/machines/{machine}/terminals — Windows ConPTY popup-storm guard
+# ---------------------------------------------------------------------------
+# Every SSH exec to a Windows target spawns a fresh powershell.exe with an
+# attached ConPTY → visible window flash on the remote's physical desktop.
+# The original handler probed 5 adapters in parallel on every UI picker
+# open = 5 popups per call per Windows machine. Gate: skip SSH probes for
+# remote win32 and return only adapters guaranteed on every Windows install.
+# See commit 2483c7e for the scan-side precedent.
+
+class TestMachineTerminalsWindowsGate:
+    @pytest.fixture(autouse=True)
+    def _clear_terminal_cache(self):
+        from src.server import _TERMINAL_CACHE
+        _TERMINAL_CACHE.clear()
+        yield
+        _TERMINAL_CACHE.clear()
+
+    @pytest.fixture
+    def fleet_machines_patch(self):
+        """Patch src.server.FLEET_MACHINES with fake entries covering all 3 OSes."""
+        fake = {
+            "mac-mini":   {"os": "darwin", "ip": "192.168.7.102", "ssh_alias": "mac-mini"},
+            "ubuntu-desktop": {"os": "linux",  "ip": "192.168.7.13",  "ssh_alias": "ubuntu-desktop"},
+            "avell-i7":   {"os": "win32",  "ip": "192.168.7.103", "ssh_alias": "avell-i7"},
+            "windows-desktop": {"os": "win32", "ip": "192.168.7.101", "ssh_alias": "windows-desktop"},
+        }
+        with patch("src.server.FLEET_MACHINES", fake):
+            yield fake
+
+    async def test_remote_win32_returns_static_adapters_without_ssh(
+        self, fleet_machines_patch,
+    ):
+        """Remote Windows target: no SSH pool calls, static powershell+cmd payload."""
+        pool_mock = MagicMock()
+        pool_mock.run = AsyncMock(side_effect=AssertionError(
+            "pool.run must not be called for remote win32 targets — popup storm guard"
+        ))
+
+        with patch("src.server.detect_local_machine", return_value="mac-mini"), \
+             patch("src.ssh_pool.default_pool", return_value=pool_mock):
+            async with make_client() as cli:
+                resp = await cli.get("/api/machines/avell-i7/terminals")
+                assert resp.status == 200
+                data = await resp.json()
+
+        assert data["ok"] is True
+        assert data["machine"] == "avell-i7"
+        assert data["os"] == "win32"
+        ids = [t["id"] for t in data["terminals"]]
+        # Must contain the universal two, priority-descending.
+        assert ids == ["powershell", "cmd"]
+        # wt/pwsh/git-bash omitted — they're not guaranteed on every Windows.
+        assert "wt" not in ids
+        assert "pwsh" not in ids
+        assert "git-bash" not in ids
+        # Guarantee: pool.run never invoked.
+        pool_mock.run.assert_not_called()
+
+    async def test_remote_linux_still_probes_via_ssh(self, fleet_machines_patch):
+        """Linux targets: SSH pool still runs the probe script (popups aren't a Unix concern)."""
+        pool_mock = MagicMock()
+        pool_mock.run = AsyncMock(return_value=(0, b"", b""))
+
+        with patch("src.server.detect_local_machine", return_value="mac-mini"), \
+             patch("src.ssh_pool.default_pool", return_value=pool_mock):
+            async with make_client() as cli:
+                resp = await cli.get("/api/machines/ubuntu-desktop/terminals")
+                assert resp.status == 200
+                data = await resp.json()
+        assert data["os"] == "linux"
+        # Should have hit the pool at least once (multiple adapter probes are fine).
+        assert pool_mock.run.await_count >= 1
+
+    async def test_remote_darwin_still_probes_via_ssh(self, fleet_machines_patch):
+        pool_mock = MagicMock()
+        pool_mock.run = AsyncMock(return_value=(0, b"", b""))
+        # make_client/_build_app hardcodes local_machine="mac-mini" during
+        # create_app, so we override the key directly on the started app to
+        # flip the daemon's identity for this test.
+        with patch("src.ssh_pool.default_pool", return_value=pool_mock):
+            async with make_client() as cli:
+                cli.server.app["local_machine"] = "ubuntu-desktop"
+                resp = await cli.get("/api/machines/mac-mini/terminals")
+                assert resp.status == 200
+                data = await resp.json()
+        assert data["os"] == "darwin"
+        assert pool_mock.run.await_count >= 1
+
+    async def test_local_win32_still_probes_locally(self, fleet_machines_patch):
+        """When the daemon itself runs on the Windows target, probe locally via
+        subprocess — local probes don't cross SSH, so no popup storm. Verify we
+        go through run_with_timeout (local path), not pool.run (remote path)."""
+        pool_mock = MagicMock()
+        pool_mock.run = AsyncMock(side_effect=AssertionError(
+            "local win32 must use subprocess runner, not SSH pool"
+        ))
+        local_run = AsyncMock(return_value=(0, b"", b""))
+
+        # run_with_timeout is imported inside the handler (`from .subprocess_utils
+        # import run_with_timeout`), so patching src.server.run_with_timeout is
+        # a no-op — patch at the source module.
+        with patch("src.ssh_pool.default_pool", return_value=pool_mock), \
+             patch("src.subprocess_utils.run_with_timeout", local_run):
+            async with make_client() as cli:
+                cli.server.app["local_machine"] = "avell-i7"
+                resp = await cli.get("/api/machines/avell-i7/terminals")
+                assert resp.status == 200
+                data = await resp.json()
+        assert data["os"] == "win32"
+        pool_mock.run.assert_not_called()
+        assert local_run.await_count >= 1
+
+    async def test_remote_win32_result_is_cached(self, fleet_machines_patch):
+        """Cache pollution guard: static payload on first call must populate
+        the TTL cache so subsequent calls return the same payload instantly
+        (no risk of the probe-path ever running for this machine)."""
+        from src.server import _TERMINAL_CACHE
+        pool_mock = MagicMock()
+        pool_mock.run = AsyncMock(side_effect=AssertionError("must never SSH-probe"))
+        with patch("src.server.detect_local_machine", return_value="mac-mini"), \
+             patch("src.ssh_pool.default_pool", return_value=pool_mock):
+            async with make_client() as cli:
+                await cli.get("/api/machines/avell-i7/terminals")
+                # Cache populated?
+                assert "avell-i7" in _TERMINAL_CACHE
+                cached_ids = [t["id"] for t in _TERMINAL_CACHE["avell-i7"][1]]
+                assert cached_ids == ["powershell", "cmd"]
+                # Second call returns cached value — still no SSH.
+                resp2 = await cli.get("/api/machines/avell-i7/terminals")
+                data2 = await resp2.json()
+                assert [t["id"] for t in data2["terminals"]] == ["powershell", "cmd"]
+        pool_mock.run.assert_not_called()
