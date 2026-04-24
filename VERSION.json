@@ -1,8 +1,8 @@
 {
-  "version": 165,
-  "commit": "04c7e91",
-  "commit_full": "04c7e91a562e10bf4b4ac3804beea019d69abb0f",
+  "version": 166,
+  "commit": "88c9e6c",
+  "commit_full": "88c9e6c8b99f69661b7da251fdb54255acf62b39",
   "branch": "master",
-  "date": "2026-04-22T18:15:41-03:00",
-  "message": "fix(scanner): exclude OS temp paths + resolve git.exe on Windows remotes"
+  "date": "2026-04-23T21:08:43-03:00",
+  "message": "fix(server): JSON 500 middleware + bundled in-flight launch/scan work"
 }
