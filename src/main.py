@@ -98,7 +98,11 @@ def print_banner(bind: str, port: int) -> None:
         "  Press Ctrl+C to stop.",
         "",
     ]
-    print("\n".join(lines))
+    text = "\n".join(lines)
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        print(text.encode("ascii", errors="replace").decode("ascii"))
 
 
 def _daemonize(bind: str, port: int) -> None:

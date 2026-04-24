@@ -7,7 +7,7 @@ dependencies = ["aiohttp>=3.9", "psutil>=5.9", "asyncssh>=2.14"]
 
 [project.optional-dependencies]
 tui = ["textual>=3.0"]
-desktop = ["pywebview>=5.0", "Pillow>=10.0"]
+desktop = ["pywebview>=5.0; sys_platform != 'win32'", "Pillow>=10.0"]
 desktop-tray = ["pystray>=0.19", "Pillow>=10.0"]
 all = ["claude-manager[tui,desktop]"]
 
