@@ -228,10 +228,11 @@ def run_desktop(bind: str = "0.0.0.0", port: int = 44740):
     """Launch the native desktop GUI with embedded API server."""
     try:
         import webview
-    except ImportError:
-        print("Desktop GUI requires: pip install pywebview")
-        print("Optional tray icon: pip install pystray Pillow")
-        sys.exit(1)
+    except ImportError as exc:
+        raise ImportError(
+            "Desktop GUI requires: pip install pywebview\n"
+            "Optional tray icon: pip install pystray Pillow"
+        ) from exc
 
     base_url = f"http://{bind}:{port}"
     local_url = f"http://localhost:{port}"
