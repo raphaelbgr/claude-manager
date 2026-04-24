@@ -1,8 +1,8 @@
 {
-  "version": 166,
-  "commit": "88c9e6c",
-  "commit_full": "88c9e6c8b99f69661b7da251fdb54255acf62b39",
+  "version": 170,
+  "commit": "89e9af9",
+  "commit_full": "89e9af95c42f52e8ec2794e592585ed02770de6e",
   "branch": "master",
-  "date": "2026-04-23T21:08:43-03:00",
-  "message": "fix(server): JSON 500 middleware + bundled in-flight launch/scan work"
+  "date": "2026-04-24T02:19:11-03:00",
+  "message": "fix(main): auto-open browser on Windows pywebview-fallback path"
 }
