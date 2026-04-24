@@ -114,6 +114,30 @@ def project_id(session) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Basename-only fallback (used by the /api/projects consolidation pass)
+# ---------------------------------------------------------------------------
+
+def canonical_basename(session) -> str:
+    """Lowercased directory basename of a session's cwd (or project_path).
+
+    Always returns the bare basename regardless of git_remote — unlike
+    project_id() which prefers normalized-remote over path. Used by the
+    /api/projects two-pass consolidation to decide whether two differently-ided
+    sessions (one with a full remote id, one basename-only) point at the same
+    repo. Returns '' when neither cwd nor project_path is set — sentinel
+    meaning "cannot consolidate by basename".
+    """
+    path = getattr(session, "cwd", "") or getattr(session, "project_path", "") or ""
+    if not path:
+        return ""
+    normalised = path.replace("\\", "/").rstrip("/")
+    if not normalised:
+        return ""
+    basename = normalised.split("/")[-1]
+    return basename.lower()
+
+
+# ---------------------------------------------------------------------------
 # Display name
 # ---------------------------------------------------------------------------
 

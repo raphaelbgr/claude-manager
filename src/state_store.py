@@ -32,7 +32,8 @@ class StateStore:
 
     async def update_tmux(self, tmux: list) -> None:
         self._state["tmux"] = tmux
-        await self._push("tmux", [t.to_dict() for t in tmux])
+        from .session_link import enrich_tmux_dicts
+        await self._push("tmux", enrich_tmux_dicts(tmux, self._state.get("sessions", [])))
 
     async def update_fleet(self, fleet: dict) -> None:
         self._state["fleet"] = fleet

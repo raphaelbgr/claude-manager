@@ -14,3 +14,7 @@ venv/
 # Fleet watchdog version file (generated, not committed)
 VERSION.json
 VERSION.json.bak
+
+# Claude Code agent worktrees + graphify cache (local only)
+.claude/
+graphify-out/

@@ -39,6 +39,7 @@ KNOWN_SERVER_API_ROUTES = {
     "/api/fleet",
     "/api/tmux",
     "/api/tmux/create",
+    "/api/tmux/verify",
     "/api/tmux/connect",
     "/api/tmux/connect-remote",
     "/api/tmux/kill",
@@ -268,10 +269,12 @@ class TestAPIEndpointReferences:
         assert "/api/mkdir" in html
 
     def test_pin_endpoint_referenced(self, html):
-        assert "/api/sessions/pin" in html
+        # Frontend pins at project granularity (not per-session) — the project
+        # card is the pin target on the Projects tab.
+        assert "/api/projects/pin" in html
 
     def test_unpin_endpoint_referenced(self, html):
-        assert "/api/sessions/unpin" in html
+        assert "/api/projects/unpin" in html
 
     def test_archive_endpoint_referenced(self, html):
         assert "/api/sessions/archive" in html
@@ -623,3 +626,426 @@ class TestHardwareInfoFieldNames:
     def test_hardware_endpoint_used_in_fetch(self, html):
         """/api/hardware fetch call is present in the UI."""
         assert "/api/hardware" in html
+
+
+# ---------------------------------------------------------------------------
+# Tmux → Claude session linking (feature)
+# ---------------------------------------------------------------------------
+
+class TestTmuxClaudeLink:
+    """The TmuxCard renders a chip and the SessionCard exposes data-session-id."""
+
+    def test_tmuxcard_renders_claude_session_chip(self, html):
+        """TmuxCard reads the link fields the server emits."""
+        assert "session.claude_session_id" in html
+        assert "session.claude_session_name" in html
+
+    def test_chip_invokes_on_select_callback(self, html):
+        """Chip must call onSelectClaudeSession(session.claude_session_id)."""
+        assert "onSelectClaudeSession(session.claude_session_id)" in html
+
+    def test_chip_classname_defined(self, html):
+        """Chip uses a specific class name so we can tweak it later."""
+        assert "claude-link-chip" in html
+
+    def test_session_card_has_data_session_id_attribute(self, html):
+        """SessionCard compact row exposes data-session-id so selection can scroll to it."""
+        assert "'data-session-id': sessionId" in html
+
+    def test_select_function_scrolls_into_view(self, html):
+        """The selection function must use scrollIntoView to bring the row into focus."""
+        assert "scrollIntoView" in html
+        assert "session-flash" in html
+
+    def test_flash_keyframes_defined(self, html):
+        """Flash animation is defined in CSS."""
+        assert "@keyframes session-flash" in html
+
+    def test_tmuxpanel_propagates_callback(self, html):
+        """TmuxPanel signature includes onSelectClaudeSession."""
+        # Count occurrences — must appear in: TmuxCard sig, TmuxPanel sig,
+        # App prop forward, chip onClick body, and the scroll helper.
+        assert html.count("onSelectClaudeSession") >= 4
+
+    def test_shell_filter_behavior_is_server_side(self, html):
+        """Frontend should not re-filter shells — server already suppresses the chip."""
+        # No client-side re-check on pane_current_command that would double-filter.
+        # (We just render the chip when claude_session_id is present.)
+        assert "session.claude_session_id" in html
+
+
+class TestSessionSelectSequence:
+    """selectClaudeSession must expand → await rAF → scrollIntoView → scrollend → flash."""
+
+    def test_uses_scrollend_with_timeout_fallback(self, html):
+        """Must listen for 'scrollend' AND provide a setTimeout fallback."""
+        assert "scrollend" in html
+        # A 700ms fallback timeout is present for Safari <17
+        assert "setTimeout(finish, 700)" in html
+
+    def test_expands_collapsed_card_before_scroll(self, html):
+        """selectClaudeSession mutates expandedCards before the scroll step."""
+        assert "expandedCardsRef.current.has(sessionId)" in html
+        assert "setExpandedCards" in html
+
+    def test_awaits_animation_frame_after_expand(self, html):
+        """Two requestAnimationFrame awaits between expand and scroll — one for
+        React commit, one for layout settle."""
+        # Look for the nextFrame helper used to sequence the steps.
+        assert "requestAnimationFrame" in html
+
+    def test_flash_animation_waits_before_removal(self, html):
+        """The flash class is added, then removed after 1500ms."""
+        assert "'session-flash'" in html
+        assert "1500" in html  # flash duration
+
+    def test_scroll_parent_discovery(self, html):
+        """Walks up from target node to find a scrollable ancestor."""
+        assert "overflowY" in html
+
+
+class TestAttachToMatchingTmux:
+    """SessionCard renders an Attach-to-tmux button when matching tmux exists."""
+
+    def test_attach_button_is_gated_on_matching_tmux(self, html):
+        """Button only rendered from the matchingTmux array."""
+        assert "matchingTmux" in html
+        assert "attach-tmux-btn" in html
+
+    def test_attach_button_calls_on_attach_tmux(self, html):
+        """Clicking the button invokes onAttachTmux with the tmux object."""
+        assert "onAttachTmux(t)" in html
+
+    def test_reverse_lookup_indexed_by_cwd(self, html):
+        """App builds tmuxByCwdKey from tmuxSessions."""
+        assert "tmuxByCwdKey" in html
+        assert "getMatchingTmux" in html
+
+    def test_session_card_receives_matching_tmux_prop(self, html):
+        """SessionsPanel passes matchingTmux prop down to SessionCard."""
+        assert "matchingTmux: getMatchingTmux" in html
+
+    def test_attach_button_has_cast_connected_icon(self, html):
+        """Uses the 'cast_connected' Material icon to signal 'attach to live stream'."""
+        assert "cast_connected" in html
+
+    def test_attach_button_dedupes_by_machine_and_name(self, html):
+        """Reverse index dedupes on machine:name to avoid duplicate buttons."""
+        assert "seen.add(id)" in html or "seen.add(" in html
+
+
+class TestAncestorExpansion:
+    """Clicking a tmux chip must uncollapse MachineSection + ProjectSection + ProjectsView project."""
+
+    def test_machine_section_syncs_external_collapse_state(self, html):
+        """MachineSection has useEffect watching collapseState[collapseKey]."""
+        # The helper var externalOpen must appear in MachineSection's body.
+        idx = html.find("function MachineSection")
+        end = html.find("function ProjectSection", idx)
+        slice_ = html[idx:end]
+        assert "externalOpen" in slice_
+        assert "setIsOpen(externalOpen)" in slice_
+
+    def test_project_section_syncs_external_collapse_state(self, html):
+        """ProjectSection has the same sync effect."""
+        idx = html.find("function ProjectSection")
+        end = idx + 2000
+        slice_ = html[idx:end]
+        assert "externalOpen" in slice_
+        assert "setIsOpen(externalOpen)" in slice_
+
+    def test_projects_view_listens_for_session_expand_event(self, html):
+        """ProjectsView listens for 'expandProjectForSession' event from App."""
+        assert "expandProjectForSession" in html
+        assert "addEventListener('expandProjectForSession'" in html
+
+    def test_select_session_opens_machine_and_project_keys(self, html):
+        """selectClaudeSession mutates collapseState with both keys."""
+        assert "[machineKey]: true" in html
+        assert "[projKey]: true" in html
+
+    def test_select_session_dispatches_project_view_event(self, html):
+        """App dispatches the expand event for the Project tab."""
+        assert "dispatchEvent(new CustomEvent('expandProjectForSession'" in html
+
+    def test_proj_key_matches_project_section_format(self, html):
+        """Key format 'project:${machine}:${path}' must match ProjectSection's collapseKey."""
+        assert "`project:${machine}:${projectPath}`" in html  # used in ProjectSection render site
+        assert "`project:${session.machine}:${projectPath}`" in html  # used in selectClaudeSession
+
+
+class TestBidirectionalFlashAndLabel:
+    """Attach button shows new label AND flashes the matching tmux card."""
+
+    def test_attach_label_contains_on_and_arrow(self, html):
+        """Label text uses 'Attach on \\u203A <name>' (JS escape for ›) instead of 'Attach <name>'."""
+        # The JS source literal is 'Attach on \\u203A ${...}' — not evaluated at
+        # parse time until the browser runs it.
+        assert "Attach on \\u203A" in html
+
+    def test_handle_attach_and_flash_defined(self, html):
+        """Wrapper handler that starts attach AND flashes the tmux card."""
+        assert "handleAttachAndFlash" in html
+
+    def test_session_card_uses_flashing_wrapper(self, html):
+        """SessionsPanel is given the wrapper as onAttachTmux."""
+        assert "onAttachTmux: handleAttachAndFlash" in html
+
+    def test_select_tmux_card_defined(self, html):
+        """App defines selectTmuxCard for the reverse direction."""
+        assert "selectTmuxCard" in html
+
+    def test_tmux_card_has_data_tmux_key(self, html):
+        """TmuxCard root element carries data-tmux-key for querySelector."""
+        assert "'data-tmux-key'" in html
+        assert "session.machine}:${session.session_name || session.name}" in html
+
+    def test_select_tmux_card_opens_tmux_machine_section(self, html):
+        """Calling selectTmuxCard sets collapseState['tmux:${machine}']=true."""
+        assert "`tmux:${machine}`" in html
+
+    def test_css_escape_used_for_querySelector(self, html):
+        """data-tmux-key values may contain colons — must be CSS.escape'd."""
+        assert "CSS.escape" in html
+
+    def test_scroll_and_flash_helper_shared(self, html):
+        """Both selectClaudeSession and selectTmuxCard use scrollAndFlash."""
+        assert "scrollAndFlash" in html
+        assert html.count("scrollAndFlash") >= 3  # definition + 2 call sites
+
+
+class TestSessionCardHighlightChip:
+    """SessionCard renders a highlight-only chip per matching tmux (mirror of tmux-side chip)."""
+
+    def test_chip_class_defined(self, html):
+        assert "tmux-link-chip" in html
+
+    def test_chip_uses_left_arrow_glyph(self, html):
+        """Session-side chip uses \u25c2 (left-pointing triangle) — mirror of \u25b8 on the tmux side."""
+        assert "\\u25c2" in html or "\u25c2" in html
+
+    def test_chip_click_calls_on_highlight_tmux(self, html):
+        """Chip onClick invokes onHighlightTmux(t)."""
+        assert "onHighlightTmux(t)" in html
+
+    def test_session_card_accepts_on_highlight_tmux_prop(self, html):
+        """Prop is destructured in SessionCard signature."""
+        start = html.find("function SessionCard({")
+        end = html.find("}", start)
+        assert "onHighlightTmux" in html[start:end]
+
+    def test_sessions_panel_forwards_on_highlight_tmux(self, html):
+        """SessionsPanel passes onHighlightTmux down to SessionCardMemo."""
+        assert "onHighlightTmux," in html
+
+    def test_app_wires_highlight_to_select_tmux_card(self, html):
+        """App provides onHighlightTmux using selectTmuxCard — no attach side effect."""
+        assert "onHighlightTmux: (t) => selectTmuxCard(t.machine" in html
+
+    def test_highlight_chip_does_not_trigger_attach(self, html):
+        """Highlight path does NOT route through handleAttachAndFlash or handleConnectTmux."""
+        # The specific wiring line references selectTmuxCard directly, not the attach wrapper.
+        wiring_line = next(
+            (ln for ln in html.splitlines() if "onHighlightTmux:" in ln),
+            "",
+        )
+        assert "handleAttachAndFlash" not in wiring_line
+        assert "handleConnectTmux" not in wiring_line
+
+
+class TestFrontendPathNormalization:
+    """Frontend reverse lookup must handle Windows paths / case differences."""
+
+    def test_normalize_path_helper_defined(self, html):
+        """normalizePath helper unifies separators, trailing slashes, and case."""
+        assert "normalizePath" in html
+        assert "replace(/\\\\/g, '/')" in html  # backslash → forward slash
+
+    def test_normalizer_lowercases(self, html):
+        """Normalization lowercases so 'Immunefi' vs 'immunefi' still match."""
+        # We expect a .toLowerCase() call inside normalizePath.
+        start = html.find("const normalizePath")
+        assert start != -1
+        end = html.find("};", start)
+        assert ".toLowerCase()" in html[start:end]
+
+    def test_index_and_lookup_both_normalize(self, html):
+        """Both the index builder and the lookup must call normalizePath — otherwise
+        asymmetric normalization produces false negatives."""
+        idx = html.find("tmuxByCwdKey = useMemo")
+        getter_start = html.find("const getMatchingTmux")
+        getter_end = html.find("}, [tmuxByCwdKey, tmuxSessions])", getter_start)
+        # both sections reference normalizePath
+        assert "normalizePath(t.cwd)" in html[idx:idx + 600]
+        assert "normalizePath(p)" in html[getter_start:getter_end]
+
+
+class TestAttachPreflightVerify:
+    """handleConnectTmux must probe /api/tmux/verify before spawning a terminal."""
+
+    def test_verify_endpoint_called_in_handle_connect_tmux(self, html):
+        start = html.find("const handleConnectTmux")
+        end = html.find("}, [skipPermissions])", start)
+        body = html[start:end]
+        assert "/api/tmux/verify" in body
+
+    def test_verify_sends_machine_and_session_name(self, html):
+        start = html.find("const handleConnectTmux")
+        end = html.find("}, [skipPermissions])", start)
+        body = html[start:end]
+        assert "session_name: name" in body
+        assert "machine: session.machine" in body
+
+    def test_dead_session_toasts_and_returns(self, html):
+        """alive=false → toast error and stop, no attach."""
+        start = html.find("const handleConnectTmux")
+        end = html.find("}, [skipPermissions])", start)
+        body = html[start:end]
+        assert "alive === false" in body
+        assert "refreshing list" in body
+        # Must early-return before the connect POST.
+        alive_false_pos = body.find("alive === false")
+        return_pos = body.find("return;", alive_false_pos)
+        connect_pos = body.find("/api/tmux/connect", alive_false_pos)
+        assert 0 <= return_pos < connect_pos, "connect should not run when alive=false"
+
+    def test_dead_session_triggers_rescan(self, html):
+        """When a ghost session is detected, kick /api/sessions/scan so the list updates."""
+        start = html.find("const handleConnectTmux")
+        end = html.find("}, [skipPermissions])", start)
+        body = html[start:end]
+        assert "/api/sessions/scan" in body
+
+    def test_verify_failure_degrades_gracefully(self, html):
+        """If /api/tmux/verify itself errors, we still attempt the attach."""
+        start = html.find("const handleConnectTmux")
+        end = html.find("}, [skipPermissions])", start)
+        body = html[start:end]
+        # A try/catch wraps the verify call so a network error is swallowed
+        # and the code falls through to the attach POST.
+        assert "catch (_verr)" in body or "// Network error on verify" in body
+
+    def test_remote_attach_also_preflights_verify(self, html):
+        """handleRemoteAttach must also call /api/tmux/verify — otherwise
+        clicking 'Remote' on a ghost tmux spawns a terminal that SSH-fails
+        and leaks psmux keystrokes into the local zsh shell (windows-desktop
+        offline regression)."""
+        start = html.find("const handleRemoteAttach")
+        assert start != -1
+        end = html.find("}, [])", start)
+        body = html[start:end]
+        assert "/api/tmux/verify" in body
+        assert "alive === false" in body
+        # Must return before the connect-remote POST
+        alive_pos = body.find("alive === false")
+        return_pos = body.find("return;", alive_pos)
+        connect_pos = body.find("/api/tmux/connect-remote", alive_pos)
+        assert 0 <= return_pos < connect_pos, "Remote attach must early-return on dead session"
+
+
+class TestGetMatchingTmuxPrimaryPath:
+    """getMatchingTmux trusts server-computed claude_session_id as the primary signal."""
+
+    def test_claude_session_id_checked_first(self, html):
+        """Server-computed link is the primary path; cwd lookup is fallback."""
+        start = html.find("const getMatchingTmux")
+        end = html.find("}, [tmuxByCwdKey, tmuxSessions])", start)
+        assert start != -1 and end != -1
+        body = html[start:end]
+        # Both code paths exist
+        assert "t.claude_session_id === session.session_id" in body
+        # Primary check appears BEFORE the cwd-based loop
+        primary = body.find("claude_session_id === session.session_id")
+        secondary = body.find("candidatePaths")
+        assert 0 <= primary < secondary
+
+    def test_match_dedupes_between_paths(self, html):
+        """When both paths match the same tmux, it appears only once."""
+        start = html.find("const getMatchingTmux")
+        end = html.find("}, [tmuxByCwdKey, tmuxSessions])", start)
+        body = html[start:end]
+        assert "seen" in body and "seen.add" in body
+
+    def test_dependency_array_includes_tmux_sessions(self, html):
+        """useCallback must invalidate when tmuxSessions changes — otherwise
+        stale primary-path results."""
+        assert "}, [tmuxByCwdKey, tmuxSessions])" in html
+
+
+class TestProjectTabWiresTmuxLink:
+    """Regression guard: the Project tab default view must also receive the
+    tmux-link props, not just the Machine tab. Missing wiring here caused the
+    chip to silently not render despite server-side enrichment being correct."""
+
+    def test_projects_view_signature_accepts_tmux_props(self, html):
+        start = html.find("function ProjectsView({")
+        end = html.find("})", start) + 1
+        sig = html[start:end]
+        assert "getMatchingTmux" in sig
+        assert "onAttachTmux" in sig
+        assert "onHighlightTmux" in sig
+
+    def test_app_passes_tmux_props_to_projects_view(self, html):
+        """App → ProjectsView call site must forward all three props."""
+        start = html.find("h(ProjectsView, {")
+        end = html.find("})", start) + 1
+        call = html[start:end]
+        assert "getMatchingTmux" in call
+        assert "onAttachTmux: handleAttachAndFlash" in call
+        assert "onHighlightTmux:" in call
+
+    def test_project_run_list_signature_accepts_tmux_props(self, html):
+        start = html.find("function ProjectRunList({")
+        end = html.find("})", start) + 1
+        sig = html[start:end]
+        assert "getMatchingTmux" in sig
+        assert "onAttachTmux" in sig
+        assert "onHighlightTmux" in sig
+
+    def test_project_run_list_forwards_tmux_props_to_session_card(self, html):
+        """Inside ProjectRunList, SessionCardMemo must receive matchingTmux."""
+        # Narrow to the ProjectRunList body.
+        start = html.find("function ProjectRunList({")
+        end = html.find("\nfunction ", start + 10)
+        body = html[start:end]
+        assert "matchingTmux: getMatchingTmux ? getMatchingTmux(s) : []" in body
+        assert "onAttachTmux," in body
+        assert "onHighlightTmux," in body
+
+
+class TestNewSessionTerminalPicker:
+    """The 'New session' / 'New tmux' buttons in the project row have terminal pickers.
+
+    Regression guard: previously these were plain buttons without the TerminalPicker
+    caret, so the user couldn't pick iTerm2 / Terminal.app / Alacritty. The Resume
+    and SSH+psmux buttons had them; New did not.
+    """
+
+    def test_new_session_button_wrapped_in_split_btn_group(self, html):
+        # Walk back 2500 chars — the split-btn-group wraps button + TerminalPicker
+        # with the label sitting deep inside the button's children.
+        idx = html.find("'SSH + New session'")
+        if idx == -1:
+            idx = html.find("'New session'")
+        assert idx != -1
+        window = html[max(0, idx - 2500):idx + 200]
+        assert "split-btn-group" in window
+
+    def test_new_session_button_has_terminal_picker(self, html):
+        """The picker for New session has variant='launch' and passes terminal_id."""
+        idx = html.find("onNewSessionInProject(machine, projectPath, tid)")
+        assert idx != -1, "TerminalPicker onPick must forward terminal_id to onNewSessionInProject"
+
+    def test_new_tmux_button_has_terminal_picker(self, html):
+        idx = html.find("onNewTmuxInProject(machine, projectPath, tid)")
+        assert idx != -1, "TerminalPicker onPick must forward terminal_id to onNewTmuxInProject"
+
+    def test_handlers_accept_terminal_id_argument(self, html):
+        """Both handler signatures take a 3rd terminalId arg and forward it."""
+        assert "handleNewSessionInProject = useCallback(async (machine, cwd, terminalId)" in html
+        assert "handleNewTmuxInProject = useCallback(async (machine, cwd, terminalId)" in html
+
+    def test_handlers_send_terminal_id_in_request_body(self, html):
+        """terminal_id must go into the /api/sessions/launch body."""
+        # Both handlers include terminal_id in the JSON.stringify
+        assert html.count("terminal_id: terminalId || null") >= 2

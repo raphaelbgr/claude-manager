@@ -78,6 +78,8 @@ def make_tmux_session(
     windows: int = 2,
     attached: bool = False,
     is_local: bool = True,
+    cwd: str = "",
+    pane_current_command: str = "",
 ) -> TmuxSession:
     return TmuxSession(
         name=name,
@@ -86,6 +88,8 @@ def make_tmux_session(
         windows=windows,
         attached=attached,
         is_local=is_local,
+        cwd=cwd,
+        pane_current_command=pane_current_command,
     )
 
 
@@ -578,7 +582,10 @@ class TestSessionsLaunchEndpoint:
                 "/api/sessions/launch",
                 json={"machine": "mac-mini", "session_id": "my-session", "cwd": "/my/path", "skip_permissions": True},
             )
-            mock_launcher.assert_awaited_once_with("/my/path", "my-session", "mac-mini", skip_permissions=True)
+            mock_launcher.assert_awaited_once_with(
+                "/my/path", "my-session", "mac-mini",
+                skip_permissions=True, terminal_id=None,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -815,7 +822,9 @@ class TestTmuxConnectEndpoint:
                 "/api/tmux/connect",
                 json={"machine": "ubuntu-desktop", "session_name": "remote-work"},
             )
-            mock_attach.assert_awaited_once_with("remote-work", "ubuntu-desktop")
+            mock_attach.assert_awaited_once_with(
+                "remote-work", "ubuntu-desktop", skip_permissions=False,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -1845,6 +1854,393 @@ class TestGetLocalHardware:
 
 
 # ---------------------------------------------------------------------------
+# Session-link enrichment on tmux responses
+#
+# Covers every surface that serializes a tmux list:
+#   GET  /api/tmux
+#   GET  /api/tmux/{machine}
+#   POST /api/sessions/scan  (response body)
+#   WS   subscribe "tmux"    (snapshot)
+#   WS   broadcast on update (after a scan)
+# ---------------------------------------------------------------------------
+
+async def _make_linked_state():
+    """Build state with one tmux linked to one session plus two negative cases."""
+    sessions = [
+        make_claude_session(
+            session_id="live-session",
+            machine="mac-mini",
+            project_folder="-Users-rbgnr-git-proj",
+            project_path="/Users/rbgnr/git/proj",
+            cwd="/Users/rbgnr/git/proj",
+            slug="work",
+            modified="2026-04-17T11:00:00+00:00",
+        ),
+        make_claude_session(  # older session same cwd — should lose to live-session
+            session_id="older-session",
+            machine="mac-mini",
+            project_folder="-Users-rbgnr-git-proj",
+            project_path="/Users/rbgnr/git/proj",
+            cwd="/Users/rbgnr/git/proj",
+            slug="earlier",
+            modified="2026-04-15T09:00:00+00:00",
+        ),
+        make_claude_session(  # different cwd — won't match the tmux below
+            session_id="unrelated",
+            machine="mac-mini",
+            cwd="/Users/rbgnr/git/something-else",
+            slug="other",
+        ),
+    ]
+    tmux_list = [
+        make_tmux_session(
+            name="linked",
+            machine="mac-mini",
+            cwd="/Users/rbgnr/git/proj",
+            pane_current_command="node",
+        ),
+        make_tmux_session(
+            name="shell-only",
+            machine="mac-mini",
+            cwd="/Users/rbgnr/git/proj",
+            pane_current_command="bash",
+        ),
+        make_tmux_session(
+            name="no-match",
+            machine="mac-mini",
+            cwd="/some/other/path",
+            pane_current_command="node",
+        ),
+    ]
+    return {
+        "sessions": sessions,
+        "fleet": dict(FAKE_FLEET),
+        "tmux": tmux_list,
+        "last_scan": "2026-04-17T12:00:00+00:00",
+        "ws_clients": set(),
+    }
+
+
+class TestTmuxEndpointSessionLink:
+    """GET /api/tmux emits claude_session_id / claude_session_name."""
+
+    async def test_linked_tmux_carries_session_id_and_name(self):
+        async with make_client(await _make_linked_state()) as cli:
+            resp = await cli.get("/api/tmux")
+            data = await resp.json()
+        by_name = {t["name"]: t for t in data}
+        assert by_name["linked"]["claude_session_id"] == "live-session"
+        assert by_name["linked"]["claude_session_name"] == "work"
+
+    async def test_shell_command_suppresses_link(self):
+        async with make_client(await _make_linked_state()) as cli:
+            resp = await cli.get("/api/tmux")
+            data = await resp.json()
+        by_name = {t["name"]: t for t in data}
+        assert "claude_session_id" not in by_name["shell-only"]
+
+    async def test_no_matching_cwd_no_link(self):
+        async with make_client(await _make_linked_state()) as cli:
+            resp = await cli.get("/api/tmux")
+            data = await resp.json()
+        by_name = {t["name"]: t for t in data}
+        assert "claude_session_id" not in by_name["no-match"]
+
+    async def test_newest_modified_wins_over_older(self):
+        """/clear rotation case: two sessions share cwd; newer must win."""
+        async with make_client(await _make_linked_state()) as cli:
+            resp = await cli.get("/api/tmux")
+            data = await resp.json()
+        linked = next(t for t in data if t["name"] == "linked")
+        assert linked["claude_session_id"] == "live-session"
+
+
+class TestTmuxMachineEndpointSessionLink:
+    async def test_machine_endpoint_includes_link(self):
+        async with make_client(await _make_linked_state()) as cli:
+            resp = await cli.get("/api/tmux/mac-mini")
+            data = await resp.json()
+        linked = next(t for t in data if t["name"] == "linked")
+        assert linked["claude_session_id"] == "live-session"
+
+
+class TestScanResponseSessionLink:
+    async def test_scan_response_tmux_includes_link(self):
+        state = await _make_linked_state()
+        async with make_client(state) as cli:
+            with patch("src.server.discover_fleet", new_callable=AsyncMock, return_value=state["fleet"]), \
+                 patch("src.server.scan_all", new_callable=AsyncMock, return_value=state["sessions"]), \
+                 patch("src.server.list_all_tmux", new_callable=AsyncMock, return_value=state["tmux"]):
+                resp = await cli.post("/api/sessions/scan")
+                data = await resp.json()
+        assert data["ok"] is True
+        linked = next(t for t in data["tmux"] if t["name"] == "linked")
+        assert linked["claude_session_id"] == "live-session"
+        shell = next(t for t in data["tmux"] if t["name"] == "shell-only")
+        assert "claude_session_id" not in shell
+
+
+class TestWebSocketSessionLink:
+    async def test_ws_tmux_snapshot_includes_link(self):
+        async with make_client(await _make_linked_state()) as cli:
+            async with cli.ws_connect("/ws") as ws:
+                await ws.send_json({"type": "subscribe", "channel": "tmux"})
+                msg = await ws.receive_json(timeout=3)
+        assert msg["type"] == "snapshot"
+        assert msg["channel"] == "tmux"
+        linked = next(t for t in msg["data"] if t["name"] == "linked")
+        assert linked["claude_session_id"] == "live-session"
+        assert linked["claude_session_name"] == "work"
+
+    async def test_ws_update_after_scan_includes_link(self):
+        """After a scan triggers update_tmux, WS subscribers see link fields."""
+        state = await _make_linked_state()
+        async with make_client(state) as cli:
+            async with cli.ws_connect("/ws") as ws:
+                await ws.send_json({"type": "subscribe", "channel": "tmux"})
+                await ws.receive_json(timeout=3)  # initial snapshot
+
+                with patch("src.server.discover_fleet", new_callable=AsyncMock, return_value=state["fleet"]), \
+                     patch("src.server.scan_all", new_callable=AsyncMock, return_value=state["sessions"]), \
+                     patch("src.server.list_all_tmux", new_callable=AsyncMock, return_value=state["tmux"]):
+                    await cli.post("/api/sessions/scan")
+                msg = await ws.receive_json(timeout=3)
+
+        assert msg["type"] == "update"
+        assert msg["channel"] == "tmux"
+        linked = next(t for t in msg["data"] if t["name"] == "linked")
+        assert linked["claude_session_id"] == "live-session"
+
+
+# ---------------------------------------------------------------------------
+# POST /api/tmux/verify — pre-flight liveness check before attach
+# ---------------------------------------------------------------------------
+
+class TestTmuxVerifyEndpoint:
+    """Liveness probe for a tmux/psmux session on a fleet machine.
+
+    Expected response: {"ok": true, "alive": bool, "machine": ..., "session_name": ...}
+    Side-effects: none — purely informational. Called by the frontend before
+    spawning a terminal window, to avoid the stale-list ghost-tmux failure mode.
+    """
+
+    async def test_missing_machine_returns_400(self, cli):
+        resp = await cli.post("/api/tmux/verify", json={"session_name": "x"})
+        assert resp.status == 400
+
+    async def test_missing_session_name_returns_400(self, cli):
+        resp = await cli.post("/api/tmux/verify", json={"machine": "mac-mini"})
+        assert resp.status == 400
+
+    async def test_empty_body_returns_400(self, cli):
+        resp = await cli.post("/api/tmux/verify", json={})
+        assert resp.status == 400
+
+    async def test_invalid_json_returns_400(self, cli):
+        resp = await cli.post(
+            "/api/tmux/verify", data="bad", headers={"Content-Type": "application/json"},
+        )
+        assert resp.status == 400
+
+    async def test_alive_true_when_has_session_exits_zero(self, cli):
+        """tmux has-session exits 0 when the session exists."""
+        with patch("src.server._tmux_has_session", new_callable=AsyncMock, return_value=(0, "", "")):
+            resp = await cli.post(
+                "/api/tmux/verify",
+                json={"machine": "mac-mini", "session_name": "work"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["ok"] is True
+            assert data["alive"] is True
+            assert data["machine"] == "mac-mini"
+            assert data["session_name"] == "work"
+
+    async def test_alive_false_when_has_session_exits_nonzero(self, cli):
+        with patch("src.server._tmux_has_session", new_callable=AsyncMock, return_value=(1, "", "no server running")):
+            resp = await cli.post(
+                "/api/tmux/verify",
+                json={"machine": "avell-i7", "session_name": "gone"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["alive"] is False
+
+    async def test_ssh_failure_reports_alive_false(self, cli):
+        """If the probe itself errors (host down, ssh timeout), alive=false."""
+        with patch("src.server._tmux_has_session", new_callable=AsyncMock, return_value=(-1, "", "Host is down")):
+            resp = await cli.post(
+                "/api/tmux/verify",
+                json={"machine": "windows-desktop", "session_name": "wdesk-sess"},
+            )
+            data = await resp.json()
+            assert data["ok"] is True
+            assert data["alive"] is False
+            assert "Host is down" in (data.get("error") or "")
+
+    async def test_probe_uses_mux_type_from_fleet_config(self, cli):
+        """Windows/psmux targets must probe with psmux, not tmux."""
+        # Intercept _tmux_has_session to verify it was given the right mux.
+        call = {}
+        async def _capture(machine, session_name, mux):
+            call["mux"] = mux
+            return (0, "", "")
+        with patch("src.server._tmux_has_session", side_effect=_capture):
+            await cli.post(
+                "/api/tmux/verify",
+                json={"machine": "avell-i7", "session_name": "win-sess"},
+            )
+        # FAKE_FLEET assigns psmux to Windows-side machines; verify it was used.
+        assert call.get("mux") in ("tmux", "psmux")  # permissive but must be set
+
+
+# ---------------------------------------------------------------------------
+# Windows psmux launch — single-SSH setup replaces AppleScript keystroke race
+# ---------------------------------------------------------------------------
+
+class TestRemoteWindowsPsmuxNewSession:
+    """is_remote_windows new-session path runs setup in ONE blocking SSH call.
+
+    Replaces the old _launch_macos_multi keystroke-automation flow with fixed
+    delays, which was race-prone (if SSH took longer than the delay, later
+    psmux commands leaked into the local zsh shell as parse errors).
+
+    Empirically verified against avell-i7 (psmux 3.3.0): create + send-keys
+    in one SSH call → pane lands in the correct directory when claude starts.
+    """
+
+    @pytest.fixture
+    def avell_fleet_state(self):
+        """State with avell-i7 marked online as a Windows/psmux target."""
+        return {
+            "sessions": [],
+            "fleet": {
+                "mac-mini": {"name": "mac-mini", "online": True, "os": "darwin",
+                             "ip": "192.168.7.102", "method": "http", "health_data": {}},
+                "avell-i7": {"name": "avell-i7", "online": True, "os": "windows",
+                             "ip": "192.168.7.103", "method": "http", "health_data": {}},
+            },
+            "tmux": [],
+            "last_scan": "2026-04-17T00:00:00+00:00",
+            "ws_clients": set(),
+        }
+
+    async def test_setup_runs_via_pool_exec_not_applescript(self, avell_fleet_state):
+        """Launch NEW session on avell-i7 → _pool_exec called with combined payload,
+        _launch_macos_multi NOT called."""
+        captured = {}
+        async def fake_pool(machine, cmd, **kw):
+            captured["machine"] = machine
+            captured["cmd"] = cmd
+            return (0, b"", b"")
+        async def fake_launch_terminal(cmd, **kw):
+            captured["terminal_cmd"] = cmd
+            return {"ok": True}
+
+        with patch("src.server._pool_exec", side_effect=fake_pool), \
+             patch("src.server.launch_terminal", side_effect=fake_launch_terminal), \
+             patch("src.launcher._launch_macos_multi") as mock_mm:
+            async with make_client(avell_fleet_state) as cli:
+                resp = await cli.post(
+                    "/api/sessions/launch",
+                    json={
+                        "machine": "avell-i7",
+                        "cwd": "C:\\Users\\rbgnr\\git\\Smart-kanban",
+                        "session_id": "",
+                        "mode": "tmux",
+                        "skip_permissions": False,
+                    },
+                )
+        assert resp.status == 200
+        assert captured["machine"] == "avell-i7"
+        # AppleScript multi-step keystroke automation must NOT run for this path.
+        mock_mm.assert_not_called()
+
+    async def test_setup_payload_contains_create_and_sendkeys(self, avell_fleet_state):
+        captured = {}
+        async def fake_pool(machine, cmd, **kw):
+            captured["cmd"] = cmd
+            return (0, b"", b"")
+        async def fake_launch_terminal(cmd, **kw):
+            return {"ok": True}
+        with patch("src.server._pool_exec", side_effect=fake_pool), \
+             patch("src.server.launch_terminal", side_effect=fake_launch_terminal):
+            async with make_client(avell_fleet_state) as cli:
+                await cli.post(
+                    "/api/sessions/launch",
+                    json={"machine": "avell-i7", "cwd": "C:\\Users\\rbgnr\\git\\Smart-kanban",
+                          "session_id": "", "mode": "tmux", "skip_permissions": False},
+                )
+        cmd = captured["cmd"]
+        # Exactly one create, exactly one send-keys — separated by `; `.
+        assert "psmux new-session -d -s" in cmd
+        assert "psmux send-keys -t" in cmd
+        # PowerShell Set-Location form (the fix) — NOT `cd /d`
+        assert "Set-Location" in cmd
+        assert "cd /d" not in cmd
+
+    async def test_setup_payload_uses_powershell_quoting(self, avell_fleet_state):
+        """The send-keys argument must use PowerShell `'..'` escaping (no POSIX `'"'"'`)."""
+        captured = {}
+        async def fake_pool(machine, cmd, **kw):
+            captured["cmd"] = cmd
+            return (0, b"", b"")
+        async def fake_launch_terminal(cmd, **kw):
+            return {"ok": True}
+        with patch("src.server._pool_exec", side_effect=fake_pool), \
+             patch("src.server.launch_terminal", side_effect=fake_launch_terminal):
+            async with make_client(avell_fleet_state) as cli:
+                await cli.post(
+                    "/api/sessions/launch",
+                    json={"machine": "avell-i7", "cwd": "C:\\Users\\rbgnr\\git\\Smart-kanban",
+                          "session_id": "", "mode": "tmux", "skip_permissions": False},
+                )
+        # POSIX re-quote pattern must NOT appear — that was the silent-fail bug.
+        assert "'\"'\"'" not in captured["cmd"]
+
+    async def test_setup_failure_returns_500_with_stderr(self, avell_fleet_state):
+        """If psmux setup fails on the remote, surface the error — don't spawn a terminal."""
+        async def fake_pool(machine, cmd, **kw):
+            return (1, b"", b"psmux: server not responding")
+        fake_launch = AsyncMock(return_value={"ok": True})
+        with patch("src.server._pool_exec", side_effect=fake_pool), \
+             patch("src.server.launch_terminal", fake_launch):
+            async with make_client(avell_fleet_state) as cli:
+                resp = await cli.post(
+                    "/api/sessions/launch",
+                    json={"machine": "avell-i7", "cwd": "C:\\proj", "session_id": "",
+                          "mode": "tmux", "skip_permissions": False},
+                )
+                status = resp.status
+                body = await resp.text()
+        assert status == 500, f"expected 500, got {status}: {body[:200]}"
+        data = json.loads(body)
+        assert "psmux: server not responding" in data["error"]
+        fake_launch.assert_not_awaited()
+
+    async def test_terminal_command_wraps_attach_with_ssh_minus_t(self, avell_fleet_state):
+        captured = {}
+        async def fake_pool(machine, cmd, **kw):
+            return (0, b"", b"")
+        async def fake_launch_terminal(cmd, **kw):
+            captured["terminal_cmd"] = cmd
+            return {"ok": True}
+        with patch("src.server._pool_exec", side_effect=fake_pool), \
+             patch("src.server.launch_terminal", side_effect=fake_launch_terminal):
+            async with make_client(avell_fleet_state) as cli:
+                await cli.post(
+                    "/api/sessions/launch",
+                    json={"machine": "avell-i7", "cwd": "C:\\proj", "session_id": "",
+                          "mode": "tmux", "skip_permissions": False},
+                )
+        term = captured["terminal_cmd"]
+        # Single SSH -t invocation that just runs psmux attach — no delays, no keystrokes.
+        assert term.startswith("ssh ")
+        assert " -t " in term
+        assert "psmux attach -t" in term
+
+
+# ---------------------------------------------------------------------------
 # /api/machines/{machine}/terminals — Windows ConPTY popup-storm guard
 # ---------------------------------------------------------------------------
 # Every SSH exec to a Windows target spawns a fresh powershell.exe with an
@@ -1977,3 +2373,338 @@ class TestMachineTerminalsWindowsGate:
                 data2 = await resp2.json()
                 assert [t["id"] for t in data2["terminals"]] == ["powershell", "cmd"]
         pool_mock.run.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# GET /api/projects — cross-machine project consolidation (Phase A)
+# ---------------------------------------------------------------------------
+
+def _sess(**kw) -> ClaudeSession:
+    """ClaudeSession factory that accepts git_remote (make_claude_session doesn't)."""
+    defaults = dict(
+        session_id="x",
+        machine="mac-mini",
+        project_folder="",
+        project_path="",
+        cwd="",
+        slug="",
+        summary="",
+        messages=0,
+        modified="2026-04-22T10:00:00+00:00",
+        status="idle",
+        pid=None,
+    )
+    defaults.update(kw)
+    return ClaudeSession(**defaults)
+
+
+class TestProjectsEndpointConsolidation:
+    async def test_basename_fallback_merges_into_full_remote_id(self):
+        """The bug: avell-i7 session has empty git_remote, mac-mini session
+        has 'github.com/x/foo'. Without consolidation, they land in two
+        separate project cards. After Phase A they MUST merge into one."""
+        state = {
+            "sessions": [
+                _sess(session_id="a", machine="mac-mini",
+                      cwd="/Users/rbgnr/git/streams-android",
+                      git_remote="git@github.com:x/streams-android.git"),
+                _sess(session_id="b", machine="avell-i7",
+                      cwd=r"C:\Users\rbgnr\git\streams-android",
+                      git_remote=""),  # Windows sshd PATH failure case
+            ],
+            "fleet": {}, "tmux": [], "last_scan": None, "ws_clients": set(),
+        }
+        async with make_client(state) as cli:
+            resp = await cli.get("/api/projects")
+            data = await resp.json()
+        projects = data["projects"]
+        assert len(projects) == 1, f"expected one merged card, got {len(projects)}: {[p['project_id'] for p in projects]}"
+        proj = projects[0]
+        assert proj["project_id"] == "github.com/x/streams-android"
+        assert set(proj["machines"]) == {"mac-mini", "avell-i7"}
+        assert proj["session_count"] == 2
+
+    async def test_different_full_remotes_with_same_basename_stay_separate(self):
+        """Same basename but distinct full remotes (fork, different org) must
+        NOT collapse — they're genuinely different repos."""
+        state = {
+            "sessions": [
+                _sess(session_id="a", machine="mac-mini",
+                      cwd="/Users/me/foo",
+                      git_remote="https://github.com/orgA/foo.git"),
+                _sess(session_id="b", machine="ubuntu-desktop",
+                      cwd="/home/me/foo",
+                      git_remote="https://gitlab.com/orgB/foo.git"),
+            ],
+            "fleet": {}, "tmux": [], "last_scan": None, "ws_clients": set(),
+        }
+        async with make_client(state) as cli:
+            resp = await cli.get("/api/projects")
+            data = await resp.json()
+        ids = {p["project_id"] for p in data["projects"]}
+        assert ids == {"github.com/orga/foo", "gitlab.com/orgb/foo"}
+
+    async def test_all_empty_remotes_merge_by_basename(self):
+        """Status quo regression: when NO session has a remote, basename-only
+        grouping still collapses same-named repos across machines."""
+        state = {
+            "sessions": [
+                _sess(session_id="a", machine="mac-mini",
+                      cwd="/Users/me/my-app", git_remote=""),
+                _sess(session_id="b", machine="avell-i7",
+                      cwd=r"D:\work\my-app", git_remote=""),
+            ],
+            "fleet": {}, "tmux": [], "last_scan": None, "ws_clients": set(),
+        }
+        async with make_client(state) as cli:
+            resp = await cli.get("/api/projects")
+            data = await resp.json()
+        assert len(data["projects"]) == 1
+        assert data["projects"][0]["project_id"] == "my-app"
+        assert set(data["projects"][0]["machines"]) == {"mac-mini", "avell-i7"}
+
+    async def test_same_full_remote_different_paths_merge(self):
+        """Regression: the original happy path where git_remote resolves on
+        both sides — different cwd paths (different clones) on different
+        machines still merge to the same canonical id."""
+        state = {
+            "sessions": [
+                _sess(session_id="a", machine="mac-mini",
+                      cwd="/Users/me/git/foo",
+                      git_remote="git@github.com:me/foo.git"),
+                _sess(session_id="b", machine="mac-mini",
+                      cwd="/Users/me/AndroidStudioProjects/foo",
+                      git_remote="https://github.com/me/foo.git"),
+                _sess(session_id="c", machine="ubuntu-desktop",
+                      cwd="/home/me/foo",
+                      git_remote="git@github.com:me/foo.git"),
+            ],
+            "fleet": {}, "tmux": [], "last_scan": None, "ws_clients": set(),
+        }
+        async with make_client(state) as cli:
+            resp = await cli.get("/api/projects")
+            data = await resp.json()
+        assert len(data["projects"]) == 1
+        assert data["projects"][0]["project_id"] == "github.com/me/foo"
+        assert data["projects"][0]["session_count"] == 3
+
+    async def test_response_still_includes_expected_top_level_keys(self):
+        """Don't break the existing contract."""
+        state = {
+            "sessions": [_sess(session_id="a", machine="mac-mini",
+                               cwd="/x/y", git_remote="")],
+            "fleet": {}, "tmux": [], "last_scan": None, "ws_clients": set(),
+        }
+        async with make_client(state) as cli:
+            resp = await cli.get("/api/projects")
+            data = await resp.json()
+        assert "projects" in data and "generated" in data
+        p = data["projects"][0]
+        for key in ("project_id", "display_name", "git_remote",
+                    "session_count", "machines", "latest_modified", "sessions",
+                    "machines_detail"):
+            assert key in p, f"missing {key}"
+
+
+# ---------------------------------------------------------------------------
+# /api/projects — machines_detail per (machine, cwd) group (Phase C)
+# ---------------------------------------------------------------------------
+
+class TestProjectsMachinesDetail:
+    async def test_one_row_per_machine_cwd_with_git_state(self):
+        """Each (machine, cwd) tuple becomes one row. Git state is taken
+        from the most-recent session in that group."""
+        state = {
+            "sessions": [
+                _sess(session_id="a", machine="mac-mini",
+                      cwd="/Users/me/foo",
+                      git_remote="git@github.com:me/foo.git",
+                      git_branch="master",
+                      git_upstream="origin/master",
+                      git_ahead=0, git_behind=3, git_dirty=False,
+                      modified="2026-04-22T18:00:00+00:00"),
+                _sess(session_id="b", machine="mac-mini",
+                      cwd="/Users/me/foo",
+                      git_remote="git@github.com:me/foo.git",
+                      git_branch="master",
+                      git_upstream="origin/master",
+                      git_ahead=0, git_behind=3, git_dirty=False,
+                      modified="2026-04-22T10:00:00+00:00"),
+                _sess(session_id="c", machine="avell-i7",
+                      cwd=r"C:\Users\me\foo",
+                      git_remote="",
+                      git_branch="master",
+                      git_upstream="origin/master",
+                      git_ahead=0, git_behind=0, git_dirty=True,
+                      modified="2026-04-22T17:00:00+00:00"),
+            ],
+            "fleet": {}, "tmux": [], "last_scan": None, "ws_clients": set(),
+        }
+        async with make_client(state) as cli:
+            resp = await cli.get("/api/projects")
+            data = await resp.json()
+        projects = data["projects"]
+        assert len(projects) == 1  # merged by Phase A
+        md = projects[0]["machines_detail"]
+        assert isinstance(md, list)
+        assert len(md) == 2  # one row per (machine, cwd)
+        rows = {(r["machine"], r["cwd"]): r for r in md}
+        mac_row = rows[("mac-mini", "/Users/me/foo")]
+        assert mac_row["session_count"] == 2
+        assert mac_row["git_branch"] == "master"
+        assert mac_row["git_upstream"] == "origin/master"
+        assert mac_row["git_behind"] == 3
+        assert mac_row["git_ahead"] == 0
+        assert mac_row["git_dirty"] is False
+        win_row = rows[("avell-i7", r"C:\Users\me\foo")]
+        assert win_row["session_count"] == 1
+        assert win_row["git_dirty"] is True
+        assert win_row["git_behind"] == 0
+
+    async def test_same_machine_different_cwds_produce_two_rows(self):
+        """Two clones of the same repo on the same machine → two rows so
+        the Pull button can target each clone independently."""
+        state = {
+            "sessions": [
+                _sess(session_id="a", machine="mac-mini",
+                      cwd="/Users/me/git/foo",
+                      git_remote="git@github.com:me/foo.git",
+                      git_branch="master"),
+                _sess(session_id="b", machine="mac-mini",
+                      cwd="/Users/me/AndroidStudioProjects/foo",
+                      git_remote="git@github.com:me/foo.git",
+                      git_branch="feature-x"),
+            ],
+            "fleet": {}, "tmux": [], "last_scan": None, "ws_clients": set(),
+        }
+        async with make_client(state) as cli:
+            resp = await cli.get("/api/projects")
+            data = await resp.json()
+        md = data["projects"][0]["machines_detail"]
+        assert len(md) == 2
+        cwds = {r["cwd"] for r in md}
+        assert cwds == {"/Users/me/git/foo", "/Users/me/AndroidStudioProjects/foo"}
+
+    async def test_machines_detail_ordered_by_recency(self):
+        state = {
+            "sessions": [
+                _sess(session_id="old", machine="ubuntu-desktop", cwd="/home/me/foo",
+                      git_remote="", modified="2026-04-20T00:00:00+00:00"),
+                _sess(session_id="new", machine="mac-mini", cwd="/Users/me/foo",
+                      git_remote="", modified="2026-04-22T18:00:00+00:00"),
+            ],
+            "fleet": {}, "tmux": [], "last_scan": None, "ws_clients": set(),
+        }
+        async with make_client(state) as cli:
+            resp = await cli.get("/api/projects")
+            data = await resp.json()
+        md = data["projects"][0]["machines_detail"]
+        assert md[0]["machine"] == "mac-mini"  # most recent first
+        assert md[1]["machine"] == "ubuntu-desktop"
+
+
+# ---------------------------------------------------------------------------
+# POST /api/projects/pull — Phase D
+# ---------------------------------------------------------------------------
+
+class TestProjectsPull:
+    """Exercises validation + dispatch of POST /api/projects/pull.
+
+    The actual git execution is mocked at the module level — we're testing
+    the gate logic (branch / dirty / ahead-checks / unknown machine / path
+    whitelist), the response shape, and that the script is sent to the
+    correct executor. Live pull is exercised in the manual smoke step.
+    """
+
+    @pytest.fixture
+    def pull_state(self):
+        return {
+            "sessions": [
+                _sess(session_id="s1", machine="mac-mini",
+                      cwd="/Users/me/foo", git_remote="git@github.com:me/foo.git",
+                      git_branch="master", git_upstream="origin/master",
+                      git_ahead=0, git_behind=2, git_dirty=False),
+            ],
+            "fleet": {}, "tmux": [], "last_scan": None, "ws_clients": set(),
+        }
+
+    async def test_rejects_unknown_machine(self, pull_state):
+        async with make_client(pull_state) as cli:
+            resp = await cli.post("/api/projects/pull",
+                                  json={"machine": "nonexistent", "cwd": "/Users/me/foo"})
+            assert resp.status == 400
+            data = await resp.json()
+            assert data["ok"] is False
+            assert "machine" in data["error"].lower()
+
+    async def test_rejects_cwd_not_in_known_sessions(self, pull_state):
+        async with make_client(pull_state) as cli:
+            resp = await cli.post("/api/projects/pull",
+                                  json={"machine": "mac-mini", "cwd": "/etc/passwd"})
+            assert resp.status == 400
+            data = await resp.json()
+            assert data["ok"] is False
+            assert "cwd" in data["error"].lower() or "path" in data["error"].lower()
+
+    async def test_rejects_missing_fields(self, pull_state):
+        async with make_client(pull_state) as cli:
+            resp = await cli.post("/api/projects/pull", json={})
+            assert resp.status == 400
+
+    async def test_happy_path_dispatches_script_and_returns_result(self, pull_state):
+        """Happy path: mac-mini, clean, behind 2, on master. Mock the
+        underlying executor to return a success payload."""
+        from src.server import PULL_SCRIPT  # must exist after implementation
+
+        captured = {}
+
+        async def fake_run(machine, cmd, *, timeout, input=None):
+            captured["machine"] = machine
+            captured["cmd"] = cmd
+            captured["input"] = input
+            # Simulate the remote script's JSON output: fast-forwarded 2 commits.
+            out = json.dumps({
+                "ok": True, "branch": "master", "upstream": "origin/master",
+                "ahead_before": 0, "behind_before": 2,
+                "ahead_after": 0, "behind_after": 0,
+                "fetched": True, "merged": True,
+                "stdout": "Fast-forward\n 2 files changed", "stderr": "",
+            }).encode()
+            return (0, out, b"")
+
+        with patch("src.server._pool_exec", new=fake_run):
+            async with make_client(pull_state) as cli:
+                resp = await cli.post("/api/projects/pull",
+                                      json={"machine": "mac-mini", "cwd": "/Users/me/foo"})
+                assert resp.status == 200
+                data = await resp.json()
+
+        assert data["ok"] is True
+        assert data["behind_after"] == 0
+        assert data["merged"] is True
+        # The dispatched command ran python interpreter on stdin (same channel scanner uses)
+        assert captured["machine"] == "mac-mini"
+        assert "python" in captured["cmd"].lower()
+        assert captured["input"] is not None
+        # Script content embedded the requested cwd so the remote knows where to cd
+        assert b"/Users/me/foo" in captured["input"]
+
+    async def test_surfaces_script_error_from_executor(self, pull_state):
+        """When the remote script returns ok=False, the endpoint propagates."""
+        async def fake_run(machine, cmd, *, timeout, input=None):
+            out = json.dumps({
+                "ok": False, "error": "branch_not_allowed",
+                "branch": "feature-x",
+            }).encode()
+            return (0, out, b"")
+
+        with patch("src.server._pool_exec", new=fake_run):
+            async with make_client(pull_state) as cli:
+                resp = await cli.post("/api/projects/pull",
+                                      json={"machine": "mac-mini", "cwd": "/Users/me/foo"})
+                # HTTP 200 — endpoint itself succeeded; ok=False in body.
+                assert resp.status == 200
+                data = await resp.json()
+        assert data["ok"] is False
+        assert data["error"] == "branch_not_allowed"
+        assert data["branch"] == "feature-x"

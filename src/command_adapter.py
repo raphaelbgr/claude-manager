@@ -161,9 +161,48 @@ class CommandAdapter:
         resume = self.claude_resume_command(session_id, skip_permissions)
         return self.chain_commands(cd, resume)
 
-    def mux_create_session(self, name: str) -> str:
-        """Build mux new-session command (creates a detached session)."""
-        return f"{self.mux_type} new-session -d -s {shlex.quote(name)}"
+    def build_pane_command(
+        self,
+        cwd: str,
+        session_id: str | None = None,
+        skip_permissions: bool = False,
+    ) -> str:
+        """Build cd + claude for the shell that psmux/tmux spawns INSIDE its pane.
+
+        Modern psmux on Windows defaults to PowerShell, not cmd.exe — so
+        `cd /d` fails and `&&` is unsupported in PS 5.1. This method emits
+        Set-Location + `;` (or cmd.exe form if explicitly mux_type=tmux).
+        For tmux on Unix, delegates to the bash path.
+
+        Pass session_id=None for a fresh session; otherwise a --resume is built.
+        """
+        claude = "claude"
+        if skip_permissions:
+            claude += " --dangerously-skip-permissions"
+        if session_id is not None:
+            claude = self.claude_resume_command(session_id, skip_permissions)
+
+        if self.mux_type == "psmux":
+            # psmux panes run PowerShell by default on modern Windows. Escape
+            # single quotes by doubling them (PowerShell string rules).
+            cwd_ps = cwd.replace("'", "''")
+            return f"Set-Location '{cwd_ps}'; {claude}"
+        # tmux on Unix — bash pane
+        cd = f"cd {shlex.quote(cwd)}"
+        return self.chain_commands(cd, claude)
+
+    def mux_create_session(self, name: str, cwd: str | None = None) -> str:
+        """Build mux new-session command (creates a detached session).
+
+        When ``cwd`` is supplied and the target is tmux, add ``-c <cwd>`` so
+        the pane spawns directly in the target directory. psmux does not
+        support ``-c`` — callers that need a starting cwd on psmux must fall
+        back to a follow-up ``cd`` via send-keys.
+        """
+        base = f"{self.mux_type} new-session -d -s {shlex.quote(name)}"
+        if cwd and self.mux_type == "tmux":
+            return f"{base} -c {shlex.quote(cwd)}"
+        return base
 
     def mux_send_keys(self, session_name: str, command: str) -> str:
         """Build mux send-keys command.
@@ -178,8 +217,32 @@ class CommandAdapter:
         quoted_cmd = shlex.quote(command)
         return f"{self.mux_type} send-keys -t {quoted_name} {quoted_cmd} Enter"
 
-    def mux_attach(self, session_name: str) -> str:
-        """Build mux attach command."""
+    @staticmethod
+    def _ps_single_quote(s: str) -> str:
+        """PowerShell single-quoted literal: double any internal quote."""
+        return "'" + s.replace("'", "''") + "'"
+
+    def mux_send_keys_ps(self, session_name: str, command: str) -> str:
+        """Like mux_send_keys but safe when the OUTER shell is PowerShell.
+
+        POSIX shlex.quote produces `'foo'\"'\"'bar'` for strings with quotes —
+        PowerShell parses that as five separate string-literal arguments, not
+        one quoted token. The command then reaches psmux as multiple args and
+        the pane either gets nothing or the wrong fragment. PowerShell single-
+        quoted literals escape `'` by doubling it, so we build that form here.
+        """
+        qn = self._ps_single_quote(session_name)
+        qc = self._ps_single_quote(command)
+        return f"{self.mux_type} send-keys -t {qn} {qc} Enter"
+
+    def mux_attach(self, session_name: str, cc_mode: bool = False) -> str:
+        """Build mux attach command.
+
+        ``cc_mode=True`` inserts ``-CC`` between ``tmux`` and ``attach`` to
+        enable iTerm2's native tmux integration. Ignored for psmux.
+        """
+        if cc_mode and self.mux_type == "tmux":
+            return f"tmux -CC attach -t {shlex.quote(session_name)}"
         return f"{self.mux_type} attach -t {shlex.quote(session_name)}"
 
     def mux_kill_session(self, session_name: str) -> str:

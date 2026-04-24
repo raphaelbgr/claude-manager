@@ -427,21 +427,18 @@ class TestTimeoutHandling:
 # ---------------------------------------------------------------------------
 
 def _wrap_wait_for(proc):
-    """
-    Returns a coroutine-compatible side_effect for asyncio.wait_for.
+    """Side_effect for asyncio.wait_for.
 
-    The first call returns the proc (simulating create_subprocess_exec).
-    The second call returns the communicate result (b"ok", b"").
+    Current run_with_timeout makes a SINGLE wait_for call around
+    proc.communicate(input), so every call returns the (stdout, stderr) tuple
+    directly. The caller is expected to also have patched
+    create_subprocess_exec to return `proc`.
     """
-    call_count = [0]
-
     async def _inner(coro, timeout=None):
-        call_count[0] += 1
-        if call_count[0] == 1:
-            # First wait_for wraps create_subprocess_exec → return the proc
-            return proc
-        else:
-            # Second wait_for wraps proc.communicate()
-            return (b"ok\n", b"")
+        try:
+            coro.close()
+        except Exception:
+            pass
+        return (b"ok\n", b"")
 
     return _inner

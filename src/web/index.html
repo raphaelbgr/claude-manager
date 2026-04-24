@@ -159,6 +159,12 @@
       to   { transform: rotate(360deg); }
     }
 
+    @keyframes session-flash {
+      0%   { box-shadow: 0 0 0 2px rgba(126, 231, 135, 0.9); background: rgba(46, 160, 67, 0.18); }
+      100% { box-shadow: 0 0 0 0 rgba(126, 231, 135, 0); background: transparent; }
+    }
+    .session-flash { animation: session-flash 1.5s ease-out; border-radius: 6px; }
+
     @keyframes indeterminate {
       0%   { margin-left: 0; }
       50%  { margin-left: 70%; }
@@ -1061,7 +1067,7 @@ function TerminalPicker({ machine, variant, disabled, onPick }) {
   );
 }
 
-function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching, skipPermissions, onPin, onUnpin, isPinned, onArchive, onUnarchive, isArchived, expanded, onToggleExpand, inMachineSection, hwCache, fetchHardware, onRename, hideMachineLabel }) {
+function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching, skipPermissions, onPin, onUnpin, isPinned, onArchive, onUnarchive, isArchived, expanded, onToggleExpand, inMachineSection, hwCache, fetchHardware, onRename, hideMachineLabel, matchingTmux, onAttachTmux, onHighlightTmux }) {
   const isWorking = session.status === 'working';
   const isActive = session.status === 'active' || isWorking;
   const effectivePath = session.cwd || session.project_path || session.project_folder || '';
@@ -1158,6 +1164,7 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
   // ── Collapsed compact row ────────────────────────────────────────────────
   const compactRow = h('div', {
     className: 'session-card-compact',
+    'data-session-id': sessionId,
     onClick: onToggleExpand,
     style: { cursor: 'pointer' },
   },
@@ -1194,7 +1201,10 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
           className: 'card-meta-link',
           onClick: e => { e.stopPropagation(); setShowReadme(true); },
           title: `View README from ${session.readme_path}`,
-        }, '📖 README'),
+        },
+          h('span', { className: 'material-icons-round', style: { fontSize: '11px', marginRight: 3, verticalAlign: 'text-bottom' } }, 'menu_book'),
+          'README',
+        ),
         session.readme_path && (repoLabel || (session.cwd || session.project_path)) && h('span', { className: 'card-meta-link-sep' }, '·'),
 
         // Repo link
@@ -1215,13 +1225,17 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
                 className: 'card-meta-link',
                 onClick: handleOpenFolder,
                 title: `Open folder: ${session.cwd || session.project_path}`,
-              }, '📂 ' + (session.cwd || session.project_path).replace(/\\/g, '/').split('/').filter(Boolean).pop())
+              },
+                h('span', { className: 'material-icons-round', style: { fontSize: '11px', marginRight: 3, verticalAlign: 'text-bottom' } }, 'folder_open'),
+                (session.cwd || session.project_path).replace(/\\/g, '/').split('/').filter(Boolean).pop())
             : h('a', {
                 className: 'card-meta-link',
                 href: folderHref || '#',
                 title: `Open remote folder via SMB: ${session.cwd || session.project_path}`,
                 onClick: e => e.stopPropagation(),
-              }, '📂 ' + (session.cwd || session.project_path).replace(/\\/g, '/').split('/').filter(Boolean).pop())
+              },
+                h('span', { className: 'material-icons-round', style: { fontSize: '11px', marginRight: 3, verticalAlign: 'text-bottom' } }, 'folder_open'),
+                (session.cwd || session.project_path).replace(/\\/g, '/').split('/').filter(Boolean).pop())
         ),
       ),
     ),
@@ -1277,6 +1291,31 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
     }, relativeTime(session.modified)),
     !inMachineSection && !hideMachineLabel && h(MachineBadge, { machine: session.machine }),
 
+    // Highlight-only chip(s): mirrors the green chip on the tmux card. Clicks
+    // scroll+flash the matching tmux card on the right pane; no attach.
+    ...(Array.isArray(matchingTmux) ? matchingTmux : []).map(t => h('button', {
+      key: `hltmux-${t.machine}:${t.session_name || t.name}`,
+      className: 'tmux-link-chip',
+      onClick: (e) => {
+        e.stopPropagation();
+        if (onHighlightTmux) onHighlightTmux(t);
+      },
+      title: `Highlight running tmux "${t.session_name || t.name}" on ${t.machine} in the right pane`,
+      style: {
+        display: 'inline-flex', alignItems: 'center', gap: 4,
+        fontSize: '0.7rem', color: '#7ee787',
+        background: '#0d2818', border: '1px solid #2d5a3a',
+        borderRadius: 10, padding: '2px 8px',
+        cursor: 'pointer', flexShrink: 0,
+        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+      },
+    },
+      h('span', null, '\u25c2 '),
+      h('span', {
+        style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+      }, t.session_name || t.name),
+    )),
+
     // Spacer (collapses on mobile so action buttons wrap left-aligned instead
     // of being pushed off-screen by the greedy flex-grow divider)
     h('div', { className: 'compact-spacer', style: { flex: 1 } }),
@@ -1322,6 +1361,24 @@ function SessionCard({ session, onLaunch, onTmuxLaunch, launching, tmuxLaunching
         onPick: tid => onTmuxLaunch(session, tid),
       }),
     ),
+
+    // Attach-to-running-tmux button(s). One per tmux at this session's cwd
+    // on the same machine. Hidden when no match. Keeps the attach affordance
+    // adjacent to the "new tmux" button so the distinction is obvious.
+    ...(Array.isArray(matchingTmux) ? matchingTmux : []).map(t => h('button', {
+      key: `attach-${t.machine}:${t.session_name || t.name}`,
+      className: 'compact-action-btn btn attach-tmux-btn',
+      onClick: e => { e.stopPropagation(); if (onAttachTmux) onAttachTmux(t); },
+      title: `Attach to running ${muxType} "${t.session_name || t.name}" on ${t.machine}${t.attached ? ' (already attached)' : ''}`,
+      style: {
+        borderColor: '#2d5a3a',
+        color: '#7ee787',
+        background: '#0d2818',
+      },
+    },
+      h('span', { className: 'material-icons-round', style: { fontSize: '12px' } }, 'cast_connected'),
+      `Attach on \u203A ${t.session_name || t.name}`,
+    )),
 
     // Pin button removed — pinning is now per-project (see project header).
 
@@ -1481,7 +1538,7 @@ const SessionCardMemo = memo(SessionCard);
 
 // ─── Tmux Card ────────────────────────────────────────────────────────────────
 
-function TmuxCard({ session, onConnect, connecting, onKill, killing, onRemoteAttach, remoteAttaching, confirmKill, paneContent, streamOn, onToggleStream }) {
+function TmuxCard({ session, onConnect, connecting, onKill, killing, onRemoteAttach, remoteAttaching, confirmKill, paneContent, streamOn, onToggleStream, onSelectClaudeSession }) {
   const isAttached = session.attached;
   const local = isLocalMachine(session.machine);
   const muxOS = (MACHINE_INFO[session.machine] || {}).os || 'macOS';
@@ -1526,7 +1583,10 @@ function TmuxCard({ session, onConnect, connecting, onKill, killing, onRemoteAtt
     return () => ro.disconnect();
   }, []);
 
-  return h('div', { className: 'tmux-card' },
+  return h('div', {
+    className: 'tmux-card',
+    'data-tmux-key': `${session.machine}:${session.session_name || session.name}`,
+  },
     h('div', { style: { flex: 1, minWidth: 0 } },
       // Session name
       h('div', {
@@ -1548,6 +1608,29 @@ function TmuxCard({ session, onConnect, connecting, onKill, killing, onRemoteAtt
         },
         title: `Working directory of the active pane: ${session.cwd}`,
       }, session.cwd),
+
+      // Linked Claude session chip — click to select its row in the left pane.
+      session.claude_session_id && h('button', {
+        className: 'claude-link-chip',
+        onClick: (e) => {
+          e.stopPropagation();
+          if (onSelectClaudeSession) onSelectClaudeSession(session.claude_session_id);
+        },
+        title: `Select Claude session "${session.claude_session_name}" (${session.claude_session_id.slice(0, 8)}) in the left pane`,
+        style: {
+          display: 'inline-flex', alignItems: 'center', gap: 4,
+          fontSize: '0.7rem', color: '#7ee787',
+          background: '#0d2818', border: '1px solid #2d5a3a',
+          borderRadius: 10, padding: '2px 8px',
+          cursor: 'pointer', marginBottom: 6, maxWidth: '100%',
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        },
+      },
+        h('span', null, '\u25b8 '),
+        h('span', {
+          style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+        }, session.claude_session_name || session.claude_session_id.slice(0, 8)),
+      ),
 
       // Badge row
       h('div', {
@@ -1751,6 +1834,15 @@ function MachineSection({ machine, children, count, collapseKey, collapseState, 
     ? collapseState[collapseKey] : true;
   const [isOpen, setIsOpen] = useState(defaultVal);
 
+  // Sync from parent when collapseState changes externally (e.g. selectClaudeSession
+  // programmatically expands a section to scroll a target into view).
+  const externalOpen = collapseState && collapseKey ? collapseState[collapseKey] : undefined;
+  useEffect(() => {
+    if (externalOpen !== undefined && externalOpen !== isOpen) setIsOpen(externalOpen);
+    // Only react when the parent-controlled value flips; ignore internal isOpen.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [externalOpen]);
+
   const toggle = useCallback((e) => {
     e.stopPropagation();
     setIsOpen(prev => {
@@ -1796,6 +1888,12 @@ function ProjectSection({ projectPath, machine, children, count, defaultOpen: de
   const defaultVal = collapseState && collapseKey && collapseState[collapseKey] !== undefined
     ? collapseState[collapseKey] : defOpen;
   const [isOpen, setIsOpen] = useState(defaultVal);
+
+  const externalOpen = collapseState && collapseKey ? collapseState[collapseKey] : undefined;
+  useEffect(() => {
+    if (externalOpen !== undefined && externalOpen !== isOpen) setIsOpen(externalOpen);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [externalOpen]);
 
   const toggle = useCallback((e) => {
     e.stopPropagation();
@@ -1857,37 +1955,55 @@ function ProjectSection({ projectPath, machine, children, count, defaultOpen: de
           textDecoration: 'underline', display: 'block',
         },
       }, `Show ${hiddenCount} more…`),
-      // New session buttons row
+      // New session buttons row — each is a split-button with a terminal
+      // picker caret, so the user can pick iTerm2 / Terminal.app / Alacritty /
+      // Windows Terminal / etc. instead of the auto-detected default.
       machine && onNewSessionInProject && h('div', {
         style: { display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6, paddingLeft: 4 }
       },
-        h('button', {
-          className: 'compact-action-btn btn',
-          onClick: (e) => { e.stopPropagation(); onNewSessionInProject(machine, projectPath); },
-          title: local
-            ? `Open a new terminal in ${shortPath} and start claude`
-            : `SSH into ${machine} and start a new claude session in ${shortPath}`,
-          style: {
-            borderColor: '#2a4a2a', color: '#3fb950', fontSize: '0.65rem',
-            padding: '3px 8px', display: 'flex', alignItems: 'center', gap: 4,
+        h('div', { className: 'split-btn-group' },
+          h('button', {
+            className: 'compact-action-btn btn split-btn-primary',
+            onClick: (e) => { e.stopPropagation(); onNewSessionInProject(machine, projectPath); },
+            title: local
+              ? `Open a new terminal in ${shortPath} and start claude`
+              : `SSH into ${machine} and start a new claude session in ${shortPath}`,
+            style: {
+              borderColor: '#2a4a2a', color: '#3fb950', fontSize: '0.65rem',
+              padding: '3px 8px', display: 'flex', alignItems: 'center', gap: 4,
+            },
           },
-        },
-          h('span', { className: 'material-icons-round', style: { fontSize: '12px' } }, 'add'),
-          local ? 'New session' : 'SSH + New session',
+            h('span', { className: 'material-icons-round', style: { fontSize: '12px' } }, 'add'),
+            local ? 'New session' : 'SSH + New session',
+          ),
+          h(TerminalPicker, {
+            machine,
+            variant: 'launch',
+            disabled: false,
+            onPick: tid => onNewSessionInProject(machine, projectPath, tid),
+          }),
         ),
-        h('button', {
-          className: 'compact-action-btn btn',
-          onClick: (e) => { e.stopPropagation(); onNewTmuxInProject(machine, projectPath); },
-          title: local
-            ? `Create a new ${muxName} session in ${shortPath}`
-            : `Create a new ${muxName} session on ${machine} in ${shortPath}`,
-          style: {
-            borderColor: '#1f3a5f', color: '#58a6ff', fontSize: '0.65rem',
-            padding: '3px 8px', display: 'flex', alignItems: 'center', gap: 4,
+        h('div', { className: 'split-btn-group' },
+          h('button', {
+            className: 'compact-action-btn btn split-btn-primary',
+            onClick: (e) => { e.stopPropagation(); onNewTmuxInProject(machine, projectPath); },
+            title: local
+              ? `Create a new ${muxName} session in ${shortPath}`
+              : `Create a new ${muxName} session on ${machine} in ${shortPath}`,
+            style: {
+              borderColor: '#1f3a5f', color: '#58a6ff', fontSize: '0.65rem',
+              padding: '3px 8px', display: 'flex', alignItems: 'center', gap: 4,
+            },
           },
-        },
-          h('span', { className: 'material-icons-round', style: { fontSize: '12px' } }, 'add'),
-          local ? `New ${muxName}` : `SSH + New ${muxName}`,
+            h('span', { className: 'material-icons-round', style: { fontSize: '12px' } }, 'add'),
+            local ? `New ${muxName}` : `SSH + New ${muxName}`,
+          ),
+          h(TerminalPicker, {
+            machine,
+            variant: 'tmux',
+            disabled: false,
+            onPick: tid => onNewTmuxInProject(machine, projectPath, tid),
+          }),
         ),
       ),
     ),
@@ -2606,6 +2722,7 @@ function PinnedSection({ pinnedIds, onLaunch, launchingId, onTmuxLaunch, tmuxLau
           onPin, onUnpin, pinnedIds,
           onArchive, onUnarchive, archivedIds,
           expandedCards, onToggleExpand, hwCache, fetchHardware,
+          getMatchingTmux, onAttachTmux, onHighlightTmux,
         }),
       )
     ),
@@ -2614,7 +2731,7 @@ function PinnedSection({ pinnedIds, onLaunch, launchingId, onTmuxLaunch, tmuxLau
 
 // ─── Project Run List (grouped same-machine runs inside expanded project) ──────
 
-function ProjectRunList({ project, onLaunch, onTmuxLaunch, launchingId, tmuxLaunchingId, skipPermissions, onPin, onUnpin, pinnedIds, onArchive, onUnarchive, archivedIds, expandedCards, onToggleExpand, hwCache, fetchHardware }) {
+function ProjectRunList({ project, onLaunch, onTmuxLaunch, launchingId, tmuxLaunchingId, skipPermissions, onPin, onUnpin, pinnedIds, onArchive, onUnarchive, archivedIds, expandedCards, onToggleExpand, hwCache, fetchHardware, getMatchingTmux, onAttachTmux, onHighlightTmux, onPull, pullingKey }) {
   // extraMap keyed by "{project_id}::{machine}::{firstSessionId}" — how many extra rows beyond 3 to show
   const [extraMap, setExtraMap] = useState({});
 
@@ -2655,6 +2772,75 @@ function ProjectRunList({ project, onLaunch, onTmuxLaunch, launchingId, tmuxLaun
             padding: '2px 0 4px 2px',
           },
         }, run.machine),
+        // Per-cwd git state + Pull button (Phase D). One row per distinct
+        // working-tree on this machine within this project. Pull button is
+        // gated on: branch ∈ {master,main} AND not dirty AND ahead==0 AND
+        // behind>0. Disabled otherwise with a tooltip explaining why.
+        (() => {
+          const details = (project.machines_detail || []).filter(d => d.machine === run.machine);
+          if (!details.length) return null;
+          return details.map(d => {
+            const branchOk = d.git_branch === 'master' || d.git_branch === 'main';
+            const behind = d.git_behind == null ? 0 : d.git_behind;
+            const ahead = d.git_ahead == null ? 0 : d.git_ahead;
+            const dirty = d.git_dirty === true;
+            const noUpstream = !d.git_upstream;
+            let disabled = true;
+            let reason = '';
+            if (noUpstream) { reason = 'No upstream configured'; }
+            else if (!branchOk) { reason = `Pull is limited to master/main (current: ${d.git_branch || '?'})`; }
+            else if (dirty) { reason = 'Working tree has uncommitted changes'; }
+            else if (ahead > 0) { reason = `${ahead} local commit${ahead === 1 ? '' : 's'} would block fast-forward`; }
+            else if (behind === 0) { reason = 'Already up to date'; }
+            else { disabled = false; reason = `Fast-forward ${behind} commit${behind === 1 ? '' : 's'} from ${d.git_upstream}`; }
+            const pullingThis = pullingKey === `${run.machine}::${d.cwd}`;
+            return h('div', {
+              key: `detail::${run.machine}::${d.cwd}`,
+              style: {
+                display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap',
+                padding: '2px 2px 6px 2px',
+                fontSize: '0.62rem', fontFamily: '"SF Mono", "Fira Code", Consolas, monospace',
+                color: '#8b949e',
+              },
+            },
+              h('span', { style: { color: '#484f58' } }, d.cwd),
+              d.git_branch && h('span', {
+                style: { color: '#58a6ff', fontWeight: 600 },
+                title: `current branch: ${d.git_branch}`,
+              }, d.git_branch),
+              behind > 0 && h('span', {
+                style: { color: '#f85149', fontWeight: 700 },
+                title: `${behind} commit${behind === 1 ? '' : 's'} behind ${d.git_upstream || 'upstream'}`,
+              }, `↓${behind}`),
+              ahead > 0 && h('span', {
+                style: { color: '#d29922', fontWeight: 700 },
+                title: `${ahead} local commit${ahead === 1 ? '' : 's'} not yet pushed`,
+              }, `↑${ahead}`),
+              dirty && h('span', {
+                style: { color: '#f0b84a', fontWeight: 700 },
+                title: 'Uncommitted changes in tracked files',
+              }, '● dirty'),
+              !disabled || (disabled && reason !== 'Already up to date') ? h('button', {
+                disabled: disabled || pullingThis,
+                onClick: () => onPull && onPull(run.machine, d.cwd),
+                title: reason,
+                style: {
+                  marginLeft: 'auto',
+                  padding: '2px 10px',
+                  fontSize: '0.62rem',
+                  fontWeight: 600,
+                  background: disabled ? '#161b22' : '#238636',
+                  color: disabled ? '#484f58' : '#ffffff',
+                  border: `1px solid ${disabled ? '#21262d' : '#2ea043'}`,
+                  borderRadius: 6,
+                  cursor: disabled ? 'not-allowed' : 'pointer',
+                  opacity: pullingThis ? 0.6 : 1,
+                  fontFamily: '"SF Mono", "Fira Code", Consolas, monospace',
+                },
+              }, pullingThis ? 'pulling…' : 'Pull') : null,
+            );
+          });
+        })(),
         visible.map((s, si) => {
           // Project header already shows the repo — inside the project, show the
           // Claude session name (slug) instead of repeating the folder.
@@ -2687,6 +2873,9 @@ function ProjectRunList({ project, onLaunch, onTmuxLaunch, launchingId, tmuxLaun
             hideMachineLabel: true,
             hwCache,
             fetchHardware,
+            matchingTmux: getMatchingTmux ? getMatchingTmux(s) : [],
+            onAttachTmux,
+            onHighlightTmux,
           });
         }),
         remaining > 0 && h('button', {
@@ -2712,13 +2901,40 @@ function ProjectRunList({ project, onLaunch, onTmuxLaunch, launchingId, tmuxLaun
 
 // ─── Projects View ────────────────────────────────────────────────────────────
 
-function ProjectsView({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaunchingId, skipPermissions, scanning, pinnedIds, onPin, onUnpin, onArchive, onUnarchive, archivedIds, expandedCards, onToggleExpand, hwCache, fetchHardware, wsUpdateCount }) {
+function ProjectsView({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaunchingId, skipPermissions, scanning, pinnedIds, onPin, onUnpin, onArchive, onUnarchive, archivedIds, expandedCards, onToggleExpand, hwCache, fetchHardware, wsUpdateCount, getMatchingTmux, onAttachTmux, onHighlightTmux }) {
   const [projects, setProjects] = useState([]);
   const [projectsLoading, setProjectsLoading] = useState(true);
   const [expandedProjects, setExpandedProjects] = useState(() => {
     try { return JSON.parse(localStorage.getItem('expandedProjects') || '{}'); } catch { return {}; }
   });
+  const [pullingKey, setPullingKey] = useState(null);
   const debounceRef = useRef(null);
+
+  const handlePull = useCallback(async (machine, cwd) => {
+    const key = `${machine}::${cwd}`;
+    setPullingKey(key);
+    try {
+      const resp = await apiFetch('/api/projects/pull', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ machine, cwd }),
+      });
+      const data = await resp.json();
+      if (data.ok && data.merged) {
+        const n = (data.behind_before || 0);
+        toast(`${machine}: fast-forwarded ${n} commit${n === 1 ? '' : 's'}`, 'success');
+      } else if (data.ok && !data.merged) {
+        toast(`${machine}: already up to date`, 'info');
+      } else {
+        const reason = data.error || 'unknown error';
+        toast(`${machine}: pull failed — ${reason}`, 'error');
+      }
+    } catch (e) {
+      toast(`${machine}: pull request failed — ${e.message || e}`, 'error');
+    } finally {
+      setPullingKey(null);
+    }
+  }, []);
 
   const fetchProjects = useCallback(() => {
     apiFetch('/api/projects')
@@ -2752,6 +2968,26 @@ function ProjectsView({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaunc
     };
     window.addEventListener('projectsSetAllExpanded', onSetAll);
     return () => window.removeEventListener('projectsSetAllExpanded', onSetAll);
+  }, [projects]);
+
+  // Expand the project that contains a given session — fired by
+  // App.selectClaudeSession so clicks on a tmux chip reveal the session row
+  // even when the Project tab is active and the folder is collapsed.
+  useEffect(() => {
+    const onExpandForSession = (e) => {
+      const sid = e.detail && e.detail.sessionId;
+      if (!sid) return;
+      const proj = projects.find(p => (p.sessions || []).some(s => s.session_id === sid));
+      if (!proj) return;
+      setExpandedProjects(prev => {
+        if (prev[proj.project_id]) return prev;
+        const next = { ...prev, [proj.project_id]: true };
+        try { localStorage.setItem('expandedProjects', JSON.stringify(next)); } catch {}
+        return next;
+      });
+    };
+    window.addEventListener('expandProjectForSession', onExpandForSession);
+    return () => window.removeEventListener('expandProjectForSession', onExpandForSession);
   }, [projects]);
 
   // Cross-filter /api/projects against the sessions the parent has already
@@ -2857,18 +3093,57 @@ function ProjectsView({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaunc
               for (const s of (proj.sessions || [])) {
                 counts[s.machine] = (counts[s.machine] || 0) + 1;
               }
+              // Aggregate machines_detail per machine — show worst-case git
+              // state across all cwds on that machine (max behind, any ahead,
+              // any dirty). Full per-cwd breakdown + Pull button lives in the
+              // expanded ProjectRunList below.
+              const detailByMachine = {};
+              for (const d of (proj.machines_detail || [])) {
+                const prev = detailByMachine[d.machine];
+                if (!prev) {
+                  detailByMachine[d.machine] = {
+                    behind: d.git_behind || 0,
+                    ahead: d.git_ahead || 0,
+                    dirty: d.git_dirty === true,
+                    hasUpstream: !!d.git_upstream,
+                  };
+                } else {
+                  prev.behind = Math.max(prev.behind, d.git_behind || 0);
+                  prev.ahead = Math.max(prev.ahead, d.git_ahead || 0);
+                  prev.dirty = prev.dirty || d.git_dirty === true;
+                  prev.hasUpstream = prev.hasUpstream || !!d.git_upstream;
+                }
+              }
               return (proj.machines || []).map(m => {
                 const mc = machineColor(m);
+                const agg = detailByMachine[m] || { behind: 0, ahead: 0, dirty: false, hasUpstream: false };
+                const title = `${m} — ${counts[m] || 0} session${(counts[m] || 0) === 1 ? '' : 's'}` +
+                  (agg.hasUpstream ? `  ·  ↓${agg.behind} ↑${agg.ahead}${agg.dirty ? ' ●' : ''}` : '');
                 return h('span', {
                   key: m,
-                  title: `${m} — ${counts[m] || 0} session${(counts[m] || 0) === 1 ? '' : 's'}`,
+                  title,
                   style: {
+                    display: 'inline-flex', alignItems: 'center', gap: 4,
                     fontSize: '0.58rem', fontWeight: 700, padding: '1px 6px',
                     borderRadius: 10, border: `1px solid ${mc.border}`,
                     background: mc.bg, color: mc.color, whiteSpace: 'nowrap',
                     fontFamily: '"SF Mono", "Fira Code", Consolas, monospace',
                   }
-                }, `${m} · ${counts[m] || 0}`);
+                },
+                  `${m} · ${counts[m] || 0}`,
+                  agg.behind > 0 && h('span', {
+                    style: { color: '#f85149', fontWeight: 700 },
+                    title: `${agg.behind} commit${agg.behind === 1 ? '' : 's'} behind upstream`,
+                  }, `↓${agg.behind}`),
+                  agg.ahead > 0 && h('span', {
+                    style: { color: '#d29922', fontWeight: 700 },
+                    title: `${agg.ahead} local commit${agg.ahead === 1 ? '' : 's'} not yet pushed`,
+                  }, `↑${agg.ahead}`),
+                  agg.dirty && h('span', {
+                    style: { color: '#f0b84a', fontSize: '0.5rem', lineHeight: 1 },
+                    title: 'Uncommitted changes in tracked files',
+                  }, '●'),
+                );
               });
             })()
           ),
@@ -2903,6 +3178,8 @@ function ProjectsView({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaunc
           onToggleExpand,
           hwCache,
           fetchHardware,
+          onPull: handlePull,
+          pullingKey,
         }),
       );
     })
@@ -2911,7 +3188,7 @@ function ProjectsView({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaunc
 
 // ─── Sessions Panel ───────────────────────────────────────────────────────────
 
-function SessionsPanel({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaunchingId, skipPermissions, scanning, collapseState, setCollapseState, pinnedIds, onPin, onUnpin, onArchive, onUnarchive, archivedIds, expandedCards, onToggleExpand, hwCache, fetchHardware, onNewSessionInProject, onNewTmuxInProject, wsUpdateCount }) {
+function SessionsPanel({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaunchingId, skipPermissions, scanning, collapseState, setCollapseState, pinnedIds, onPin, onUnpin, onArchive, onUnarchive, archivedIds, expandedCards, onToggleExpand, hwCache, fetchHardware, onNewSessionInProject, onNewTmuxInProject, wsUpdateCount, getMatchingTmux, onAttachTmux, onHighlightTmux }) {
   // sessions is already filtered/sorted by App; just group by machine then by project
   const byMachine = useMemo(() => groupBy(sessions, 'machine'), [sessions]);
 
@@ -3038,6 +3315,9 @@ function SessionsPanel({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaun
                 inMachineSection: true,
                 hwCache,
                 fetchHardware,
+                matchingTmux: getMatchingTmux ? getMatchingTmux(s) : [],
+                onAttachTmux,
+                onHighlightTmux,
               })
             )
           );
@@ -3049,7 +3329,7 @@ function SessionsPanel({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaun
 
 // ─── Tmux Panel ───────────────────────────────────────────────────────────────
 
-function TmuxPanel({ tmuxSessions, fleet, onConnectTmux, connectingId, onKillTmux, killingId, killConfirm, onRemoteAttach, remoteAttachingId, onNewSession, scanning, collapseState, setCollapseState, paneStreams, streamEnabled, onToggleStream }) {
+function TmuxPanel({ tmuxSessions, fleet, onConnectTmux, connectingId, onKillTmux, killingId, killConfirm, onRemoteAttach, remoteAttachingId, onNewSession, scanning, collapseState, setCollapseState, paneStreams, streamEnabled, onToggleStream, onSelectClaudeSession }) {
   // tmuxSessions is already machine-filtered by App
   const byMachine = useMemo(() => groupBy(tmuxSessions, s => s.machine || 'unknown'), [tmuxSessions]);
 
@@ -3100,6 +3380,7 @@ function TmuxPanel({ tmuxSessions, fleet, onConnectTmux, connectingId, onKillTmu
                   paneContent: (paneStreams || {})[s.machine + ':' + (s.session_name || s.name)] || '',
                   streamOn: (streamEnabled || {})[s.machine + ':' + (s.session_name || s.name)] !== false,
                   onToggleStream,
+                  onSelectClaudeSession,
                 })
               )
             );
@@ -3815,7 +4096,7 @@ function Header({ health, sessions, tmuxSessions, fleet, onScan, scanning, scanP
       'Security',
     ),
 
-    // Exit button — double-click to confirm (confirm() dialog was unreliable
+    // Exit button — double-click to acknowledge (the native dialog was unreliable
     // inside pywebview/WKWebView; mirror the Restart button pattern instead).
     h('button', {
       className: 'btn',
@@ -4207,6 +4488,167 @@ function App() {
     try { return localStorage.getItem('sessionsView') || 'project'; } catch { return 'project'; }
   });
   const [wsSessionUpdateCount, setWsSessionUpdateCount] = useState(0);
+
+  // Normalize a filesystem path so Windows backslashes, mixed slashes, trailing
+  // separators, and case differences don't break string compares. claude-manager
+  // runs on macOS and decodes Windows project folders with '/', while session
+  // cwds from the JSONL and tmux pane cwds keep '\' — without normalization the
+  // lookup misses every Windows session.
+  const normalizePath = (p) => {
+    if (!p) return '';
+    return p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  };
+
+  // Reverse index: (machine, normalized-cwd) → [tmuxSession, ...]. Rebuilt whenever
+  // the tmux list changes. Used by SessionCard to render the highlight chip +
+  // attach button when a live mux session exists for the same project path.
+  const tmuxByCwdKey = useMemo(() => {
+    const idx = {};
+    const add = (key, t) => { (idx[key] ||= []).push(t); };
+    tmuxSessions.forEach(t => {
+      const cwd = normalizePath(t.cwd);
+      if (!cwd || !t.machine) return;
+      add(t.machine + '|' + cwd, t);
+    });
+    return idx;
+  }, [tmuxSessions]);
+
+  const getMatchingTmux = useCallback((session) => {
+    if (!session || !session.machine) return [];
+    const out = [];
+    const seen = new Set();
+
+    // Primary path: the server already enriched each tmux with
+    // claude_session_id when its pane is running claude and its cwd matches
+    // a session's cwd/project_path. Trust that directly — it skips every
+    // frontend normalization edge case (Windows '\\', case, trailing /).
+    for (const t of tmuxSessions) {
+      if (t.claude_session_id && t.claude_session_id === session.session_id) {
+        const id = t.machine + ':' + (t.session_name || t.name);
+        if (!seen.has(id)) { seen.add(id); out.push(t); }
+      }
+    }
+
+    // Secondary path: cwd-based lookup. Picks up tmuxes the server suppressed
+    // (pane at a shell prompt, not running claude) but still usable for attach.
+    const candidatePaths = [session.cwd, session.project_path].filter(Boolean);
+    for (const p of candidatePaths) {
+      const key = session.machine + '|' + normalizePath(p);
+      for (const t of (tmuxByCwdKey[key] || [])) {
+        const id = t.machine + ':' + (t.session_name || t.name);
+        if (!seen.has(id)) { seen.add(id); out.push(t); }
+      }
+    }
+
+    return out;
+  }, [tmuxByCwdKey, tmuxSessions]);
+
+  // Shared nextFrame helper used by both selectClaudeSession and selectTmuxCard.
+  const nextFrame = () => new Promise((r) => requestAnimationFrame(() => r()));
+
+  // Scroll a node into view, awaiting scrollend (700ms fallback for Safari <17
+  // and containers that never fire the event). Then play the flash animation.
+  const scrollAndFlash = useCallback(async (node) => {
+    if (!node) return;
+
+    const scrollParent = (() => {
+      let el = node.parentElement;
+      while (el) {
+        const oy = getComputedStyle(el).overflowY;
+        if ((oy === 'auto' || oy === 'scroll') && el.scrollHeight > el.clientHeight) return el;
+        el = el.parentElement;
+      }
+      return window;
+    })();
+
+    await new Promise((resolve) => {
+      let done = false;
+      const finish = () => { if (done) return; done = true; cleanup(); resolve(); };
+      const target = scrollParent === window ? window : scrollParent;
+      const cleanup = () => {
+        target.removeEventListener('scrollend', finish);
+        clearTimeout(timeoutId);
+      };
+      target.addEventListener('scrollend', finish, { once: true });
+      const timeoutId = setTimeout(finish, 700);
+      node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+
+    node.classList.remove('session-flash');
+    // eslint-disable-next-line no-unused-expressions
+    void node.offsetWidth;
+    node.classList.add('session-flash');
+    await new Promise((r) => setTimeout(r, 1500));
+    node.classList.remove('session-flash');
+  }, []);
+
+  // Selecting a Claude session from a tmux-card chip runs a strict sequence.
+  // Works in both "Machine" and "Project" view tabs — expands every enclosing
+  // section before the scroll so the target actually exists in the DOM.
+  //
+  //   1. compute the enclosing collapse keys from the session object
+  //   2. open MachineSection (machineKey) + ProjectSection (projKey)
+  //   3. dispatch 'expandProjectForSession' for the Project tab's folder
+  //   4. expand the target session card if collapsed
+  //   5. wait 2 rAFs so React commits and layout settles
+  //   6. scrollIntoView → scrollend / 700ms → flash
+  const selectClaudeSession = useCallback(async (sessionId) => {
+    if (!sessionId) return;
+    const session = (sessions || []).find(s => s.session_id === sessionId);
+    if (!session) return;
+
+    const projectPath = session.cwd || session.project_path || '';
+    const machineKey = session.machine;
+    const projKey = `project:${session.machine}:${projectPath}`;
+
+    // Open ancestors regardless of active tab.
+    setCollapseState(prev => {
+      if (prev[machineKey] === true && prev[projKey] === true) return prev;
+      return { ...prev, [machineKey]: true, [projKey]: true };
+    });
+
+    // Project tab — reach into ProjectsView through a window event.
+    window.dispatchEvent(new CustomEvent('expandProjectForSession', { detail: { sessionId } }));
+
+    if (!expandedCardsRef.current.has(sessionId)) {
+      setExpandedCards(prev => {
+        if (prev.has(sessionId)) return prev;
+        const next = new Set(prev); next.add(sessionId); return next;
+      });
+    }
+
+    await nextFrame();
+    await nextFrame();
+
+    const node = document.querySelector(`[data-session-id="${sessionId}"]`);
+    if (!node) return;
+
+    await scrollAndFlash(node);
+  }, [sessions, scrollAndFlash]);
+
+  // Reverse direction: flash and scroll to a tmux card on the right pane.
+  // Called by the SessionCard "Attach" button so the user sees BOTH sides
+  // light up — session row on the left, tmux card on the right.
+  const selectTmuxCard = useCallback(async (machine, tmuxName) => {
+    if (!machine || !tmuxName) return;
+
+    // Ensure the tmux panel's MachineSection is open.
+    setCollapseState(prev => {
+      const key = `tmux:${machine}`;
+      if (prev[key] === true) return prev;
+      return { ...prev, [key]: true };
+    });
+
+    await nextFrame();
+    await nextFrame();
+
+    const key = `${machine}:${tmuxName}`;
+    const selector = `[data-tmux-key="${(window.CSS && CSS.escape) ? CSS.escape(key) : key.replace(/"/g, '\\"')}"]`;
+    const node = document.querySelector(selector);
+    if (!node) return;
+
+    await scrollAndFlash(node);
+  }, [scrollAndFlash]);
 
   // ── Auth config on startup ────────────────────────────────────────────────
   useEffect(() => {
@@ -4771,12 +5213,16 @@ function App() {
   }, [skipPermissions]);
 
   // ── New session in project folder ────────────────────────────────────────
-  const handleNewSessionInProject = useCallback(async (machine, cwd) => {
+  const handleNewSessionInProject = useCallback(async (machine, cwd, terminalId) => {
     try {
       const res = await apiFetch('/api/sessions/launch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ machine, cwd, mode: 'terminal', skip_permissions: skipPermissions }),
+        body: JSON.stringify({
+          machine, cwd, mode: 'terminal',
+          skip_permissions: skipPermissions,
+          terminal_id: terminalId || null,
+        }),
       });
       const data = await res.json();
       if (data.ok) toast('Terminal opened', 'success');
@@ -4784,7 +5230,7 @@ function App() {
     } catch (e) { toast('Network error', 'error'); }
   }, [skipPermissions]);
 
-  const handleNewTmuxInProject = useCallback(async (machine, cwd) => {
+  const handleNewTmuxInProject = useCallback(async (machine, cwd, terminalId) => {
     // Reuse the exact endpoint handleTmuxLaunch uses. mode='tmux' with no
     // session_id tells the server to create a fresh psmux/tmux session,
     // run `claude` inside it, and attach — all in one call.
@@ -4798,6 +5244,7 @@ function App() {
           cwd,
           mode: 'tmux',
           skip_permissions: skipPermissions,
+          terminal_id: terminalId || null,
         }),
       });
       const data = await res.json();
@@ -4847,6 +5294,29 @@ function App() {
     const key = `${session.machine}-${name}`;
     setConnectingId(key);
     try {
+      // Pre-flight liveness probe. Stops us from spawning a terminal window
+      // for a tmux/psmux session that has died since the last scan (ghost
+      // entry in the list). On verify failure we still proceed so the feature
+      // degrades gracefully when the endpoint is unreachable.
+      try {
+        const vres = await apiFetch('/api/tmux/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ machine: session.machine, session_name: name }),
+        });
+        if (vres.ok) {
+          const vdata = await vres.json();
+          if (vdata && vdata.ok && vdata.alive === false) {
+            const extra = vdata.error ? ` (${vdata.error})` : '';
+            toast(`"${name}" is no longer running on ${session.machine}${extra} — refreshing list`, 'error');
+            apiFetch('/api/sessions/scan', { method: 'POST' }).catch(() => {});
+            return;
+          }
+        }
+      } catch (_verr) {
+        // Network error on verify — fall through and try the attach anyway.
+      }
+
       const res = await apiFetch('/api/tmux/connect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -4872,6 +5342,17 @@ function App() {
       setConnectingId(null);
     }
   }, [skipPermissions]);
+
+  // Clicking the attach button on a SessionCard: start the attach AND flash
+  // the matching tmux card on the right pane so the user sees which session
+  // they just attached to. Attach is fire-and-forget; the flash runs in
+  // parallel so the UI responds even if SSH is slow.
+  const handleAttachAndFlash = useCallback((tmuxSession) => {
+    if (!tmuxSession) return;
+    const name = tmuxSession.session_name || tmuxSession.name;
+    selectTmuxCard(tmuxSession.machine, name);
+    handleConnectTmux(tmuxSession);
+  }, [handleConnectTmux, selectTmuxCard]);
 
   // ── Kill tmux session ────────────────────────────────────────────────────
   const [killingId, setKillingId] = useState(null);
@@ -4922,6 +5403,29 @@ function App() {
     const key = `${session.machine}-${name}`;
     setRemoteAttachingId(key);
     try {
+      // Same pre-flight liveness probe as the regular Attach button. Without
+      // this, clicking Remote on a ghost-tmux (host offline / psmux dead)
+      // spawns a terminal that SSH-fails and then leaks psmux keystrokes
+      // into the local zsh shell.
+      try {
+        const vres = await apiFetch('/api/tmux/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ machine: session.machine, session_name: name }),
+        });
+        if (vres.ok) {
+          const vdata = await vres.json();
+          if (vdata && vdata.ok && vdata.alive === false) {
+            const extra = vdata.error ? ` (${vdata.error})` : '';
+            toast(`"${name}" is no longer running on ${session.machine}${extra} — refreshing list`, 'error');
+            apiFetch('/api/sessions/scan', { method: 'POST' }).catch(() => {});
+            return;
+          }
+        }
+      } catch (_verr) {
+        // Network error on verify — fall through, attempt the attach anyway.
+      }
+
       const res = await apiFetch('/api/tmux/connect-remote', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -5099,6 +5603,9 @@ function App() {
                     hwCache,
                     fetchHardware,
                     wsUpdateCount: wsSessionUpdateCount,
+                    getMatchingTmux,
+                    onAttachTmux: handleAttachAndFlash,
+                    onHighlightTmux: (t) => selectTmuxCard(t.machine, t.session_name || t.name),
                   })
                 : h(SessionsPanel, {
                     sessions: filteredSessions,
@@ -5123,6 +5630,9 @@ function App() {
                     onNewSessionInProject: handleNewSessionInProject,
                     onNewTmuxInProject: handleNewTmuxInProject,
                     wsUpdateCount: wsSessionUpdateCount,
+                    getMatchingTmux,
+                    onAttachTmux: handleAttachAndFlash,
+                    onHighlightTmux: (t) => selectTmuxCard(t.machine, t.session_name || t.name),
                   }),
           ),
         ),
@@ -5183,6 +5693,7 @@ function App() {
                   paneStreams,
                   streamEnabled,
                   onToggleStream: toggleStream,
+                  onSelectClaudeSession: selectClaudeSession,
                 }),
           ),
         ),

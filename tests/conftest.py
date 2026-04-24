@@ -31,6 +31,102 @@ def _disable_ssh_pool(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# HARD-BLOCK real terminal spawns during every test, at the subprocess layer.
+#
+# Symptom: tests bloated the macOS Desktop with Terminal.app / iTerm windows
+# because some code path executed osascript / open / gnome-terminal / wt
+# without its surrounding mock. Stubbing at launcher-function granularity
+# breaks the suite that exercises those launcher helpers directly.
+#
+# Surgical fix: wrap the three subprocess entry points used on every platform
+# to spawn a GUI terminal — subprocess.Popen, subprocess.run,
+# asyncio.create_subprocess_exec — and short-circuit them ONLY when argv[0]
+# is a known terminal-spawning binary. Every other subprocess call passes
+# through unchanged, so tests that rely on real subprocess semantics (for
+# non-terminal commands) keep working. Tests that need to assert on how these
+# spawners were invoked still apply their own `patch(...)` which replaces
+# our filter inside the nested `with` block.
+# ---------------------------------------------------------------------------
+
+_TERMINAL_SPAWN_BINARIES = {
+    "osascript",                           # macOS AppleScript
+    "open",                                 # macOS `open -a Terminal.app`
+    "gnome-terminal", "konsole", "xterm",  # Linux
+    "alacritty", "kitty", "terminator",
+    "xfce4-terminal", "lxterminal", "tilix",
+    "wt.exe", "wt",                         # Windows Terminal
+    "cmd.exe",                              # cmd start /wait
+    "powershell.exe", "pwsh.exe", "pwsh",   # PowerShell spawns
+    "iterm", "iterm2",
+}
+
+
+def _is_terminal_spawn(cmd):
+    import os as _os
+    if not cmd:
+        return False
+    if isinstance(cmd, (list, tuple)):
+        head = cmd[0]
+    elif isinstance(cmd, str):
+        head = cmd.split()[0] if cmd.strip() else ""
+    else:
+        return False
+    name = _os.path.basename(str(head)).lower()
+    return name in _TERMINAL_SPAWN_BINARIES
+
+
+@pytest.fixture(autouse=True)
+def _block_real_terminal_spawns(monkeypatch):
+    import os
+    import subprocess
+    import asyncio as _asyncio
+    from unittest.mock import MagicMock, AsyncMock
+
+    _orig_popen = subprocess.Popen
+    _orig_run = subprocess.run
+    _orig_exec = _asyncio.create_subprocess_exec
+
+    def _filtered_popen(cmd, *args, **kwargs):
+        if _is_terminal_spawn(cmd):
+            m = MagicMock()
+            m.pid = 0
+            m.returncode = 0
+            m.stdout = None
+            m.stderr = None
+            m.wait = MagicMock(return_value=0)
+            m.communicate = MagicMock(return_value=(b"", b""))
+            m.__enter__ = lambda self=m: self
+            m.__exit__ = lambda *_a, **_kw: False
+            return m
+        return _orig_popen(cmd, *args, **kwargs)
+
+    def _filtered_run(cmd, *args, **kwargs):
+        if _is_terminal_spawn(cmd):
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="", stderr="",
+            )
+        return _orig_run(cmd, *args, **kwargs)
+
+    async def _filtered_exec(program, *args, **kwargs):
+        # asyncio.create_subprocess_exec takes the program as the first arg,
+        # then positional args — reconstruct a pseudo-argv for classification.
+        argv = [program, *args]
+        if _is_terminal_spawn(argv):
+            m = MagicMock()
+            m.pid = 0
+            m.returncode = 0
+            m.wait = AsyncMock(return_value=0)
+            m.communicate = AsyncMock(return_value=(b"", b""))
+            return m
+        return await _orig_exec(program, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", _filtered_popen)
+    monkeypatch.setattr(subprocess, "run", _filtered_run)
+    monkeypatch.setattr(_asyncio, "create_subprocess_exec", _filtered_exec)
+    yield
+
+
+# ---------------------------------------------------------------------------
 # Sample JSONL session content
 # ---------------------------------------------------------------------------
 

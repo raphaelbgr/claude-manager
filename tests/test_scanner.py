@@ -302,7 +302,10 @@ class TestClaudeSessionToDict:
         expected_keys = {
             "session_id", "machine", "project_folder", "project_path",
             "cwd", "slug", "summary", "messages", "modified", "status", "pid",
-            "file_size", "tokens", "name", "cpu_percent", "git_branch", "subprocess_count",
+            "file_size", "tokens", "name", "cpu_percent", "git_branch",
+            "subprocess_count", "git_remote", "git_commits",
+            "last_user_message", "readme_path",
+            "git_upstream", "git_ahead", "git_behind", "git_dirty",
         }
         assert set(d.keys()) == expected_keys
 
@@ -834,21 +837,25 @@ class TestMarkActiveSessions:
 # ---------------------------------------------------------------------------
 
 def _wrap_wait_for_remote(proc, payload):
-    """
-    Returns an async side_effect for asyncio.wait_for.
+    """Async side_effect for asyncio.wait_for.
 
-    First call wraps create_subprocess_exec → returns proc.
-    Second call wraps proc.communicate() → returns (stdout_bytes, b"").
+    The current run_with_timeout pattern is:
+        proc = await asyncio.create_subprocess_exec(...)
+        stdout, stderr = await asyncio.wait_for(proc.communicate(input), timeout=...)
+    so wait_for is called EXACTLY ONCE and must resolve to the (stdout, stderr)
+    tuple. The caller is expected to have already patched
+    create_subprocess_exec to return `proc` directly.
     """
-    call_count = [0]
     stdout = json.dumps(payload).encode() if payload is not None else b"not json {{"
 
     async def _inner(coro, timeout=None):
-        call_count[0] += 1
-        if call_count[0] == 1:
-            return proc
-        else:
-            proc.returncode = 0
-            return (stdout, b"")
+        # Exhaust the coroutine so "coroutine was never awaited" RuntimeWarning
+        # doesn't pollute the test output.
+        try:
+            coro.close()
+        except Exception:
+            pass
+        proc.returncode = 0
+        return (stdout, b"")
 
     return _inner

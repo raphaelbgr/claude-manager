@@ -112,6 +112,13 @@ class ClaudeSession:
     git_commits: int = 0      # total commit count in the repo (rev-list --count HEAD)
     last_user_message: str = ""  # last user prompt in the session (160 char max)
     readme_path: str = ""        # absolute path to README.md (or variant) in cwd; empty if absent
+    # Phase B — git freshness vs. upstream. All None when not determinable
+    # (not a repo, no upstream configured, or subprocess failed). No git fetch
+    # is performed during scans; ahead/behind reflect last-fetched state.
+    git_upstream: str | None = None  # e.g. "origin/master"; None if no upstream
+    git_ahead: int | None = None     # commits HEAD has that upstream doesn't
+    git_behind: int | None = None    # commits upstream has that HEAD doesn't
+    git_dirty: bool | None = None    # True if tracked files modified; None if status failed
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -350,6 +357,81 @@ def _mark_active_sessions(
 
 
 # ---------------------------------------------------------------------------
+# Git state collection (Phase B) — shared by scan_local + consumed by Pull API
+# ---------------------------------------------------------------------------
+
+def _collect_git_state(cwd: str) -> dict:
+    """Collect per-cwd git freshness: upstream ref, ahead/behind, dirty flag.
+
+    Returns a dict with keys:
+      git_upstream: str | None   "origin/master" or None if no upstream / not a repo
+      git_ahead:    int  | None  commits HEAD has beyond upstream, or None
+      git_behind:   int  | None  commits upstream has beyond HEAD, or None
+      git_dirty:    bool | None  True if tracked files modified, None if status failed
+
+    Does NOT run `git fetch` — ahead/behind reflects last-fetched remote state.
+    Uses --untracked-files=no on status so scratch notes / build artefacts
+    don't falsely mark the tree dirty (we only care about changes that block
+    a fast-forward pull).
+
+    All four fields remain None when the cwd is not a git working tree.
+    """
+    state = {
+        "git_upstream": None,
+        "git_ahead": None,
+        "git_behind": None,
+        "git_dirty": None,
+    }
+    if not cwd:
+        return state
+
+    _kw = _win32_kwargs()
+
+    # Dirty first — succeeds on any working tree, including ones with no
+    # upstream configured. None stays as "couldn't determine".
+    try:
+        r = subprocess.run(
+            ["git", "-C", cwd, "status", "--porcelain", "--untracked-files=no"],
+            capture_output=True, text=True, timeout=2, **_kw,
+        )
+        if r.returncode == 0:
+            state["git_dirty"] = bool(r.stdout.strip())
+    except Exception:
+        pass
+
+    # Upstream ref — fails when no upstream configured (exit 128). Silent.
+    try:
+        r = subprocess.run(
+            ["git", "-C", cwd, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+            capture_output=True, text=True, timeout=2, **_kw,
+        )
+        if r.returncode == 0:
+            up = r.stdout.strip()
+            if up:
+                state["git_upstream"] = up
+    except Exception:
+        pass
+
+    # Ahead/behind only computable when upstream is known.
+    if state["git_upstream"]:
+        try:
+            r = subprocess.run(
+                ["git", "-C", cwd, "rev-list", "--left-right", "--count",
+                 f"{state['git_upstream']}...HEAD"],
+                capture_output=True, text=True, timeout=2, **_kw,
+            )
+            if r.returncode == 0:
+                parts = r.stdout.strip().split()
+                if len(parts) == 2:
+                    state["git_behind"] = int(parts[0])
+                    state["git_ahead"] = int(parts[1])
+        except Exception:
+            pass
+
+    return state
+
+
+# ---------------------------------------------------------------------------
 # Local scan
 # ---------------------------------------------------------------------------
 
@@ -431,9 +513,10 @@ def scan_local(
             continue
 
     _mark_active_sessions(all_sessions, active_pids, session_names)
-    # Detect git remotes and commit counts for each unique cwd (memoized per scan)
+    # Detect git remotes, commit counts, and freshness state per unique cwd.
     _remote_cache: dict[str, str] = {}
     _commits_cache: dict[str, int] = {}
+    _state_cache: dict[str, dict] = {}
     for sess in all_sessions:
         cwd_key = sess.cwd or sess.project_path
         if not cwd_key:
@@ -460,6 +543,13 @@ def scan_local(
             except Exception:
                 _commits_cache[cwd_key] = 0
         sess.git_commits = _commits_cache[cwd_key]
+        if cwd_key not in _state_cache:
+            _state_cache[cwd_key] = _collect_git_state(cwd_key)
+        gs = _state_cache[cwd_key]
+        sess.git_upstream = gs["git_upstream"]
+        sess.git_ahead = gs["git_ahead"]
+        sess.git_behind = gs["git_behind"]
+        sess.git_dirty = gs["git_dirty"]
 
     # Detect README presence per unique cwd (memoized)
     _readme_cache: dict[str, str] = {}
@@ -646,6 +736,10 @@ if projects_dir.is_dir():
                     'git_branch': git_branch,
                     'last_user_message': last_user_msg,
                     'readme_path': '',
+                    'git_upstream': None,
+                    'git_ahead': None,
+                    'git_behind': None,
+                    'git_dirty': None,
                 })
             except Exception:
                 pass
@@ -712,6 +806,52 @@ for r in results:
             _commits_cache[cwd_key] = 0
     r['git_commits'] = _commits_cache[cwd_key]
 
+# Phase B — git freshness state per cwd: upstream, ahead/behind, dirty.
+# Never runs `git fetch`; ahead/behind is measured against last-fetched
+# upstream. --untracked-files=no so scratch / build output don't mark dirty.
+_state_cache = {}
+for r in results:
+    cwd_key = r.get('cwd') or r.get('project_path', '')
+    if not cwd_key:
+        continue
+    if cwd_key not in _state_cache:
+        gs = {'git_upstream': None, 'git_ahead': None, 'git_behind': None, 'git_dirty': None}
+        try:
+            pr = _sp.run([_GIT, '-C', cwd_key, 'status', '--porcelain', '--untracked-files=no'],
+                         capture_output=True, text=True, timeout=2, **_win_kw)
+            if pr.returncode == 0:
+                gs['git_dirty'] = bool(pr.stdout.strip())
+        except Exception:
+            pass
+        try:
+            pr = _sp.run([_GIT, '-C', cwd_key, 'rev-parse', '--abbrev-ref',
+                          '--symbolic-full-name', '@{upstream}'],
+                         capture_output=True, text=True, timeout=2, **_win_kw)
+            if pr.returncode == 0:
+                up = pr.stdout.strip()
+                if up:
+                    gs['git_upstream'] = up
+        except Exception:
+            pass
+        if gs['git_upstream']:
+            try:
+                pr = _sp.run([_GIT, '-C', cwd_key, 'rev-list', '--left-right', '--count',
+                              gs['git_upstream'] + '...HEAD'],
+                             capture_output=True, text=True, timeout=2, **_win_kw)
+                if pr.returncode == 0:
+                    parts = pr.stdout.strip().split()
+                    if len(parts) == 2:
+                        gs['git_behind'] = int(parts[0])
+                        gs['git_ahead'] = int(parts[1])
+            except Exception:
+                pass
+        _state_cache[cwd_key] = gs
+    gs = _state_cache[cwd_key]
+    r['git_upstream'] = gs['git_upstream']
+    r['git_ahead'] = gs['git_ahead']
+    r['git_behind'] = gs['git_behind']
+    r['git_dirty'] = gs['git_dirty']
+
 _readme_cache = {}
 _README_NAMES = ('README.md', 'README.MD', 'README', 'readme.md')
 for r in results:
@@ -770,6 +910,10 @@ async def scan_remote_via_api(machine_name: str, ip: str, dispatch_port: int) ->
                         git_commits=item.get("git_commits", 0),
                         last_user_message=item.get("last_user_message", ""),
                         readme_path=item.get("readme_path", ""),
+                        git_upstream=item.get("git_upstream"),
+                        git_ahead=item.get("git_ahead"),
+                        git_behind=item.get("git_behind"),
+                        git_dirty=item.get("git_dirty"),
                     )
                     sessions.append(s)
                 log.info("scan_remote(%s): %d sessions via api", machine_name, len(sessions))
@@ -842,6 +986,10 @@ async def scan_remote(
                 git_commits=item.get("git_commits", 0),
                 last_user_message=item.get("last_user_message", ""),
                 readme_path=item.get("readme_path", ""),
+                git_upstream=item.get("git_upstream"),
+                git_ahead=item.get("git_ahead"),
+                git_behind=item.get("git_behind"),
+                git_dirty=item.get("git_dirty"),
             )
             sessions.append(sess)
         except (KeyError, TypeError):

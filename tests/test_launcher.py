@@ -668,28 +668,36 @@ class TestLaunchTmuxAttach:
 
     @pytest.mark.asyncio
     async def test_remote_psmux_ssh_only(self):
-        """psmux attach over SSH fails — just SSH into the machine."""
+        """psmux attach — on macOS the code takes the _launch_macos_multi
+        path so the user can watch the SSH login land before the attach
+        command is typed. Assert that path dispatches SSH to the target."""
         from src.launcher import launch_tmux_attach
 
         with patch("src.launcher.detect_local_machine", return_value="mac-mini"), \
-             patch("src.launcher.launch_terminal", new=AsyncMock(return_value={"ok": True})) as mock_lt:
+             patch("src.launcher._ensure_claude_running", new=AsyncMock()), \
+             patch("src.launcher._launch_macos_multi",
+                   new=AsyncMock(return_value={"ok": True})) as mock_multi:
             await launch_tmux_attach("win-sess", "avell-i7")
 
-        cmd = mock_lt.call_args[0][0]
-        assert "ssh" in cmd
-        assert "avell-i7" in cmd
+        # _launch_macos_multi([ssh_cmd, attach_cmd], delays=[0, 2]) — first
+        # positional arg is the command list.
+        cmds = mock_multi.call_args[0][0]
+        assert any("ssh" in c for c in cmds)
+        assert any("avell-i7" in c for c in cmds)
 
     @pytest.mark.asyncio
     async def test_remote_psmux_windows_desktop(self):
-        """windows-desktop psmux — same plain SSH fallback."""
+        """windows-desktop psmux — same _launch_macos_multi path."""
         from src.launcher import launch_tmux_attach
 
         with patch("src.launcher.detect_local_machine", return_value="mac-mini"), \
-             patch("src.launcher.launch_terminal", new=AsyncMock(return_value={"ok": True})) as mock_lt:
+             patch("src.launcher._ensure_claude_running", new=AsyncMock()), \
+             patch("src.launcher._launch_macos_multi",
+                   new=AsyncMock(return_value={"ok": True})) as mock_multi:
             await launch_tmux_attach("wdesk-sess", "windows-desktop")
 
-        cmd = mock_lt.call_args[0][0]
-        assert "ssh" in cmd
+        cmds = mock_multi.call_args[0][0]
+        assert any("ssh" in c for c in cmds)
 
     @pytest.mark.asyncio
     async def test_unknown_machine_defaults_to_tmux(self):
@@ -724,7 +732,8 @@ class TestLaunchNewTmuxAndAttach:
             result = await launch_new_tmux_and_attach("new-sess", "mac-mini", cwd="/tmp")
 
         mock_create.assert_awaited_once_with("mac-mini", "new-sess", cwd="/tmp", command=None)
-        mock_attach.assert_awaited_once_with("new-sess", "mac-mini")
+        # launch_tmux_attach gained a terminal_id kwarg — propagate None here.
+        mock_attach.assert_awaited_once_with("new-sess", "mac-mini", terminal_id=None)
         assert result == {"ok": True}
 
     @pytest.mark.asyncio

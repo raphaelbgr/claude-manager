@@ -11,6 +11,32 @@ from .subprocess_utils import _win32_asyncio_kwargs
 log = logging.getLogger("claude_manager.launcher")
 
 
+# Strict allow-list: only safe identifier-ish characters survive into a title.
+# Anything else (shell metacharacters, control bytes, spaces that could hide
+# embedded commands) causes the whole segment to be dropped rather than
+# partially scrubbed — so an attacker can't smuggle "rm -rf" into the title
+# by using only letters and dashes.
+_TITLE_SAFE = __import__("re").compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _sanitize_title_segment(s: str) -> str:
+    """Return `s` if it's a safe identifier-ish string; otherwise empty.
+
+    This is intentionally strict. The title is embedded in a `printf '\\033]0;…'`
+    (or PowerShell `$Host.UI.RawUI.WindowTitle = '…'`) command that runs in a
+    shell. Today the single-quote wrapping makes even unsanitized content safe
+    at the shell level, but a later refactor that loses those quotes would
+    leak every character of the segment into a shell context. Dropping any
+    segment that doesn't look like a plain identifier closes that risk.
+
+    Note: this also rejects ASCII space — sessionsand fleet names are expected
+    to be hyphen/underscore-separated, never space-separated.
+    """
+    if not s:
+        return s
+    return s if _TITLE_SAFE.match(s) else ""
+
+
 def build_window_title(
     origin: str | None,
     destination: str | None,
@@ -22,16 +48,20 @@ def build_window_title(
     Any segment that's None or empty is dropped. Local launches (origin == dest
     or dest is None) drop the destination. Terminal-only (no mux) drops the
     session. Missing project is tolerated — you still get at least the origin.
+
+    Every segment is scrubbed of shell-dangerous characters — the title is
+    concatenated into an OSC-0 escape sequence that runs inside a shell, and
+    the upstream inputs (project = cwd basename, session name = user-supplied)
+    aren't guaranteed safe.
     """
     parts: list[str] = []
-    if origin:
-        parts.append(origin)
-    if destination and destination != origin:
-        parts.append(destination)
-    if mux_session:
-        parts.append(mux_session)
-    if project:
-        parts.append(project)
+    for seg in (origin, destination if destination and destination != origin else None,
+                mux_session, project):
+        if not seg:
+            continue
+        clean = _sanitize_title_segment(seg)
+        if clean:
+            parts.append(clean)
     return " → ".join(parts) if parts else "claude-manager"
 
 
@@ -473,8 +503,10 @@ async def launch_tmux_attach(session_name: str, machine: str, skip_permissions: 
             f"ssh {shlex.quote(alias)} -t {shlex.quote(attach_cmd)}"
         )
 
-    # tmux: SSH -t with direct attach works
-    attach_cmd = _ssh_path_prefix(machine) + inner_prefix + adapter.mux_attach(session_name)
+    # tmux: SSH -t with direct attach works.
+    # -CC enables iTerm2 native tmux integration (windows/tabs instead of raw TUI).
+    cc = terminal_id == "iterm2" and adapter.mux_type == "tmux"
+    attach_cmd = _ssh_path_prefix(machine) + inner_prefix + adapter.mux_attach(session_name, cc_mode=cc)
     return await launch_terminal(
         f"ssh {shlex.quote(alias)} -t {shlex.quote(attach_cmd)}",
         terminal_id=terminal_id, title=title,

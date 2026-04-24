@@ -123,8 +123,11 @@ class TestConfigConstants:
     def test_default_bind_is_string(self):
         assert isinstance(DEFAULT_BIND, str)
 
-    def test_default_bind_is_lan_accessible(self):
-        assert DEFAULT_BIND == "0.0.0.0"
+    def test_default_bind_is_loopback(self):
+        # Changed from "0.0.0.0" to loopback-only in the SSH-key bearer auth
+        # commit (3a40771) — the daemon is reached from the browser over a
+        # Cloudflare tunnel / localhost rather than LAN-exposed by default.
+        assert DEFAULT_BIND == "127.0.0.1"
 
     def test_scan_interval_is_int(self):
         assert isinstance(SCAN_INTERVAL, int)

@@ -45,6 +45,7 @@ from .scanner import ClaudeSession, scan_all
 from .state_store import StateStore
 from .subprocess_utils import run_with_timeout, _win32_kwargs
 from .tmux_manager import TmuxSession, list_all_tmux, create_tmux_session, kill_tmux_session
+from .session_link import enrich_tmux_dicts
 
 
 async def _pool_exec(
@@ -109,6 +110,44 @@ class MemoryLogHandler(logging.Handler):
         if level:
             logs = [l for l in logs if l["level"] == level.upper()]
         return logs[-limit:]
+
+
+# ---------------------------------------------------------------------------
+# Error middleware — converts unhandled handler exceptions into JSON 500s
+# ---------------------------------------------------------------------------
+#
+# Without this, an exception that escapes a route handler (e.g. launch_terminal
+# raising OSError because `osascript` is missing, or asyncssh.Error bubbling
+# out of the SSH pool for an offline Windows target) reaches aiohttp's default
+# error handler, which returns `500 Internal Server Error` with an HTML /
+# plain-text body. The UI's fetch wrapper tries JSON.parse on the response and
+# falls back to showing just the status code — the user sees "error 500"
+# with no actionable detail and the toast just says "HTTP 500".
+#
+# This middleware wraps every request so any non-HTTP exception becomes a
+# structured `{ok: False, error: "<ExcType>: <msg>"}` payload that the UI
+# can display. web.HTTPException subclasses (401/404/etc) are re-raised
+# unchanged so existing semantics are preserved; asyncio.CancelledError is
+# also passed through so task shutdown isn't masked as a 500.
+
+
+@web.middleware
+async def error_middleware(request: web.Request, handler) -> web.Response:
+    try:
+        return await handler(request)
+    except web.HTTPException:
+        raise
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        log.exception(
+            "Unhandled exception in %s %s: %s",
+            request.method, request.path, exc,
+        )
+        return web.json_response(
+            {"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+            status=500,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -712,21 +751,67 @@ async def handle_sessions_all(request: web.Request) -> web.Response:
 async def handle_projects(request: web.Request) -> web.Response:
     """GET /api/projects — sessions grouped by project identity (cross-machine).
 
-    Reads from in-memory sessions (no re-scan). Groups by canonical project id
-    (git remote → normalized URL, else directory basename). Sorts outer array
-    by latest_modified desc.
+    Reads from in-memory sessions (no re-scan). Two-pass consolidation:
+
+      Pass 1 — compute (project_id, basename) for every session. Build a
+      basename → full-remote-id resolution table so that sessions whose id
+      fell back to the bare basename (empty git_remote) can be merged into
+      their sibling sessions that carry the full normalized-remote id. This
+      fixes cross-machine duplicates when one machine (typically Windows)
+      transiently returned git_remote="".
+
+      Pass 2 — accumulate sessions into proj_sessions[resolved_id] using the
+      resolution table. Same basename with distinct full remotes (e.g. a fork
+      on GitLab vs origin on GitHub) stays separate by design.
+
+    Sorts outer array by latest_modified desc.
     """
-    from .project_identity import project_id as _pid, project_display_name as _pdn
+    from .project_identity import (
+        project_id as _pid,
+        project_display_name as _pdn,
+        canonical_basename as _basename,
+    )
 
     state = request.app["state"]
     sessions: list[ClaudeSession] = state["sessions"]
 
-    # Accumulate per project
+    # --- Pass 1: collect ids and build consolidation map ---
+    # basename -> set of full-remote (non-fallback) ids observed for it
+    basename_to_full_ids: dict[str, set[str]] = {}
+    session_ids: list[tuple[str, str]] = []  # (raw_pid, basename) per session, parallel to `sessions`
+
+    for sess in sessions:
+        raw_pid = _pid(sess)
+        base = _basename(sess)
+        session_ids.append((raw_pid, base))
+        # A full-remote id contains '/' (e.g. "github.com/owner/repo"); a bare
+        # basename fallback does not. If raw_pid != base, this session was
+        # keyed by git_remote, not the path fallback.
+        if base and raw_pid != base and "/" in raw_pid:
+            basename_to_full_ids.setdefault(base, set()).add(raw_pid)
+
+    # Resolve each basename to a single canonical id. If exactly one full-remote
+    # sibling exists, basename-fallback sessions collapse into that. If multiple
+    # different full-remote ids share a basename (fork vs origin on different
+    # hosts), DON'T collapse — that would incorrectly merge unrelated repos.
+    basename_resolution: dict[str, str] = {}
+    for base, full_ids in basename_to_full_ids.items():
+        if len(full_ids) == 1:
+            basename_resolution[base] = next(iter(full_ids))
+
+    # --- Pass 2: accumulate using resolved ids ---
     proj_sessions: dict[str, list] = {}
     proj_meta: dict[str, dict] = {}
 
-    for sess in sessions:
-        pid = _pid(sess)
+    for sess, (raw_pid, base) in zip(sessions, session_ids):
+        # A session's id is rewritten ONLY when:
+        #   (a) its raw id is the basename fallback (raw_pid == base), AND
+        #   (b) the basename resolves to exactly one full-remote sibling.
+        if raw_pid == base and base in basename_resolution:
+            pid = basename_resolution[base]
+        else:
+            pid = raw_pid
+
         if pid not in proj_sessions:
             proj_sessions[pid] = []
             proj_meta[pid] = {
@@ -756,12 +841,42 @@ async def handle_projects(request: web.Request) -> web.Response:
             if s.machine not in machine_latest:
                 machine_latest[s.machine] = s.modified or ""
         machines_by_recency = sorted(machine_latest.keys(), key=lambda m: machine_latest[m], reverse=True)
+
+        # Phase C — per (machine, cwd) group with aggregated git state.
+        # Same machine can appear multiple times when the user has multiple
+        # clones of the same repo locally (e.g. ~/git/foo and
+        # ~/AndroidStudioProjects/foo). Each group targets one Pull button.
+        group_order: list[tuple[str, str]] = []
+        groups: dict[tuple[str, str], dict] = {}
+        for s in sorted_sessions:
+            cwd = s.cwd or s.project_path or ""
+            key = (s.machine, cwd)
+            if key not in groups:
+                group_order.append(key)
+                groups[key] = {
+                    "machine": s.machine,
+                    "cwd": cwd,
+                    "session_count": 0,
+                    "latest_modified": s.modified or "",
+                    # Git state comes from the freshest session — sessions are
+                    # already sorted by modified desc, so first write wins.
+                    "git_branch": s.git_branch or "",
+                    "git_upstream": s.git_upstream,
+                    "git_ahead": s.git_ahead,
+                    "git_behind": s.git_behind,
+                    "git_dirty": s.git_dirty,
+                }
+            groups[key]["session_count"] += 1
+
+        machines_detail = [groups[k] for k in group_order]
+
         result_list.append({
             "project_id": pid,
             "display_name": meta["display_name"],
             "git_remote": meta["git_remote"],
             "session_count": len(sess_list),
             "machines": machines_by_recency,
+            "machines_detail": machines_detail,
             "latest_modified": meta["latest_modified"],
             "sessions": [s.to_dict() for s in sorted_sessions],
         })
@@ -772,6 +887,221 @@ async def handle_projects(request: web.Request) -> web.Response:
         "projects": result_list,
         "generated": _now_iso(),
     })
+
+
+# ---------------------------------------------------------------------------
+# POST /api/projects/pull — fast-forward the checkout on a specific machine
+# ---------------------------------------------------------------------------
+#
+# The script runs on the target machine via `python3 -` (same channel as
+# REMOTE_SCAN_SCRIPT). It resolves git.exe on Windows, validates the branch
+# is master/main, fetches origin, and fast-forwards ONLY if the tree is clean
+# and the local has no ahead commits. Output is JSON to stdout — never raises.
+#
+# Security: {cwd_literal} is a Python string literal (via json.dumps) so
+# arbitrary paths cannot escape the quoting. The endpoint ALSO whitelists
+# the cwd against cwds observed in known sessions on that machine before
+# ever dispatching, so the script only sees caller-controlled paths when
+# those same paths already exist in the state store.
+
+PULL_SCRIPT = r"""
+import json, os, sys, subprocess
+
+CWD = {cwd_literal}
+
+_win_kw = {{}}
+_GIT = 'git'
+if sys.platform == 'win32':
+    import shutil
+    _si = subprocess.STARTUPINFO()
+    _si.dwFlags |= 0x00000001
+    _si.wShowWindow = 0
+    _win_kw = {{'creationflags': 0x08000000, 'startupinfo': _si}}
+    for _p in (shutil.which('git'), shutil.which('git.exe'),
+               r'C:\Program Files\Git\cmd\git.exe',
+               r'C:\Program Files\Git\bin\git.exe'):
+        if _p and os.path.isfile(_p):
+            _GIT = _p
+            break
+
+def _run(args, timeout=15):
+    try:
+        r = subprocess.run([_GIT, '-C', CWD] + args,
+                           capture_output=True, text=True, timeout=timeout,
+                           env={{**os.environ, 'GIT_TERMINAL_PROMPT': '0'}},
+                           **_win_kw)
+        return r.returncode, (r.stdout or '').strip(), (r.stderr or '').strip()
+    except subprocess.TimeoutExpired:
+        return -1, '', 'timeout'
+    except Exception as exc:
+        return -1, '', str(exc)
+
+def _emit(d):
+    print(json.dumps(d))
+    sys.exit(0)
+
+# Branch gate — master / main only.
+rc, branch, err = _run(['rev-parse', '--abbrev-ref', 'HEAD'], timeout=5)
+if rc != 0:
+    _emit({{'ok': False, 'error': 'not_a_git_repo', 'stderr': err}})
+if branch not in ('master', 'main'):
+    _emit({{'ok': False, 'error': 'branch_not_allowed', 'branch': branch}})
+
+# Dirty gate.
+rc, out, err = _run(['status', '--porcelain', '--untracked-files=no'], timeout=5)
+if rc != 0:
+    _emit({{'ok': False, 'error': 'status_failed', 'branch': branch, 'stderr': err}})
+if out.strip():
+    _emit({{'ok': False, 'error': 'working_tree_dirty', 'branch': branch}})
+
+# Upstream.
+rc, upstream, err = _run(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{{u}}'], timeout=5)
+if rc != 0 or not upstream:
+    _emit({{'ok': False, 'error': 'no_upstream', 'branch': branch, 'stderr': err}})
+
+def _ahead_behind(up):
+    rc, out, _ = _run(['rev-list', '--left-right', '--count', up + '...HEAD'], timeout=5)
+    if rc != 0:
+        return None, None
+    parts = out.split()
+    if len(parts) != 2:
+        return None, None
+    try:
+        return int(parts[1]), int(parts[0])  # ahead, behind
+    except ValueError:
+        return None, None
+
+ahead_before, behind_before = _ahead_behind(upstream)
+if ahead_before is None:
+    _emit({{'ok': False, 'error': 'ahead_behind_failed', 'branch': branch, 'upstream': upstream}})
+if ahead_before > 0:
+    _emit({{'ok': False, 'error': 'local_commits_block_ff',
+            'branch': branch, 'upstream': upstream,
+            'ahead_before': ahead_before, 'behind_before': behind_before}})
+
+# Fetch.
+rc, out, err = _run(['fetch', '--no-tags', 'origin'], timeout=60)
+fetched = rc == 0
+if not fetched:
+    _emit({{'ok': False, 'error': 'fetch_failed', 'branch': branch, 'upstream': upstream,
+            'stderr': err}})
+
+ahead_before2, behind_before2 = _ahead_behind(upstream)
+# If fetch revealed nothing behind, nothing to merge — success no-op.
+if behind_before2 == 0:
+    _emit({{'ok': True, 'branch': branch, 'upstream': upstream,
+            'ahead_before': ahead_before2, 'behind_before': behind_before2,
+            'ahead_after': ahead_before2, 'behind_after': 0,
+            'fetched': True, 'merged': False, 'stdout': 'already up to date',
+            'stderr': ''}})
+
+# Fast-forward only.
+rc, out, err = _run(['merge', '--ff-only', upstream], timeout=60)
+merged = rc == 0
+ahead_after, behind_after = _ahead_behind(upstream) if merged else (ahead_before2, behind_before2)
+_emit({{'ok': merged, 'branch': branch, 'upstream': upstream,
+        'ahead_before': ahead_before2, 'behind_before': behind_before2,
+        'ahead_after': ahead_after, 'behind_after': behind_after,
+        'fetched': True, 'merged': merged,
+        'stdout': out, 'stderr': err,
+        **({{'error': 'merge_failed'}} if not merged else {{}})}})
+"""
+
+
+async def handle_projects_pull(request: web.Request) -> web.Response:
+    """POST /api/projects/pull — fast-forward a checkout on a fleet machine.
+
+    Body: {"machine": "avell-i7", "cwd": "C:\\Users\\rbgnr\\git\\foo"}
+
+    Validates machine + cwd against known sessions (path whitelist),
+    dispatches PULL_SCRIPT via `python3 -` stdin, returns the script's JSON
+    result. Triggers a background rescan on success so the UI badges refresh.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "bad_json"}, status=400)
+
+    machine = (body.get("machine") or "").strip()
+    cwd = body.get("cwd") or ""
+    if not machine or not cwd:
+        return web.json_response(
+            {"ok": False, "error": "missing machine or cwd"}, status=400,
+        )
+    if machine not in FLEET_MACHINES:
+        return web.json_response(
+            {"ok": False, "error": f"unknown machine: {machine}"}, status=400,
+        )
+
+    # Path whitelist: cwd must match a known session's cwd for this machine.
+    state = request.app["state"]
+    sessions: list[ClaudeSession] = state["sessions"]
+    allowed = {s.cwd for s in sessions if s.machine == machine and s.cwd}
+    if cwd not in allowed:
+        return web.json_response(
+            {"ok": False, "error": f"cwd not in known session paths for {machine}"},
+            status=400,
+        )
+
+    script = PULL_SCRIPT.format(cwd_literal=json.dumps(cwd))
+
+    t0 = time.monotonic()
+    try:
+        rc, stdout, stderr = await _pool_exec(
+            machine, "python3 -", timeout=90, input=script.encode("utf-8"),
+        )
+    except Exception as exc:
+        log.warning("POST /api/projects/pull(%s, %s): dispatch failed: %s", machine, cwd, exc)
+        return web.json_response(
+            {"ok": False, "error": "dispatch_failed", "stderr": str(exc)},
+            status=500,
+        )
+
+    duration_ms = int((time.monotonic() - t0) * 1000)
+
+    if rc != 0:
+        return web.json_response({
+            "ok": False, "error": "remote_nonzero_exit",
+            "rc": rc, "stderr": stderr.decode("utf-8", errors="replace"),
+            "duration_ms": duration_ms,
+        }, status=500)
+
+    try:
+        result = json.loads(stdout.decode("utf-8", errors="replace"))
+    except Exception as exc:
+        return web.json_response({
+            "ok": False, "error": "remote_bad_json",
+            "stdout": stdout.decode("utf-8", errors="replace")[:400],
+            "stderr": stderr.decode("utf-8", errors="replace")[:400],
+            "duration_ms": duration_ms,
+        }, status=500)
+
+    result["machine"] = machine
+    result["cwd"] = cwd
+    result["duration_ms"] = duration_ms
+
+    # On success trigger an async rescan so the UI's ahead/behind badges
+    # refresh via the next WS sessions-channel push. Fire-and-forget.
+    if result.get("ok") and result.get("merged"):
+        app = request.app
+        asyncio.ensure_future(_scan_and_push(app))
+
+    return web.json_response(result)
+
+
+async def _scan_and_push(app: web.Application) -> None:
+    """Kick a rescan and push fresh sessions/fleet/tmux to subscribers."""
+    try:
+        fleet = await discover_fleet()
+        sessions = await scan_all(app["local_machine"], fleet)
+        tmux = await list_all_tmux(app["local_machine"], fleet)
+        store: StateStore = app["store"]
+        await store.update_fleet(fleet)
+        await store.update_sessions(sessions)
+        await store.update_tmux(tmux)
+        store.set_last_scan(_now_iso())
+    except Exception as exc:
+        log.warning("_scan_and_push: %s", exc)
 
 
 async def handle_sessions_machine(request: web.Request) -> web.Response:
@@ -800,7 +1130,7 @@ async def handle_sessions_scan(request: web.Request) -> web.Response:
             {
                 "ok": True,
                 "sessions": [s.to_dict() for s in sessions],
-                "tmux": [t.to_dict() for t in tmux],
+                "tmux": enrich_tmux_dicts(tmux, sessions),
                 "last_scan": store.last_scan(),
             }
         )
@@ -838,15 +1168,15 @@ async def handle_sessions_launch(request: web.Request) -> web.Response:
         adapter = get_adapter(machine)
         is_remote_windows = (machine != local_machine and adapter.mux_type == "psmux")
 
-        # Build the command that gets typed into the pane after cd. When
-        # session_id is set we resume; otherwise we just run `claude` (fresh
-        # conversation). build_session_command already chains cd && claude.
-        if session_id:
-            claude_cmd = adapter.build_session_command(cwd, session_id, skip)
-        else:
-            cd = adapter.cd_command(cwd)
-            fresh = "claude --dangerously-skip-permissions" if skip else "claude"
-            claude_cmd = adapter.chain_commands(cd, fresh)
+        # Build the command that gets typed into the pane after cd. Uses
+        # build_pane_command so psmux panes on Windows (which default to
+        # PowerShell, not cmd.exe) get `Set-Location 'C:\\...'; claude`
+        # instead of the broken `cd /d C:\\... && claude` form.
+        claude_cmd = adapter.build_pane_command(
+            cwd,
+            session_id=session_id if session_id else None,
+            skip_permissions=skip,
+        )
 
         project = cwd.replace("\\", "/").rstrip("/").split("/")[-1] if cwd else "claude"
         project_safe = re.sub(r"[^a-zA-Z0-9_-]", "-", project) or "claude"
@@ -855,28 +1185,38 @@ async def handle_sessions_launch(request: web.Request) -> web.Response:
         safe_name = adapter.generate_mux_session_name(machine, project_safe, existing_names)
 
         if is_remote_windows:
-            # Windows psmux: the server cannot be created in a separate SSH
-            # connection because psmux does not fully daemonize on Windows —
-            # the server dies the moment the SSH that spawned it disconnects
-            # (even with `new-session -d`). So we must create + send-keys +
-            # attach all inside ONE persistent SSH session — the terminal
-            # window the user sees. That SSH stays alive for the whole
-            # session, keeping the psmux server alive with it.
-            from .launcher import _launch_macos_multi
+            # Windows psmux 3.3.0+ daemonizes cleanly — verified empirically:
+            # a session created with `new-session -d` from one SSH call
+            # SURVIVES after the SSH disconnects, and send-keys from a second
+            # SSH call correctly drives the pane. So:
+            #
+            #   (1) Run create + send-keys in ONE blocking SSH call from the
+            #       server. Non-interactive, definite exit code, no racing.
+            #   (2) Open a local terminal that runs a single `ssh -t "psmux
+            #       attach -t NAME"`. One command, no AppleScript keystroke
+            #       automation, no delays.
+            #
+            # Replaces the old _launch_macos_multi dance that typed 4
+            # commands into an iTerm2 window with fixed delays between them.
+            # That was inherently race-prone: if SSH took longer than the
+            # fixed delay, subsequent psmux commands leaked into the local
+            # zsh shell instead of landing in PowerShell on the remote.
             info = FLEET_MACHINES.get(machine, {})
             alias = info.get("ssh_alias", machine)
-            create_cmd = adapter.mux_create_session(safe_name)
-            sendkeys_cmd = adapter.mux_send_keys(safe_name, claude_cmd)
-            attach_cmd = adapter.mux_attach(safe_name)
-            result = await _launch_macos_multi(
-                [
-                    f"ssh {alias}",    # SSH into Windows → PowerShell
-                    create_cmd,         # psmux new-session -d -s NAME
-                    sendkeys_cmd,       # psmux send-keys -t NAME "cd && claude" Enter
-                    attach_cmd,         # psmux attach -t NAME
-                ],
-                delays=[0, 2, 0.8, 0.5],
-            )
+            quoted_name = adapter._ps_single_quote(safe_name)
+            create_line = f"{adapter.mux_type} new-session -d -s {quoted_name}"
+            sendkeys_line = adapter.mux_send_keys_ps(safe_name, claude_cmd)
+            setup_payload = f"{create_line}; {sendkeys_line}"
+
+            rc, _stdout, stderr = await _pool_exec(machine, setup_payload, timeout=20)
+            if rc != 0:
+                err = stderr.decode("utf-8", errors="replace").strip() or "psmux setup failed"
+                log.error("is_remote_windows setup rc=%d: %s", rc, err[:300])
+                return web.json_response({"ok": False, "error": err[:400]}, status=500)
+
+            attach_remote_cmd = f"{adapter.mux_type} attach -t {quoted_name}"
+            terminal_cmd = f"ssh {shlex.quote(alias)} -t {shlex.quote(attach_remote_cmd)}"
+            result = await launch_terminal(terminal_cmd, terminal_id=terminal_id)
         else:
             # tmux on macOS/Linux: create session + attach works perfectly
             result = await launch_new_tmux_and_attach(safe_name, machine, cwd=cwd, command=claude_cmd, terminal_id=terminal_id)
@@ -938,15 +1278,15 @@ async def handle_fleet(request: web.Request) -> web.Response:
 async def handle_tmux(request: web.Request) -> web.Response:
     """Return all tmux sessions across fleet."""
     store: StateStore = request.app["store"]
-    return web.json_response([t.to_dict() for t in store.tmux()])
+    return web.json_response(enrich_tmux_dicts(store.tmux(), store.sessions()))
 
 
 async def handle_tmux_machine(request: web.Request) -> web.Response:
     """Return tmux sessions for a specific machine."""
     machine = request.match_info["machine"]
     store: StateStore = request.app["store"]
-    filtered = [t.to_dict() for t in store.tmux() if t.machine == machine]
-    return web.json_response(filtered)
+    tmux_for_machine = [t for t in store.tmux() if t.machine == machine]
+    return web.json_response(enrich_tmux_dicts(tmux_for_machine, store.sessions()))
 
 
 async def handle_tmux_create(request: web.Request) -> web.Response:
@@ -991,6 +1331,70 @@ async def handle_tmux_create(request: web.Request) -> web.Response:
     else:
         log.error("POST /api/tmux/create machine=%s name=%s %d: %s", machine, name, status, result.get("error"))
     return web.json_response(result, status=status)
+
+
+async def _tmux_has_session(machine: str, session_name: str, mux: str) -> tuple[int, str, str]:
+    """Run `<mux> has-session -t <name>` on a fleet machine. Returns (rc, stdout, stderr).
+
+    rc == 0 → session exists. rc > 0 → session does not exist. rc < 0 → probe
+    itself failed (SSH error, timeout, etc.) and the caller should treat the
+    target as unreachable rather than definitively dead.
+    """
+    from .executor import get_executor, SSHExecutor
+    executor = get_executor(machine)
+    try:
+        if executor.is_local:
+            rc, stdout, stderr = await executor.exec(
+                [mux, "has-session", "-t", session_name], timeout=5,
+            )
+            return rc, stdout.decode("utf-8", errors="replace"), stderr.decode("utf-8", errors="replace")
+        else:
+            assert isinstance(executor, SSHExecutor)
+            quoted = shlex.quote(session_name)
+            rc, stdout, stderr = await executor.exec_shell(
+                f"{mux} has-session -t {quoted}", timeout=8,
+            )
+            return rc, stdout.decode("utf-8", errors="replace"), stderr.decode("utf-8", errors="replace")
+    except asyncio.TimeoutError:
+        return -1, "", "timed out"
+    except OSError as exc:
+        return -1, "", str(exc)
+
+
+async def handle_tmux_verify(request: web.Request) -> web.Response:
+    """Pre-flight liveness probe for a tmux/psmux session on a fleet machine.
+
+    Used by the frontend Attach button to avoid spawning a terminal for a
+    session that no longer exists (stale scan list). Response is informational
+    only — no side effects, no state mutation.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid JSON body"}, status=400)
+    machine = body.get("machine", "")
+    session_name = body.get("session_name", "")
+    if not machine or not session_name:
+        return web.json_response(
+            {"ok": False, "error": "machine and session_name required"}, status=400,
+        )
+    info = FLEET_MACHINES.get(machine, {})
+    mux = info.get("mux", "tmux")
+    rc, _stdout, stderr = await _tmux_has_session(machine, session_name, mux)
+    alive = (rc == 0)
+    payload: dict = {
+        "ok": True,
+        "alive": alive,
+        "machine": machine,
+        "session_name": session_name,
+    }
+    if not alive and rc < 0:
+        # Probe itself failed — surface the reason so the UI can distinguish
+        # "session gone" from "host unreachable".
+        payload["error"] = stderr.strip() or "probe failed"
+    elif not alive and stderr:
+        payload["error"] = stderr.strip()
+    return web.json_response(payload)
 
 
 async def handle_tmux_connect(request: web.Request) -> web.Response:
@@ -2302,6 +2706,24 @@ print(json.dumps({{'ok': True, 'name': name}}))
 # ---------------------------------------------------------------------------
 
 
+def _remove_pane_subscriber(state: dict, machine: str, session_name: str, ws) -> None:
+    """Discard a WebSocket from a pane stream's subscriber set; tear down the
+    stream when it's the last subscriber.
+
+    Safe to call for unknown (machine, session_name) keys — no-op.
+    """
+    key = (machine, session_name)
+    info = state["pane_streams"].get(key)
+    if not info:
+        return
+    info["subscribers"].discard(ws)
+    if not info["subscribers"]:
+        task = info.get("task")
+        if task is not None and not task.done():
+            task.cancel()
+        del state["pane_streams"][key]
+
+
 async def _push_pane_output(state: dict, key: tuple, content: str) -> None:
     """Push pane output to all subscribers of this stream."""
     info = state["pane_streams"].get(key)
@@ -2442,7 +2864,7 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
                     elif channel == "fleet":
                         snap = store.fleet()
                     elif channel == "tmux":
-                        snap = [t.to_dict() for t in store.tmux()]
+                        snap = enrich_tmux_dicts(store.tmux(), store.sessions())
                     else:
                         snap = []
                     await ws.send_str(
@@ -2686,7 +3108,15 @@ def create_app(
     Static files under src/web/ are served at /.
     All routes are registered here.
     """
-    app = web.Application(middlewares=[cors_middleware, rate_limit_middleware, auth_middleware])
+    # error_middleware is FIRST (outermost): it has to wrap every other
+    # middleware and every handler so unhandled exceptions anywhere in the
+    # chain become structured JSON 500 responses the UI can render.
+    app = web.Application(middlewares=[
+        error_middleware,
+        cors_middleware,
+        rate_limit_middleware,
+        auth_middleware,
+    ])
 
     # Install in-memory log handler on the claude_manager logger hierarchy
     mem_handler = MemoryLogHandler(max_entries=500)
@@ -2764,6 +3194,7 @@ def create_app(
     app.router.add_post("/api/sessions/unpin", handle_sessions_unpin)
     app.router.add_post("/api/projects/pin", handle_projects_pin)
     app.router.add_post("/api/projects/unpin", handle_projects_unpin)
+    app.router.add_post("/api/projects/pull", handle_projects_pull)
     app.router.add_get("/api/machines/{machine}/terminals", handle_machine_terminals)
     app.router.add_post("/api/sessions/archive", handle_sessions_archive)
     app.router.add_post("/api/sessions/unarchive", handle_sessions_unarchive)
@@ -2773,6 +3204,7 @@ def create_app(
     app.router.add_get("/api/tmux", handle_tmux)
     app.router.add_get("/api/tmux/{machine}", handle_tmux_machine)
     app.router.add_post("/api/tmux/create", handle_tmux_create)
+    app.router.add_post("/api/tmux/verify", handle_tmux_verify)
     app.router.add_post("/api/tmux/connect", handle_tmux_connect)
     app.router.add_post("/api/tmux/connect-remote", handle_tmux_connect_remote)
     app.router.add_post("/api/tmux/kill", handle_tmux_kill)
