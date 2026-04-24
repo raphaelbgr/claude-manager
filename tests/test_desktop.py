@@ -219,23 +219,24 @@ class TestWaitForServer:
 class TestRunDesktop:
     """run_desktop() handles missing webview gracefully."""
 
-    def test_missing_webview_prints_error_and_exits(self):
+    def test_missing_webview_raises_import_error(self):
+        """Since commit 7110ba9, run_desktop raises ImportError instead of
+        sys.exit(1) so main.py can catch it and fall back to the web-server +
+        auto-open-browser path (SystemExit bypasses `except (ImportError,
+        Exception)` because it derives from BaseException, not Exception)."""
         from src.desktop import run_desktop
 
-        # Patch sys.modules to make webview unavailable
         import sys
         saved = sys.modules.get("webview", None)
         sys.modules["webview"] = None  # type: ignore[assignment]
         try:
-            with pytest.raises(SystemExit) as exc_info:
+            with pytest.raises(ImportError):
                 run_desktop()
         finally:
             if saved is None:
                 sys.modules.pop("webview", None)
             else:
                 sys.modules["webview"] = saved
-
-        assert exc_info.value.code == 1
 
     def test_run_desktop_checks_if_server_is_ours(self):
         """If a server is already running, run_desktop reuses it instead of starting a new one."""

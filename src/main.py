@@ -105,6 +105,37 @@ def print_banner(bind: str, port: int) -> None:
         print(text.encode("ascii", errors="replace").decode("ascii"))
 
 
+def _open_browser_after_ready(bind: str, port: int, delay: float = 1.5) -> None:
+    """Open the default browser to the claude-manager web UI after a short delay.
+
+    Used on the desktop→web fallback so clicking the Start-Menu shortcut on
+    Windows (where pywebview can't load — pythonnet has no Py3.14 wheel yet,
+    see commits e428b01 / 7110ba9) still surfaces a visible UI instead of
+    silently running headless.
+
+    Fire-and-forget: the thread is daemonized so a browser-open failure never
+    blocks the server from running.
+    """
+    import threading
+    import time
+    import webbrowser
+
+    # Prefer localhost when we bound to the wildcard — 0.0.0.0 in a URL bar
+    # resolves differently across browsers (some reject it, some reach the
+    # real LAN IP).
+    host = "localhost" if bind in ("0.0.0.0", "127.0.0.1", "::", "") else bind
+    url = f"http://{host}:{port}"
+
+    def _open() -> None:
+        time.sleep(delay)
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
+
+    threading.Thread(target=_open, daemon=True).start()
+
+
 def _daemonize(bind: str, port: int) -> None:
     """Fork to background and run the API server as a daemon (no terminal needed).
 
@@ -195,6 +226,11 @@ def main(argv: list[str] | None = None) -> None:
         print(f"Desktop window unavailable ({e}), starting web server...")
         from .server import run_server
         print_banner(args.bind, args.port)
+        # Auto-open the default browser so launching from the Start-Menu /
+        # Dock shortcut yields a visible UI instead of a silent headless
+        # process. Matters especially on Windows Py3.14 where pywebview
+        # can't install (pythonnet has no wheel yet).
+        _open_browser_after_ready(args.bind, args.port)
         run_server(port=args.port, bind=args.bind)
 
 
