@@ -111,6 +111,64 @@ def applescript_string(s: str) -> str:
     return f'"{escaped}"'
 
 
+_AUTO_ADAPTER_CACHE: dict[str, str | None] = {}
+
+
+def _reg_os_for_local() -> str:
+    if sys.platform == "win32":
+        return "win32"
+    if sys.platform.startswith("linux"):
+        return "linux"
+    return "darwin"
+
+
+async def _auto_pick_local_adapter_id() -> str | None:
+    """Probe installed terminals on the daemon host, cache the top-priority
+    one, return its id. Invoked only when the caller didn't supply a
+    terminal_id. Prevents the primary "click Attach with no dropdown" path
+    from falling through to the legacy _launch_windows fallback, which tries
+    to run cmd.exe-syntax commands (cd /d, &&) inside PowerShell -Command
+    where they are invalid (PS 5.1).
+    """
+    reg_os = _reg_os_for_local()
+    if reg_os in _AUTO_ADAPTER_CACHE:
+        return _AUTO_ADAPTER_CACHE[reg_os]
+
+    from . import terminals as _terms
+    from .subprocess_utils import _win32_asyncio_kwargs
+
+    async def runner(shell_script: str) -> tuple[int, bytes, bytes]:
+        if sys.platform == "win32":
+            argv = ["powershell", "-NoProfile", "-Command", shell_script]
+        else:
+            argv = ["/bin/bash", "-c", shell_script]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                **_win32_asyncio_kwargs(),
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=6)
+            return (proc.returncode if proc.returncode is not None else 1), stdout, stderr
+        except Exception as probe_exc:
+            return 1, b"", str(probe_exc).encode()
+
+    try:
+        adapter = await _terms.auto_pick(reg_os, runner)
+    except Exception as exc:
+        log.warning("auto_pick failed: %s", exc)
+        adapter = None
+
+    picked_id = adapter.id if adapter is not None else None
+    _AUTO_ADAPTER_CACHE[reg_os] = picked_id
+    if picked_id:
+        log.info("auto-picked terminal adapter: %s (%s)", picked_id, reg_os)
+    else:
+        log.warning("auto-pick: no adapter installed on %s — using legacy spawn", reg_os)
+    return picked_id
+
+
 async def launch_terminal(
     command: str,
     *,
@@ -120,24 +178,24 @@ async def launch_terminal(
     """Open a new terminal window on the local machine and run `command` in it.
 
     When `terminal_id` is provided, dispatch through the matching adapter in
-    src.terminals (e.g. "iterm2", "wt", "alacritty"). When it's None or the id
-    doesn't resolve, fall back to the legacy auto-detect path so nothing
-    regresses for existing callers.
+    src.terminals (e.g. "iterm2", "wt", "alacritty"). When it's None, probe
+    installed terminals once and route through the highest-priority one — the
+    same path the dropdown takes. Only if no adapter is installed does the
+    legacy auto-detect run; that fallback is known-fragile on Windows
+    (spawns cmd.exe-syntax commands inside PowerShell -Command).
 
     `title` is forwarded to the adapter and, for adapters that support it,
     overrides the ANSI OSC 0 title that title_prefix_for() may have already
     baked into `command`.
     """
     log.info("launch_terminal: terminal_id=%s command=%s...", terminal_id, command[:80])
+
+    if not terminal_id:
+        terminal_id = await _auto_pick_local_adapter_id()
+
     if terminal_id:
         from . import terminals as _terms
-        # Map Python's sys.platform to the adapter registry's os key.
-        reg_os = (
-            "win32" if sys.platform == "win32"
-            else "linux" if sys.platform.startswith("linux")
-            else "darwin"
-        )
-        adapter = _terms.get_adapter(reg_os, terminal_id)
+        adapter = _terms.get_adapter(_reg_os_for_local(), terminal_id)
         if adapter is not None:
             result = await adapter.launch(command, title=title)
             if not result.get("ok"):
@@ -500,7 +558,8 @@ async def launch_tmux_attach(session_name: str, machine: str, skip_permissions: 
         # Non-mac orchestrator fallback: open a terminal running SSH, then
         # let the user press Enter on the attach command we've pre-typed.
         return await launch_terminal(
-            f"ssh {shlex.quote(alias)} -t {shlex.quote(attach_cmd)}"
+            f"ssh {shlex.quote(alias)} -t {shlex.quote(attach_cmd)}",
+            terminal_id=terminal_id, title=title,
         )
 
     # tmux: SSH -t with direct attach works.

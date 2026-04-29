@@ -823,7 +823,23 @@ class TestTmuxConnectEndpoint:
                 json={"machine": "ubuntu-desktop", "session_name": "remote-work"},
             )
             mock_attach.assert_awaited_once_with(
-                "remote-work", "ubuntu-desktop", skip_permissions=False,
+                "remote-work", "ubuntu-desktop",
+                skip_permissions=False, terminal_id=None,
+            )
+
+    async def test_forwards_terminal_id_when_provided(self, cli):
+        mock_attach = AsyncMock(return_value={"ok": True})
+        with patch("src.server.launch_tmux_attach", mock_attach):
+            await cli.post(
+                "/api/tmux/connect",
+                json={
+                    "machine": "mac-mini", "session_name": "w",
+                    "terminal_id": "iterm2",
+                },
+            )
+            mock_attach.assert_awaited_once_with(
+                "w", "mac-mini",
+                skip_permissions=False, terminal_id="iterm2",
             )
 
 

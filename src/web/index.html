@@ -1009,6 +1009,10 @@ function ReadmeModal({ machine, readmePath, repoLabel, onClose }) {
 // the dropdown after the page has been up for a while.
 const _terminalCache = new Map();
 function fetchMachineTerminals(machine) {
+  // LOCAL_MACHINE is populated from /health once per page load but the first
+  // render may still see a null prop — avoid a nonsense /api/machines/null
+  // request that pollutes the cache and server logs.
+  if (!machine) return Promise.resolve([]);
   if (_terminalCache.has(machine)) return _terminalCache.get(machine);
   const p = apiFetch(`/api/machines/${encodeURIComponent(machine)}/terminals`)
     .then(r => r.json())
@@ -1675,15 +1679,28 @@ function TmuxCard({ session, onConnect, connecting, onKill, killing, onRemoteAtt
             opacity: remoteAttaching ? 0.6 : 1,
           },
         }, remoteAttaching ? 'Opening…' : 'Remote'),
-        h('button', {
-          className: `compact-action-btn btn btn-tmux`,
-          onClick: (e) => { e.stopPropagation(); onConnect(session); },
-          disabled: connecting,
-          title: local
-            ? `Attach to this ${muxName} session in a new terminal window`
-            : `Open a local terminal and attach to this ${muxName} session on ${session.machine}`,
-          style: { opacity: connecting ? 0.6 : 1 },
-        }, connecting ? 'Attaching…' : 'Attach'),
+        h('div', { className: 'split-btn-group', style: { display: 'inline-flex' } },
+          h('button', {
+            className: `compact-action-btn btn btn-tmux split-btn-primary`,
+            onClick: (e) => { e.stopPropagation(); onConnect(session); },
+            disabled: connecting,
+            title: local
+              ? `Attach to this ${muxName} session in a new terminal window (click the caret to pick a terminal)`
+              : `Open a local terminal and attach to this ${muxName} session on ${session.machine} (click the caret to pick a terminal)`,
+            style: { opacity: connecting ? 0.6 : 1 },
+          }, connecting ? 'Attaching…' : 'Attach'),
+          h(TerminalPicker, {
+            // Terminal runs on the orchestrator (the daemon host), not on
+            // the remote where the mux session lives — attach opens a new
+            // terminal window locally that SSH's into the mux session. So
+            // probe the daemon host's adapters regardless of which machine
+            // the tmux session lives on.
+            machine: LOCAL_MACHINE || session.machine,
+            variant: 'tmux',
+            disabled: connecting,
+            onPick: tid => onConnect(session, tid),
+          }),
+        ),
       ),
 
       // Stream toggle + terminal preview
@@ -5289,7 +5306,7 @@ function App() {
   }, [sessions, tmuxSessions]);
 
   // ── Tmux connect ──────────────────────────────────────────────────────────
-  const handleConnectTmux = useCallback(async (session) => {
+  const handleConnectTmux = useCallback(async (session, terminalId) => {
     const name = session.session_name || session.name;
     const key = `${session.machine}-${name}`;
     setConnectingId(key);
@@ -5317,25 +5334,27 @@ function App() {
         // Network error on verify — fall through and try the attach anyway.
       }
 
+      const payload = {
+        machine: session.machine,
+        session_name: name,
+        skip_permissions: skipPermissions,
+        ...(terminalId ? { terminal_id: terminalId } : {}),
+      };
       const res = await apiFetch('/api/tmux/connect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          machine: session.machine,
-          session_name: name,
-          skip_permissions: skipPermissions,
-        }),
+        body: JSON.stringify(payload),
       });
-      if (!res.ok) {
-        toast(`Attach failed (${res.status})`, 'error');
+      const text = await res.text();
+      let data = {};
+      try { data = JSON.parse(text); } catch { /* not json */ }
+      if (!res.ok || data.ok === false) {
+        const msg = data.error || text.slice(0, 300) || `HTTP ${res.status}`;
+        console.error('[tmux-connect failed]', res.status, msg, payload);
+        toast(`Attach failed (${res.status}): ${msg}`, 'error', 8000);
         return;
       }
-      const data = await res.json();
-      if (data.ok) {
-        toast(`Attached to "${name}" on ${session.machine}`, 'success');
-      } else {
-        toast(`Attach error: ${data.error}`, 'error');
-      }
+      toast(`Attached to "${name}" on ${session.machine}`, 'success');
     } catch (e) {
       toast(`Network error: ${e.message || 'Could not reach server'}`, 'error');
     } finally {
@@ -5347,11 +5366,11 @@ function App() {
   // the matching tmux card on the right pane so the user sees which session
   // they just attached to. Attach is fire-and-forget; the flash runs in
   // parallel so the UI responds even if SSH is slow.
-  const handleAttachAndFlash = useCallback((tmuxSession) => {
+  const handleAttachAndFlash = useCallback((tmuxSession, terminalId) => {
     if (!tmuxSession) return;
     const name = tmuxSession.session_name || tmuxSession.name;
     selectTmuxCard(tmuxSession.machine, name);
-    handleConnectTmux(tmuxSession);
+    handleConnectTmux(tmuxSession, terminalId);
   }, [handleConnectTmux, selectTmuxCard]);
 
   // ── Kill tmux session ────────────────────────────────────────────────────

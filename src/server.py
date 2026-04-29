@@ -1412,14 +1412,19 @@ async def handle_tmux_connect(request: web.Request) -> web.Response:
     machine = body.get("machine", "")
     session_name = body.get("session_name", "")
     skip_permissions = bool(body.get("skip_permissions", False))
+    terminal_id = body.get("terminal_id") or None
     if not machine or not session_name:
         return web.json_response({"ok": False, "error": "machine and session_name required"}, status=400)
-    result = await launch_tmux_attach(session_name, machine, skip_permissions=skip_permissions)
+    result = await launch_tmux_attach(
+        session_name, machine,
+        skip_permissions=skip_permissions,
+        terminal_id=terminal_id,
+    )
     status = 200 if result.get("ok") else 500
     if result.get("ok"):
-        log.info("POST /api/tmux/connect machine=%s session=%s %d", machine, session_name, status)
+        log.info("POST /api/tmux/connect machine=%s session=%s terminal=%s %d", machine, session_name, terminal_id or "auto", status)
     else:
-        log.error("POST /api/tmux/connect machine=%s session=%s %d: %s", machine, session_name, status, result.get("error"))
+        log.error("POST /api/tmux/connect machine=%s session=%s terminal=%s %d: %s", machine, session_name, terminal_id or "auto", status, result.get("error"))
     return web.json_response(result, status=status)
 
 

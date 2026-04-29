@@ -75,6 +75,36 @@ def _is_terminal_spawn(cmd):
     return name in _TERMINAL_SPAWN_BINARIES
 
 
+# ---------------------------------------------------------------------------
+# Disable the launch_terminal auto-pick during tests.
+#
+# In production, launch_terminal() probes installed terminals on the daemon
+# host and routes through the highest-priority adapter when no terminal_id is
+# supplied. Unit tests assert the legacy _launch_macos / _launch_linux /
+# _launch_windows dispatch — auto-pick would short-circuit that path and the
+# assertions would never fire. Force auto-pick to return None (= "no adapter
+# picked, fall through to legacy"). Tests that specifically exercise the
+# auto-pick path can override this fixture.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _disable_terminal_auto_pick(monkeypatch):
+    try:
+        import src.launcher as _launcher
+    except ImportError:
+        yield
+        return
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr(
+        _launcher, "_auto_pick_local_adapter_id",
+        AsyncMock(return_value=None), raising=False,
+    )
+    # Also clear the per-process cache so state doesn't leak across tests.
+    if hasattr(_launcher, "_AUTO_ADAPTER_CACHE"):
+        _launcher._AUTO_ADAPTER_CACHE.clear()
+    yield
+
+
 @pytest.fixture(autouse=True)
 def _block_real_terminal_spawns(monkeypatch):
     import os
