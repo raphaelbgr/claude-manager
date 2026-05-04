@@ -1,8 +1,8 @@
 {
-  "version": 173,
-  "commit": "9b83f9e",
-  "commit_full": "9b83f9ec71a5b2635c633ce7d188e2029609e12c",
+  "version": 175,
+  "commit": "94e9f5e",
+  "commit_full": "94e9f5e95ce7ccf0dc4b80378ceafe9e2774ed23",
   "branch": "master",
-  "date": "2026-05-04T17:26:46-03:00",
-  "message": "fix(win32): prefer pwsh 7 in terminal adapters; harden install_cmd"
+  "date": "2026-05-04T17:52:38-03:00",
+  "message": "fix(win32): switch OSC0 title prefix from single to double quotes"
 }
