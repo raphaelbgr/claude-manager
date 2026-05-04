@@ -68,11 +68,19 @@ def build_window_title(
 def _title_prefix_unix(title: str) -> str:
     """printf the ANSI OSC 0 sequence that sets the terminal window/tab title.
     Honored by iTerm2, Terminal.app, gnome-terminal, konsole, xterm, alacritty,
-    Windows Terminal, tmux (when pass-through is on). Silently ignored elsewhere."""
-    # Single-quote-safe: title cannot contain arbitrary quotes because we only
-    # build it from fleet names / session names which are sanitised upstream.
-    safe = title.replace("'", "'\\''")
-    return f"printf '\\033]0;{safe}\\007'; "
+    Windows Terminal, tmux (when pass-through is on). Silently ignored elsewhere.
+
+    Uses double quotes — not single — because the whole SSH command is later
+    wrapped by ``shlex.quote`` (which uses single quotes). If this prefix
+    contained inner single quotes, ``shlex.quote`` would escape them as the
+    POSIX ``'\\''`` sequence, which a downstream Windows host (``pwsh -Command``
+    parsing the SSH invocation) cannot tokenize — the chain produces garbled
+    args like ``'"' tmux attach -t name'"*'`` and the launch fails with
+    ``error 0x80070002 (file not found)``. Double-quoted printf is bash-
+    equivalent here because the OSC 0 payload has no ``$`` to interpolate.
+    """
+    safe = title.replace('"', '\\"')
+    return f'printf "\\033]0;{safe}\\007"; '
 
 
 def _title_prefix_powershell(title: str) -> str:
