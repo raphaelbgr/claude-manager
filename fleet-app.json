@@ -14,7 +14,9 @@
       ".venv"
     ],
     [
-      ".venv/bin/pip",
+      ".venv/bin/python",
+      "-m",
+      "pip",
       "install",
       "-e",
       ".[all]"

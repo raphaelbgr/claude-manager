@@ -357,10 +357,11 @@ async def _launch_linux(command: str) -> dict:
 
 
 async def _launch_windows(command: str) -> dict:
-    """Launch a PowerShell window on Windows."""
+    """Launch a PowerShell window on Windows. Prefers pwsh 7 over powershell 5.1."""
     # Escape double quotes inside the command for PowerShell -Command string
     ps_command = command.replace('"', '`"')
-    full_cmd = f'cmd /c start powershell -NoExit -Command "{ps_command}"'
+    host = "pwsh" if (shutil.which("pwsh") or shutil.which("pwsh.exe")) else "powershell"
+    full_cmd = f'cmd /c start {host} -NoExit -Command "{ps_command}"'
     try:
         proc = await asyncio.create_subprocess_shell(
             full_cmd,

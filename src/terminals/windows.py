@@ -7,9 +7,29 @@ detection is existence-via-Get-Command.
 from __future__ import annotations
 
 import asyncio
+import shutil
 
 from .base import TerminalAdapter
 from ..subprocess_utils import _win32_asyncio_kwargs
+
+
+_PWSH_PATH: str | None = None
+_PWSH_PROBED = False
+
+
+def _wt_shell() -> str:
+    """Return the PowerShell host to run inside Windows Terminal.
+
+    Prefers pwsh.exe (PowerShell 7+) over powershell.exe (5.1). PS 5.1 has
+    stricter syntax (no `&&`/`||` chain operators, different quoting, no
+    ternary) and the inner commands we hand WT — SSH-with-quoted-bash, tmux
+    attach lines — routinely trip on it.
+    """
+    global _PWSH_PATH, _PWSH_PROBED
+    if not _PWSH_PROBED:
+        _PWSH_PATH = shutil.which("pwsh") or shutil.which("pwsh.exe")
+        _PWSH_PROBED = True
+    return "pwsh.exe" if _PWSH_PATH else "powershell.exe"
 
 
 async def _spawn_shell(shell_cmd: str) -> dict:
@@ -46,11 +66,12 @@ class WindowsTerminalAdapter(TerminalAdapter):
         return "if (Get-Command wt.exe -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"
 
     async def launch(self, command: str, *, title: str | None = None) -> dict:
-        # wt -- pwsh -NoExit -Command <cmd> opens a new WT window/tab running
+        # wt -- <host> -NoExit -Command <cmd> opens a new WT window/tab running
         # the command in a PowerShell host. --title sets the tab label.
         escaped = _escape_pwsh(command)
         title_arg = f'--title "{_escape_pwsh(title)}" ' if title else ""
-        shell = f'cmd /c start "" wt.exe {title_arg}-- powershell.exe -NoExit -Command "{escaped}"'
+        host = _wt_shell()
+        shell = f'cmd /c start "" wt.exe {title_arg}-- {host} -NoExit -Command "{escaped}"'
         return await _spawn_shell(shell)
 
 
