@@ -1,8 +1,8 @@
 {
-  "version": 170,
-  "commit": "89e9af9",
-  "commit_full": "89e9af95c42f52e8ec2794e592585ed02770de6e",
+  "version": 173,
+  "commit": "9b83f9e",
+  "commit_full": "9b83f9ec71a5b2635c633ce7d188e2029609e12c",
   "branch": "master",
-  "date": "2026-04-24T02:19:11-03:00",
-  "message": "fix(main): auto-open browser on Windows pywebview-fallback path"
+  "date": "2026-05-04T17:26:46-03:00",
+  "message": "fix(win32): prefer pwsh 7 in terminal adapters; harden install_cmd"
 }
