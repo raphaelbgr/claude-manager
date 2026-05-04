@@ -1,8 +1,8 @@
 {
-  "version": 175,
-  "commit": "94e9f5e",
-  "commit_full": "94e9f5e95ce7ccf0dc4b80378ceafe9e2774ed23",
+  "version": 177,
+  "commit": "b5af7f6",
+  "commit_full": "b5af7f6cf6defb2d3b37850b3029a34950bb0aac",
   "branch": "master",
-  "date": "2026-05-04T17:52:38-03:00",
-  "message": "fix(win32): switch OSC0 title prefix from single to double quotes"
+  "date": "2026-05-04T17:56:23-03:00",
+  "message": "fix(install): idempotent venv setup so auto-update doesn't fail on EACCES"
 }
