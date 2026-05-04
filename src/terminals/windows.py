@@ -7,6 +7,7 @@ detection is existence-via-Get-Command.
 from __future__ import annotations
 
 import asyncio
+import base64
 import shutil
 
 from .base import TerminalAdapter
@@ -66,12 +67,18 @@ class WindowsTerminalAdapter(TerminalAdapter):
         return "if (Get-Command wt.exe -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"
 
     async def launch(self, command: str, *, title: str | None = None) -> dict:
-        # wt -- <host> -NoExit -Command <cmd> opens a new WT window/tab running
-        # the command in a PowerShell host. --title sets the tab label.
-        escaped = _escape_pwsh(command)
+        # wt.exe's argument parser treats `;` as a "new tab" separator —
+        # even inside a quoted -Command argument — and opens additional
+        # tabs using the default profile (typically cmd.exe). For an SSH
+        # command like `printf '...'; tmux attach -t name`, that means a
+        # pwsh tab plus 2-3 stray cmd tabs containing fragments and
+        # errors. Pass the command via -EncodedCommand (base64 UTF-16-LE,
+        # PowerShell's standard remote-command transport) so wt sees no
+        # `;` characters and routes the whole command to a single pwsh tab.
+        encoded = base64.b64encode(command.encode("utf-16-le")).decode("ascii")
         title_arg = f'--title "{_escape_pwsh(title)}" ' if title else ""
         host = _wt_shell()
-        shell = f'cmd /c start "" wt.exe {title_arg}-- {host} -NoExit -Command "{escaped}"'
+        shell = f'cmd /c start "" wt.exe {title_arg}-- {host} -NoExit -EncodedCommand {encoded}'
         return await _spawn_shell(shell)
 
 
