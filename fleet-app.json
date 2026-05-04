@@ -9,9 +9,7 @@
   "install_cmd": [
     [
       "python",
-      "-m",
-      "venv",
-      ".venv"
+      "scripts/setup-venv.py"
     ],
     [
       ".venv/bin/python",
