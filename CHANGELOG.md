@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased] - 2026-05-17
+
+### Documentation
+
+- Added `PENDING.md` at repo root: real-code-derived pending work items prioritised P1–P3.
+- Added `docs/bmad/prd.md`: BMAD v6 product requirements document covering problem statement, goals, user personas, features, constraints, and success metrics — derived from actual source code.
+- Added `docs/bmad/architecture.md`: BMAD v6 architecture document covering system context, component decomposition, data models, API contracts, infrastructure requirements, and technology decisions — derived from actual source code.
+- Updated `CHANGELOG.md` with this maintenance entry.
+
 ## [1.0.0] - 2026-04-09
 
 ### Added
