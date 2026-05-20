@@ -1,8 +1,8 @@
 {
-  "version": 199,
-  "commit": "6cdf4c3",
-  "commit_full": "6cdf4c3563d1ef0832662c333cce00169c6e15a1",
+  "version": 201,
+  "commit": "5ce132d",
+  "commit_full": "5ce132d4166b05b7d15568810bb759ec56ee7e3c",
   "branch": "master",
-  "date": "2026-05-20T09:38:46-03:00",
-  "message": "fix(tests): defensive AST check for tl.event/track/span kwarg collisions"
+  "date": "2026-05-20T14:42:34-03:00",
+  "message": "test: 271 new tests across 4 files \u00e2\u20ac\u201d every API route, every launcher branch, every scanner path, runtime tracelink collision detection"
 }
