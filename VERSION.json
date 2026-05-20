@@ -1,8 +1,8 @@
 {
-  "version": 203,
-  "commit": "8e59e40",
-  "commit_full": "8e59e400067a3d88d531725fc6bc225674e221eb",
+  "version": 205,
+  "commit": "c8766d4",
+  "commit_full": "c8766d42bdec9c64ddb4ed398287360d2a3e723e",
   "branch": "master",
-  "date": "2026-05-20T14:57:13-03:00",
-  "message": "test: fix 6 pre-existing failures (detect_local_machine patching mismatch + COMPUTERNAME env-var leak)"
+  "date": "2026-05-20T16:48:04-03:00",
+  "message": "feat(web): per-machine \"+ New\" / \"+ Tmux\" buttons in Project view run header"
 }
