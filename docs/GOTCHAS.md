@@ -180,6 +180,16 @@ The agent-written instrumentation in `tmux_manager.py` emitted
 data kwargs to `tl.event` or `tl.track`, don't reuse the function's own
 parameter names (`name`, `point`).
 
+**Enforcement:** `tests/test_tracelink_no_kwarg_collision.py` AST-walks
+every `src/**/*.py`, finds every `tl.event(...)` / `tl.track(...)` /
+`span(...)` call, and asserts none of them use the reserved kwarg.
+This catches the collision class statically without having to actually
+invoke each callsite — the previous miss happened because the
+collision is invisible to `ast.parse` and the offending callsite
+wasn't exercised by any existing test until a user clicked the
+specific button that triggered it. The user hit the same bug TWICE
+before this defensive test was added.
+
 ## 12. fleet-watchdog API auth from a script
 
 `POST /apps/<name>/launch`, `/restart`, etc. require RSA-PSS signed
