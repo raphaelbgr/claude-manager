@@ -1,8 +1,8 @@
 {
-  "version": 183,
-  "commit": "6daa94e",
-  "commit_full": "6daa94e07a2db6f6e57f247e8f4b19b75485fe17",
+  "version": 185,
+  "commit": "c6dce69",
+  "commit_full": "c6dce69462bcfa894a5ff82589cbf5c49040572d",
   "branch": "master",
-  "date": "2026-05-20T05:18:05-03:00",
-  "message": "fix(web): session cards now flex-wrap so they don't overflow mid-widths"
+  "date": "2026-05-20T05:53:56-03:00",
+  "message": "feat(tracking): full-app tracelink coverage + fix(launcher): drop PS title-set for Windows targets + fix(web): Update v? badge"
 }
