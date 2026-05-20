@@ -134,8 +134,15 @@ class TestListLocalTmux:
         from src.tmux_manager import list_local_tmux
 
         proc = _make_proc(0, stdout=self.SAMPLE_OUTPUT)
+        # Patch BOTH symbols: tmux_manager has its own re-imported
+        # detect_local_machine, but create_tmux_session / kill_tmux_session
+        # also instantiate executors via get_executor() in src.executor,
+        # which calls its OWN imported detect_local_machine. Missing the
+        # executor-side patch was the root cause of these tests routing
+        # through the SSH branch on a non-mac test runner.
         with patch("src.tmux_manager.asyncio.create_subprocess_exec", return_value=proc) as mock_exec, \
-             patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"):
+             patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"), \
+             patch("src.executor.detect_local_machine", return_value="mac-mini"):
             sessions = await list_local_tmux()
 
         assert len(sessions) == 2
@@ -248,8 +255,15 @@ class TestListLocalTmux:
         from src.tmux_manager import list_local_tmux
 
         proc = _make_proc(0, stdout=b"")
+        # Patch BOTH symbols: tmux_manager has its own re-imported
+        # detect_local_machine, but create_tmux_session / kill_tmux_session
+        # also instantiate executors via get_executor() in src.executor,
+        # which calls its OWN imported detect_local_machine. Missing the
+        # executor-side patch was the root cause of these tests routing
+        # through the SSH branch on a non-mac test runner.
         with patch("src.tmux_manager.asyncio.create_subprocess_exec", return_value=proc) as mock_exec, \
-             patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"):
+             patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"), \
+             patch("src.executor.detect_local_machine", return_value="mac-mini"):
             await list_local_tmux()
 
         args = mock_exec.call_args[0]
@@ -582,8 +596,15 @@ class TestCreateTmuxSession:
         from src.tmux_manager import create_tmux_session
 
         proc = _make_proc(0)
+        # Patch BOTH symbols: tmux_manager has its own re-imported
+        # detect_local_machine, but create_tmux_session / kill_tmux_session
+        # also instantiate executors via get_executor() in src.executor,
+        # which calls its OWN imported detect_local_machine. Missing the
+        # executor-side patch was the root cause of these tests routing
+        # through the SSH branch on a non-mac test runner.
         with patch("src.tmux_manager.asyncio.create_subprocess_exec", return_value=proc) as mock_exec, \
-             patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"):
+             patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"), \
+             patch("src.executor.detect_local_machine", return_value="mac-mini"):
             result = await create_tmux_session("mac-mini", "my-session")
 
         assert result["ok"] is True
@@ -600,8 +621,15 @@ class TestCreateTmuxSession:
         from src.tmux_manager import create_tmux_session
 
         proc = _make_proc(0)
+        # Patch BOTH symbols: tmux_manager has its own re-imported
+        # detect_local_machine, but create_tmux_session / kill_tmux_session
+        # also instantiate executors via get_executor() in src.executor,
+        # which calls its OWN imported detect_local_machine. Missing the
+        # executor-side patch was the root cause of these tests routing
+        # through the SSH branch on a non-mac test runner.
         with patch("src.tmux_manager.asyncio.create_subprocess_exec", return_value=proc) as mock_exec, \
-             patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"):
+             patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"), \
+             patch("src.executor.detect_local_machine", return_value="mac-mini"):
             result = await create_tmux_session("mac-mini", "my-session", cwd="/home/user/project")
 
         assert result["ok"] is True
@@ -619,8 +647,15 @@ class TestCreateTmuxSession:
         from src.tmux_manager import create_tmux_session
 
         proc = _make_proc(0)
+        # Patch BOTH symbols: tmux_manager has its own re-imported
+        # detect_local_machine, but create_tmux_session / kill_tmux_session
+        # also instantiate executors via get_executor() in src.executor,
+        # which calls its OWN imported detect_local_machine. Missing the
+        # executor-side patch was the root cause of these tests routing
+        # through the SSH branch on a non-mac test runner.
         with patch("src.tmux_manager.asyncio.create_subprocess_exec", return_value=proc) as mock_exec, \
-             patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"):
+             patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"), \
+             patch("src.executor.detect_local_machine", return_value="mac-mini"):
             result = await create_tmux_session("mac-mini", "my-session", command="python server.py")
 
         assert result["ok"] is True
@@ -633,8 +668,15 @@ class TestCreateTmuxSession:
         from src.tmux_manager import create_tmux_session
 
         proc = _make_proc(0)
+        # Patch BOTH symbols: tmux_manager has its own re-imported
+        # detect_local_machine, but create_tmux_session / kill_tmux_session
+        # also instantiate executors via get_executor() in src.executor,
+        # which calls its OWN imported detect_local_machine. Missing the
+        # executor-side patch was the root cause of these tests routing
+        # through the SSH branch on a non-mac test runner.
         with patch("src.tmux_manager.asyncio.create_subprocess_exec", return_value=proc) as mock_exec, \
-             patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"):
+             patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"), \
+             patch("src.executor.detect_local_machine", return_value="mac-mini"):
             result = await create_tmux_session(
                 "mac-mini", "my-session",
                 cwd="/tmp/work",
@@ -672,8 +714,15 @@ class TestCreateTmuxSession:
         from src.config import SSH_TIMEOUT
 
         proc = _make_proc(0)
+        # Patch BOTH symbols: tmux_manager has its own re-imported
+        # detect_local_machine, but create_tmux_session / kill_tmux_session
+        # also instantiate executors via get_executor() in src.executor,
+        # which calls its OWN imported detect_local_machine. Missing the
+        # executor-side patch was the root cause of these tests routing
+        # through the SSH branch on a non-mac test runner.
         with patch("src.tmux_manager.asyncio.create_subprocess_exec", return_value=proc) as mock_exec, \
-             patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"):
+             patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"), \
+             patch("src.executor.detect_local_machine", return_value="mac-mini"):
             result = await create_tmux_session("ubuntu-desktop", "remote-sess")
 
         assert result.get("ok") is True
@@ -687,8 +736,15 @@ class TestCreateTmuxSession:
         from src.tmux_manager import create_tmux_session
 
         proc = _make_proc(0)
+        # Patch BOTH symbols: tmux_manager has its own re-imported
+        # detect_local_machine, but create_tmux_session / kill_tmux_session
+        # also instantiate executors via get_executor() in src.executor,
+        # which calls its OWN imported detect_local_machine. Missing the
+        # executor-side patch was the root cause of these tests routing
+        # through the SSH branch on a non-mac test runner.
         with patch("src.tmux_manager.asyncio.create_subprocess_exec", return_value=proc) as mock_exec, \
-             patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"):
+             patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"), \
+             patch("src.executor.detect_local_machine", return_value="mac-mini"):
             result = await create_tmux_session("avell-i7", "win-sess")
 
         assert result.get("ok") is True
@@ -703,8 +759,15 @@ class TestCreateTmuxSession:
         from src.tmux_manager import create_tmux_session
 
         proc = _make_proc(0)
+        # Patch BOTH symbols: tmux_manager has its own re-imported
+        # detect_local_machine, but create_tmux_session / kill_tmux_session
+        # also instantiate executors via get_executor() in src.executor,
+        # which calls its OWN imported detect_local_machine. Missing the
+        # executor-side patch was the root cause of these tests routing
+        # through the SSH branch on a non-mac test runner.
         with patch("src.tmux_manager.asyncio.create_subprocess_exec", return_value=proc) as mock_exec, \
-             patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"):
+             patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"), \
+             patch("src.executor.detect_local_machine", return_value="mac-mini"):
             result = await create_tmux_session("ubuntu-desktop", "sess", cwd="/remote/path", command="echo hello")
 
         # 2 SSH calls: create (with -c in the remote command) + command send-keys.
@@ -723,8 +786,15 @@ class TestCreateTmuxSession:
         from src.tmux_manager import create_tmux_session
 
         proc = _make_proc(0)
+        # Patch BOTH symbols: tmux_manager has its own re-imported
+        # detect_local_machine, but create_tmux_session / kill_tmux_session
+        # also instantiate executors via get_executor() in src.executor,
+        # which calls its OWN imported detect_local_machine. Missing the
+        # executor-side patch was the root cause of these tests routing
+        # through the SSH branch on a non-mac test runner.
         with patch("src.tmux_manager.asyncio.create_subprocess_exec", return_value=proc) as mock_exec, \
-             patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"):
+             patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"), \
+             patch("src.executor.detect_local_machine", return_value="mac-mini"):
             result = await create_tmux_session("avell-i7", "sess", cwd="C:/work")
 
         assert result.get("ok") is True
@@ -774,8 +844,15 @@ class TestKillTmuxSession:
         from src.tmux_manager import kill_tmux_session
 
         proc = _make_proc(0)
+        # Patch BOTH symbols: tmux_manager has its own re-imported
+        # detect_local_machine, but create_tmux_session / kill_tmux_session
+        # also instantiate executors via get_executor() in src.executor,
+        # which calls its OWN imported detect_local_machine. Missing the
+        # executor-side patch was the root cause of these tests routing
+        # through the SSH branch on a non-mac test runner.
         with patch("src.tmux_manager.asyncio.create_subprocess_exec", return_value=proc) as mock_exec, \
-             patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"):
+             patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"), \
+             patch("src.executor.detect_local_machine", return_value="mac-mini"):
             result = await kill_tmux_session("mac-mini", "sess-to-kill")
 
         assert result == {"ok": True}
@@ -803,8 +880,15 @@ class TestKillTmuxSession:
         from src.config import SSH_TIMEOUT
 
         proc = _make_proc(0)
+        # Patch BOTH symbols: tmux_manager has its own re-imported
+        # detect_local_machine, but create_tmux_session / kill_tmux_session
+        # also instantiate executors via get_executor() in src.executor,
+        # which calls its OWN imported detect_local_machine. Missing the
+        # executor-side patch was the root cause of these tests routing
+        # through the SSH branch on a non-mac test runner.
         with patch("src.tmux_manager.asyncio.create_subprocess_exec", return_value=proc) as mock_exec, \
-             patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"):
+             patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"), \
+             patch("src.executor.detect_local_machine", return_value="mac-mini"):
             result = await kill_tmux_session("ubuntu-desktop", "remote-sess")
 
         assert result == {"ok": True}
@@ -821,8 +905,15 @@ class TestKillTmuxSession:
         from src.tmux_manager import kill_tmux_session
 
         proc = _make_proc(0)
+        # Patch BOTH symbols: tmux_manager has its own re-imported
+        # detect_local_machine, but create_tmux_session / kill_tmux_session
+        # also instantiate executors via get_executor() in src.executor,
+        # which calls its OWN imported detect_local_machine. Missing the
+        # executor-side patch was the root cause of these tests routing
+        # through the SSH branch on a non-mac test runner.
         with patch("src.tmux_manager.asyncio.create_subprocess_exec", return_value=proc) as mock_exec, \
-             patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"):
+             patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"), \
+             patch("src.executor.detect_local_machine", return_value="mac-mini"):
             result = await kill_tmux_session("avell-i7", "win-sess")
 
         assert result == {"ok": True}
@@ -1244,8 +1335,15 @@ class TestPaneCurrentCommandField:
         import asyncio as _a
 
         proc = _make_proc(0, stdout=b"")
+        # Patch BOTH symbols: tmux_manager has its own re-imported
+        # detect_local_machine, but create_tmux_session / kill_tmux_session
+        # also instantiate executors via get_executor() in src.executor,
+        # which calls its OWN imported detect_local_machine. Missing the
+        # executor-side patch was the root cause of these tests routing
+        # through the SSH branch on a non-mac test runner.
         with patch("src.tmux_manager.asyncio.create_subprocess_exec", return_value=proc) as mock_exec, \
-             patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"):
+             patch("src.tmux_manager.detect_local_machine", return_value="mac-mini"), \
+             patch("src.executor.detect_local_machine", return_value="mac-mini"):
             _a.get_event_loop().run_until_complete(list_local_tmux())
 
         args = mock_exec.call_args[0]

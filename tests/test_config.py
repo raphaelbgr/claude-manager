@@ -201,7 +201,15 @@ class TestDetectLocalMachine:
             result = detect_local_machine()
         assert result == "mac-mini"
 
-    def test_returns_none_for_unknown_hostname_and_ip(self):
+    def test_returns_none_for_unknown_hostname_and_ip(self, monkeypatch):
+        # detect_local_machine ALSO reads COMPUTERNAME and HOSTNAME env vars
+        # as part of its hostname-fallback step. On Windows the test machine's
+        # COMPUTERNAME is "WINDOWS-DESKTOP" which matches fleet entry
+        # `windows-desktop` and causes the function to return that name
+        # instead of None. Clear both env vars for the duration of the test
+        # so only the socket-side mocks decide the outcome.
+        monkeypatch.delenv("COMPUTERNAME", raising=False)
+        monkeypatch.delenv("HOSTNAME", raising=False)
         with (
             _mock_no_ip(),
             patch("socket.gethostname", return_value="some-random-box"),
