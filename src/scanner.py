@@ -544,6 +544,52 @@ def _save_persisted_cache(cache: dict) -> None:
     os.replace(tmp, path)
 
 
+def _git_cache_path() -> Path:
+    return Path.home() / ".claude-manager" / "git-cache.json"
+
+
+def _load_persisted_git_cache() -> dict:
+    """Same shape contract as the session cache: dict keyed on (cwd, mtime_ns)
+    → info dict (git_remote/git_commits/git_upstream/ahead/behind/dirty/readme).
+
+    Persisted git state cuts the git phase on first-scan-after-restart from
+    ~4-10s down to a single subprocess call per cwd whose .git/mtime_ns
+    actually advanced since the last shutdown.
+    """
+    cache: dict = {}
+    path = _git_cache_path()
+    if not path.is_file():
+        return cache
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if data.get("version") != 1:
+            return cache
+        for entry in (data.get("entries") or []):
+            try:
+                cache[(entry["cwd"], int(entry["mtime_ns"]))] = entry["info"]
+            except Exception:
+                continue
+    except Exception as exc:
+        log.debug("git cache load failed (%s): %s", path, exc)
+    if cache:
+        log.info("git cache: loaded %d entries from %s", len(cache), path)
+    return cache
+
+
+def _save_persisted_git_cache(cache: dict) -> None:
+    path = _git_cache_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    out = {"version": 1, "entries": []}
+    for (cwd, mtime), info in cache.items():
+        try:
+            out["entries"].append({"cwd": cwd, "mtime_ns": int(mtime), "info": info})
+        except Exception:
+            continue
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)
+
+
 # ---------------------------------------------------------------------------
 # Local scan
 # ---------------------------------------------------------------------------
@@ -736,7 +782,7 @@ def scan_local(
     # ~5s to <100ms for unchanged projects.
     _git_cache = getattr(scan_local, "_git_cache", None)
     if _git_cache is None:
-        _git_cache = {}
+        _git_cache = _load_persisted_git_cache()
         scan_local._git_cache = _git_cache  # type: ignore[attr-defined]
 
     _cwd_to_key: dict[str, tuple[str, int]] = {}
@@ -797,6 +843,11 @@ def scan_local(
             _save_persisted_cache(_cache)
         except Exception as exc:
             log.debug("scan cache persist failed: %s", exc)
+    if unique_cwds:
+        try:
+            _save_persisted_git_cache(_git_cache)
+        except Exception as exc:
+            log.debug("git cache persist failed: %s", exc)
     _total_ms = int((time.monotonic() - _scan_t0) * 1000)
     log.info(
         "scan_local: %d sessions in %dms "
