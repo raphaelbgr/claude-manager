@@ -1,8 +1,8 @@
 {
-  "version": 179,
-  "commit": "022886f",
-  "commit_full": "022886f7df1f53053d1122d8e00bc07d59b537a6",
+  "version": 183,
+  "commit": "6daa94e",
+  "commit_full": "6daa94e07a2db6f6e57f247e8f4b19b75485fe17",
   "branch": "master",
-  "date": "2026-05-04T19:07:32-03:00",
-  "message": "fix(win32): WT adapter uses -EncodedCommand to avoid `;` tab-split"
+  "date": "2026-05-20T05:18:05-03:00",
+  "message": "fix(web): session cards now flex-wrap so they don't overflow mid-widths"
 }
