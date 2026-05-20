@@ -1,8 +1,8 @@
 {
-  "version": 201,
-  "commit": "5ce132d",
-  "commit_full": "5ce132d4166b05b7d15568810bb759ec56ee7e3c",
+  "version": 203,
+  "commit": "8e59e40",
+  "commit_full": "8e59e400067a3d88d531725fc6bc225674e221eb",
   "branch": "master",
-  "date": "2026-05-20T14:42:34-03:00",
-  "message": "test: 271 new tests across 4 files \u00e2\u20ac\u201d every API route, every launcher branch, every scanner path, runtime tracelink collision detection"
+  "date": "2026-05-20T14:57:13-03:00",
+  "message": "test: fix 6 pre-existing failures (detect_local_machine patching mismatch + COMPUTERNAME env-var leak)"
 }
