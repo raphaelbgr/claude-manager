@@ -72,6 +72,26 @@ class CommandAdapter:
         """Chain multiple commands with && (works in both bash and cmd.exe)."""
         return " && ".join(commands)
 
+    @staticmethod
+    def _ps_double_quote(s: str) -> str:
+        """Wrap *s* in PowerShell double quotes, backtick-escaping ``\\`` , ``$``, ``\"``.
+
+        We pick double quotes (not single) for the inner Windows-target SSH
+        payload because the outer caller wraps the whole thing with bash-style
+        ``shlex.quote`` (POSIX `'...'`). PowerShell parses the resulting
+        `'Set-Location "PATH"; claude'` as a single-quoted string literal too —
+        both shells tokenise it the same way. Single-quoted inner content would
+        force ``shlex.quote`` to inject POSIX ``'\\''`` escapes that the local
+        PowerShell terminal host (wt+pwsh -EncodedCommand) cannot parse and
+        which lets the trailing ``; cmd`` leak out as a separate LOCAL
+        statement (confirmed bug class — see commit history May 2026).
+        """
+        # PS double-quote escapes use backtick (`). $ would interpolate; ` is
+        # itself the escape char; " ends the string. Backslash is literal in
+        # PS double quotes (unlike bash) so Windows paths pass through fine.
+        escaped = s.replace("`", "``").replace("$", "`$").replace('"', '`"')
+        return f'"{escaped}"'
+
     def cd_command_ssh(self, path: str) -> str:
         """Generate a cd command for the SSH login shell.
 
@@ -79,8 +99,7 @@ class CommandAdapter:
         explicitly for reliable Windows path handling.
         """
         if self.is_windows:
-            # Will be wrapped in powershell -NoExit -Command "..."
-            return f"Set-Location '{path}'"
+            return f"Set-Location {self._ps_double_quote(path)}"
         return f"cd {shlex.quote(path)}"
 
     def build_session_command_ssh(self, cwd: str, session_id: str, skip_permissions: bool = False) -> str:
@@ -91,14 +110,13 @@ class CommandAdapter:
 
         Windows SSH default shell is PowerShell (enforced fleet-wide — see
         global CLAUDE.md Windows SSH Shell Policy). PowerShell syntax:
-            Set-Location 'C:\\path'; claude --resume <id>
+            Set-Location "C:\\path"; claude --resume <id>
         PowerShell 5.1 does NOT support &&; use ; as separator.
         """
         if self.is_windows:
-            # PowerShell syntax — escape single quotes by doubling them
-            cwd_ps = cwd.replace("'", "''")
+            cwd_q = self._ps_double_quote(cwd)
             resume = self.claude_resume_command(session_id, skip_permissions)
-            return f"Set-Location '{cwd_ps}'; {resume}"
+            return f"Set-Location {cwd_q}; {resume}"
 
         cd = f"cd {shlex.quote(cwd)}"
         resume = self.claude_resume_command(session_id, skip_permissions)
@@ -114,8 +132,7 @@ class CommandAdapter:
             claude += " --dangerously-skip-permissions"
 
         if self.is_windows:
-            cwd_ps = cwd.replace("'", "''")
-            return f"Set-Location '{cwd_ps}'; {claude}"
+            return f"Set-Location {self._ps_double_quote(cwd)}; {claude}"
 
         cd = f"cd {shlex.quote(cwd)}"
         return self.chain_commands(cd, claude)
@@ -189,10 +206,11 @@ class CommandAdapter:
             claude = self.claude_resume_command(session_id, skip_permissions)
 
         if self.mux_type == "psmux":
-            # psmux panes run PowerShell by default on modern Windows. Escape
-            # single quotes by doubling them (PowerShell string rules).
-            cwd_ps = cwd.replace("'", "''")
-            return f"Set-Location '{cwd_ps}'; {claude}"
+            # psmux panes run PowerShell by default on modern Windows. Use
+            # double-quote wrap (see _ps_double_quote) so the outer SSH-wrap
+            # (POSIX bash-style) tokenises uniformly across both bash and
+            # PowerShell local terminals.
+            return f"Set-Location {self._ps_double_quote(cwd)}; {claude}"
         # tmux on Unix — bash pane
         cd = f"cd {shlex.quote(cwd)}"
         return self.chain_commands(cd, claude)

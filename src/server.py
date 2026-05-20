@@ -73,12 +73,18 @@ async def _pool_exec(
         except Exception as exc:
             log.debug("_pool_exec(%s) pool failed, falling back to subprocess: %s", machine, exc)
     ssh_alias = info.get("ssh_alias", machine)
-    return await run_with_timeout(
-        ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes",
-         "-o", "StrictHostKeyChecking=no", ssh_alias, "bash", "-c", cmd],
-        timeout=timeout,
-        input=input,
-    )
+    # For Windows targets the SSH default shell is PowerShell (enforced per
+    # global CLAUDE.md). Wrapping the PowerShell-syntax payload in `bash -c`
+    # would (a) require Git Bash on the remote PATH, and (b) mangle PS
+    # semantics like Set-Location and `;` chaining. Pass the cmd straight to
+    # the remote's default shell instead.
+    if info.get("os") == "win32":
+        ssh_argv = ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes",
+                    "-o", "StrictHostKeyChecking=no", ssh_alias, cmd]
+    else:
+        ssh_argv = ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes",
+                    "-o", "StrictHostKeyChecking=no", ssh_alias, "bash", "-c", cmd]
+    return await run_with_timeout(ssh_argv, timeout=timeout, input=input)
 
 log = logging.getLogger("claude_manager.server")
 
@@ -1260,7 +1266,13 @@ async def handle_sessions_launch(request: web.Request) -> web.Response:
                 log.error("is_remote_windows setup rc=%d: %s", rc, err[:300])
                 return web.json_response({"ok": False, "error": err[:400]}, status=500)
 
-            attach_remote_cmd = f"{adapter.mux_type} attach -t {quoted_name}"
+            # `safe_name` is identifier-sanitised (see generate_mux_session_name)
+            # — no shell metacharacters. Skip the PS single-quote wrap here:
+            # shlex.quote would otherwise inject POSIX `'"'"'` escapes around
+            # those inner singles, and the local PowerShell terminal that runs
+            # this SSH wrapper can't parse them — the trailing parts leak as
+            # separate LOCAL statements (see bug class addressed in May 2026).
+            attach_remote_cmd = f"{adapter.mux_type} attach -t {safe_name}"
             terminal_cmd = f"ssh {shlex.quote(alias)} -t {shlex.quote(attach_remote_cmd)}"
             result = await launch_terminal(terminal_cmd, terminal_id=terminal_id)
         else:
