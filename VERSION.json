@@ -1,8 +1,8 @@
 {
-  "version": 187,
-  "commit": "9ba7162",
-  "commit_full": "9ba716298042619f63de1bd86ff210ce4153c737",
+  "version": 189,
+  "commit": "5f1f007",
+  "commit_full": "5f1f007f87ddcd64cfd2385cc8181f95071c5acb",
   "branch": "master",
-  "date": "2026-05-20T06:04:56-03:00",
-  "message": "fix(win32): purge POSIX-quote-in-PowerShell command-construction bug class"
+  "date": "2026-05-20T06:58:51-03:00",
+  "message": "perf(scan): incremental + disk-persisted cache eliminates the cold-scan tax"
 }
