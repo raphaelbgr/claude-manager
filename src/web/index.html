@@ -297,6 +297,21 @@
       display: flex; align-items: center; gap: 8px;
       padding: 6px 10px; border-radius: 6px; cursor: pointer;
       transition: background 0.1s; min-width: 0;
+      /* Always wrap so meta badges + action buttons reflow onto a second
+         row instead of overflowing the card horizontally. Without this the
+         layout looked clean at >1000px but silently overflowed between
+         ~600-900px when the right panel was visible (panel-sessions
+         narrows to ~500px and the rigid flex-row pushed actions off-card). */
+      flex-wrap: wrap; row-gap: 4px;
+    }
+    /* Force action buttons onto a new line whenever the meta row + actions
+       can't both fit. The compact-spacer is the flex grower between meta
+       and actions; setting it to 100% width pushes actions below. We apply
+       this only on container widths < 720px via the wrapper container query
+       fallback — pure media query equivalent below. */
+    @media (max-width: 900px) {
+      .compact-spacer { flex: 0 0 100% !important; height: 0; margin: 0; padding: 0; }
+      .compact-action-btn { flex: 0 0 auto; min-width: 0; }
     }
     .session-card-compact:hover { background: #1c2128; }
     .session-card-expanded {
