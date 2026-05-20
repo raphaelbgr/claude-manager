@@ -1,8 +1,8 @@
 {
-  "version": 197,
-  "commit": "b9e30a7",
-  "commit_full": "b9e30a776d780a1408f89f8fd17821fdc1e1aa48",
+  "version": 199,
+  "commit": "6cdf4c3",
+  "commit_full": "6cdf4c3563d1ef0832662c333cce00169c6e15a1",
   "branch": "master",
-  "date": "2026-05-20T08:49:23-03:00",
-  "message": "docs+tests: gotchas writeup, audit-fix tests, perf-coverage tests"
+  "date": "2026-05-20T09:38:46-03:00",
+  "message": "fix(tests): defensive AST check for tl.event/track/span kwarg collisions"
 }
