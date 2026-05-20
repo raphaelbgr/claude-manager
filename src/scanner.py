@@ -169,10 +169,19 @@ def parse_session(
     project_path: str,
     folder_name: str,
     machine: str = "local",
+    prev: dict | None = None,
 ) -> ClaudeSession:
     """
     Parse a single JSONL session file, reading at most the first 50 lines
     for metadata extraction.
+
+    If ``prev`` is supplied (from the incremental cache), it must have
+    ``last_size`` ≤ current file size. We then seek to ``last_size`` and
+    parse ONLY the new tail bytes for token/message-count updates,
+    reusing the previously-extracted metadata fields. This turns a
+    231 MB re-parse (~50s) into a 50ms tail read when a single message
+    has appended to the live session. Setting ``prev=None`` does a full
+    parse from byte 0 (cold-cache path).
 
     Raises OSError / json.JSONDecodeError if the file cannot be read.
     """
@@ -190,10 +199,26 @@ def parse_session(
     tokens = 0
     metadata_found = False
 
+    # Incremental path: file grew (or stayed the same size — same content).
+    # Reuse the cached metadata + token total and only read the new tail.
+    start_offset = 0
+    if prev is not None and prev.get("last_size", -1) <= file_size:
+        start_offset = prev["last_size"]
+        slug = prev.get("slug", "") or slug
+        cwd = prev.get("cwd", "") or cwd
+        git_branch = prev.get("git_branch", "") or git_branch
+        first_message = prev.get("first_message", "") or first_message
+        last_user_message = prev.get("last_user_message", "") or last_user_message
+        line_count = prev.get("line_count", 0)
+        tokens = prev.get("tokens", 0)
+        metadata_found = bool(slug and first_message)
+
     with file_path.open("r", encoding="utf-8", errors="replace") as fh:
+        if start_offset > 0:
+            fh.seek(start_offset)
         all_lines = fh.readlines()
 
-    line_count = sum(1 for ln in all_lines if ln.strip())
+    line_count += sum(1 for ln in all_lines if ln.strip())
 
     # Single pass: metadata from first ~50 lines, tokens from all assistant messages
     for idx, raw in enumerate(all_lines):
@@ -257,7 +282,7 @@ def parse_session(
                 metadata_found = True
 
     log.debug("parse_session(%s): %d messages, ~%d tokens", file_path.name, line_count, tokens)
-    return ClaudeSession(
+    sess = ClaudeSession(
         session_id=session_id,
         machine=machine,
         project_folder=folder_name,
@@ -274,6 +299,20 @@ def parse_session(
         git_branch=git_branch,
         last_user_message=last_user_message,
     )
+    # Stash incremental-parse breadcrumbs on the session object. The scan
+    # loop stores these in its cache so the next call can seek past the
+    # already-parsed bytes instead of re-reading the whole file.
+    sess._parse_breadcrumbs = {  # type: ignore[attr-defined]
+        "last_size": file_size,
+        "slug": slug,
+        "cwd": cwd,
+        "git_branch": git_branch,
+        "first_message": first_message,
+        "last_user_message": last_user_message,
+        "line_count": line_count,
+        "tokens": tokens,
+    }
+    return sess
 
 
 # ---------------------------------------------------------------------------
@@ -433,6 +472,79 @@ def _collect_git_state(cwd: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Persisted session-parse cache
+#
+# scan_local stores per-file ClaudeSession + incremental-parse breadcrumbs in
+# an in-memory dict so warm scans skip the per-line json.loads loop. That
+# dict goes away on process restart — and the FIRST scan of a new process
+# has to re-read every JSONL from byte 0, including the live conversation's
+# 200+ MB file. Persisting the cache to disk lets a fresh process start
+# already-warm; we only re-parse files whose size/mtime changed since the
+# last shutdown.
+#
+# Format: {"version": 2, "entries": {<path>: {"sess": <dict>,
+#          "last_size": int, "last_mtime_ns": int,
+#          "breadcrumbs": {...}}}}
+# Path: ~/.claude-manager/scan-cache.json
+# ---------------------------------------------------------------------------
+
+def _persisted_cache_path() -> Path:
+    return Path.home() / ".claude-manager" / "scan-cache.json"
+
+
+def _load_persisted_cache() -> dict:
+    """Return the in-memory cache dict, populated from disk if available.
+
+    Cache values are tuples (sess, last_size, last_mtime_ns) where ``sess``
+    carries the breadcrumbs attribute. Missing or malformed disk cache is
+    silently treated as empty — a slow first scan, not an error.
+    """
+    cache: dict = {}
+    path = _persisted_cache_path()
+    if not path.is_file():
+        return cache
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if data.get("version") != 2:
+            return cache
+        for p, entry in (data.get("entries") or {}).items():
+            try:
+                sess_d = entry["sess"]
+                sess = ClaudeSession(**sess_d)
+                bc = entry.get("breadcrumbs") or {}
+                if bc:
+                    sess._parse_breadcrumbs = bc  # type: ignore[attr-defined]
+                cache[p] = (sess, int(entry["last_size"]), int(entry["last_mtime_ns"]))
+            except Exception:
+                continue
+    except Exception as exc:
+        log.debug("scan cache load failed (%s): %s", path, exc)
+    if cache:
+        log.info("scan cache: loaded %d entries from %s", len(cache), path)
+    return cache
+
+
+def _save_persisted_cache(cache: dict) -> None:
+    """Atomically write the cache to disk via temp+rename."""
+    path = _persisted_cache_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    out = {"version": 2, "entries": {}}
+    for p, (sess, last_size, last_mtime) in cache.items():
+        try:
+            out["entries"][p] = {
+                "sess": asdict(sess),
+                "last_size": int(last_size),
+                "last_mtime_ns": int(last_mtime),
+                "breadcrumbs": getattr(sess, "_parse_breadcrumbs", {}),
+            }
+        except Exception:
+            continue
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+# ---------------------------------------------------------------------------
 # Local scan
 # ---------------------------------------------------------------------------
 
@@ -500,90 +612,208 @@ def scan_local(
             all_jsonl.append((jf, project_path, folder_name))
 
     total_files = len(all_jsonl)
+    _phase_parse_start = time.monotonic()
+    # Per-file cache keyed on PATH (not size/mtime). Each entry holds the
+    # last full ClaudeSession AND parse breadcrumbs (last_size, accumulated
+    # tokens, line_count, metadata fields). On rescan:
+    #
+    #   * unchanged file (size + mtime match cached) → return cached sess
+    #   * grew (live session appended N lines)        → seek to last_size,
+    #     read ONLY the new tail, add tokens, return updated sess. Crucial
+    #     for the 231 MB active-conversation file that previously cost
+    #     ~50s on every scan because each new assistant message invalidated
+    #     the (path, mtime, size) cache key.
+    #   * shrunk (file rotated/truncated)             → full reparse
+    #
+    # Threading was tried and lost: parse_session is GIL-bound (json.loads
+    # + dict iteration), ThreadPoolExecutor added context-switch overhead
+    # without parallelism.
+    _cache = getattr(scan_local, "_session_cache", None)
+    if _cache is None:
+        _cache = _load_persisted_cache()
+        scan_local._session_cache = _cache  # type: ignore[attr-defined]
+
     found = 0
+    _cache_hits = 0
+    _cache_incremental = 0
     for jf, project_path, folder_name in all_jsonl:
         found += 1
         if on_progress:
             on_progress(machine, found, total_files, str(jf.name))
         try:
-            sess = parse_session(jf, project_path, folder_name, machine=machine)
-            # Prefer cwd from JSONL as the authoritative path — it avoids the
-            # lossy dash-to-slash decode ambiguity (e.g. "claude-manager" → "claude/manager").
-            if sess.cwd:
-                sess.project_path = sess.cwd
-            # Drop throwaway sessions whose cwd points at an OS temp dir —
-            # they clutter the Project tab and can never be resumed usefully.
+            st = jf.stat()
+            path_key = str(jf)
+            cached = _cache.get(path_key)
+            sess = None
+            if cached is not None:
+                cached_sess, prev_size, prev_mtime = cached
+                if prev_mtime == st.st_mtime_ns and prev_size == st.st_size:
+                    # Identical bytes — full cache hit, no I/O at all.
+                    sess = cached_sess
+                    _cache_hits += 1
+                elif prev_size <= st.st_size:
+                    # File grew — incremental parse from prev_size.
+                    breadcrumbs = getattr(cached_sess, "_parse_breadcrumbs", None)
+                    if breadcrumbs:
+                        sess = parse_session(jf, project_path, folder_name,
+                                             machine=machine, prev=breadcrumbs)
+                        if sess.cwd:
+                            sess.project_path = sess.cwd
+                        _cache_incremental += 1
+            if sess is None:
+                # Cold path or rotated file — full reparse.
+                sess = parse_session(jf, project_path, folder_name, machine=machine)
+                if sess.cwd:
+                    sess.project_path = sess.cwd
+            _cache[path_key] = (sess, st.st_size, st.st_mtime_ns)
             if _is_tmp_path(sess.cwd or sess.project_path):
                 continue
             all_sessions.append(sess)
         except Exception:
             continue
+    # Prune cache: drop entries for paths not seen this cycle.
+    _live_paths = {str(jf) for jf, _, _ in all_jsonl}
+    for k in list(_cache.keys()):
+        if k not in _live_paths:
+            _cache.pop(k, None)
+    _phase_parse_ms = int((time.monotonic() - _phase_parse_start) * 1000)
 
+    _phase_pid_start = time.monotonic()
     _mark_active_sessions(all_sessions, active_pids, session_names)
-    # Detect git remotes, commit counts, and freshness state per unique cwd.
-    _remote_cache: dict[str, str] = {}
-    _commits_cache: dict[str, int] = {}
-    _state_cache: dict[str, dict] = {}
-    for sess in all_sessions:
-        cwd_key = sess.cwd or sess.project_path
-        if not cwd_key:
-            continue
-        if cwd_key not in _remote_cache:
-            try:
-                result = subprocess.run(
-                    ["git", "-C", cwd_key, "config", "--get", "remote.origin.url"],
-                    capture_output=True, text=True, timeout=2,
-                    **_win32_kwargs(),
-                )
-                _remote_cache[cwd_key] = result.stdout.strip() if result.returncode == 0 else ""
-            except Exception:
-                _remote_cache[cwd_key] = ""
-        sess.git_remote = _remote_cache[cwd_key]
-        if cwd_key not in _commits_cache:
-            try:
-                result = subprocess.run(
-                    ["git", "-C", cwd_key, "rev-list", "--count", "HEAD"],
-                    capture_output=True, text=True, timeout=2,
-                    **_win32_kwargs(),
-                )
-                _commits_cache[cwd_key] = int(result.stdout.strip()) if result.returncode == 0 else 0
-            except Exception:
-                _commits_cache[cwd_key] = 0
-        sess.git_commits = _commits_cache[cwd_key]
-        if cwd_key not in _state_cache:
-            _state_cache[cwd_key] = _collect_git_state(cwd_key)
-        gs = _state_cache[cwd_key]
-        sess.git_upstream = gs["git_upstream"]
-        sess.git_ahead = gs["git_ahead"]
-        sess.git_behind = gs["git_behind"]
-        sess.git_dirty = gs["git_dirty"]
+    _phase_pid_ms = int((time.monotonic() - _phase_pid_start) * 1000)
 
-    # Detect README presence per unique cwd (memoized)
-    _readme_cache: dict[str, str] = {}
+    # Per-cwd git + README info, collected IN PARALLEL via a thread pool.
+    # Before: 5 sequential `git` subprocess calls per unique cwd × ~100ms
+    # Windows spawn cost × ~130 projects = ~40s wall time. After: same
+    # work submitted concurrently with 16 workers — ~3-5s wall time.
+    # No locks needed because each task writes to a dedicated future's
+    # result; we don't share dicts across threads.
     _README_NAMES = ("README.md", "README.MD", "README", "readme.md")
+
+    def _gather_cwd_info(cwd: str) -> dict:
+        info = {"git_remote": "", "git_commits": 0, "readme_path": ""}
+        info.update(_collect_git_state(cwd))
+        _kw = _win32_kwargs()
+        try:
+            r = subprocess.run(
+                ["git", "-C", cwd, "config", "--get", "remote.origin.url"],
+                capture_output=True, text=True, timeout=2, **_kw,
+            )
+            if r.returncode == 0:
+                info["git_remote"] = r.stdout.strip()
+        except Exception:
+            pass
+        try:
+            r = subprocess.run(
+                ["git", "-C", cwd, "rev-list", "--count", "HEAD"],
+                capture_output=True, text=True, timeout=2, **_kw,
+            )
+            if r.returncode == 0:
+                info["git_commits"] = int(r.stdout.strip())
+        except Exception:
+            pass
+        try:
+            cwd_p = Path(cwd)
+            for name in _README_NAMES:
+                candidate = cwd_p / name
+                if candidate.is_file():
+                    info["readme_path"] = str(candidate)
+                    break
+        except Exception:
+            pass
+        return info
+
+    _phase_git_start = time.monotonic()
+    unique_cwds = {(s.cwd or s.project_path) for s in all_sessions}
+    unique_cwds.discard("")
+    unique_cwds.discard(None)
+
+    # Per-cwd git+readme cache keyed on the cwd's .git dir mtime_ns. When the
+    # user commits / pulls / checks out, .git's mtime advances → cache miss →
+    # we re-run git for that one cwd. Static cwds (most projects, most of the
+    # time) are cache hits and skip all 5 subprocess.run calls per cycle.
+    # First cycle warms the cache; subsequent cycles drop git phase from
+    # ~5s to <100ms for unchanged projects.
+    _git_cache = getattr(scan_local, "_git_cache", None)
+    if _git_cache is None:
+        _git_cache = {}
+        scan_local._git_cache = _git_cache  # type: ignore[attr-defined]
+
+    _cwd_to_key: dict[str, tuple[str, int]] = {}
+    _to_fetch: list[str] = []
+    for c in unique_cwds:
+        try:
+            git_dir = Path(c) / ".git"
+            mt = git_dir.stat().st_mtime_ns if git_dir.exists() else 0
+        except Exception:
+            mt = 0
+        key = (c, mt)
+        _cwd_to_key[c] = key
+        if key not in _git_cache:
+            _to_fetch.append(c)
+
+    _git_hits = len(unique_cwds) - len(_to_fetch)
+    _cwd_info: dict[str, dict] = {}
+    if _to_fetch:
+        from concurrent.futures import ThreadPoolExecutor
+        # 16 workers is a good Windows sweet spot: subprocess spawn is the
+        # dominant cost (CPU-light) so we over-subscribe modest cores; more
+        # than 24 starts contending on Windows process-creation locks.
+        with ThreadPoolExecutor(max_workers=16, thread_name_prefix="scan-git") as pool:
+            future_to_cwd = {pool.submit(_gather_cwd_info, c): c for c in _to_fetch}
+            for fut in future_to_cwd:
+                cwd = future_to_cwd[fut]
+                info = fut.result()
+                _git_cache[_cwd_to_key[cwd]] = info
+    for c in unique_cwds:
+        _cwd_info[c] = _git_cache.get(_cwd_to_key[c], {})
+
+    # Prune stale cache entries (cwds no longer present, or whose .git mtime
+    # advanced — the old key won't be looked up again, so drop it).
+    _live_keys = set(_cwd_to_key.values())
+    for k in list(_git_cache.keys()):
+        if k not in _live_keys:
+            _git_cache.pop(k, None)
+    _phase_git_ms = int((time.monotonic() - _phase_git_start) * 1000)
+
     for sess in all_sessions:
         cwd_key = sess.cwd or sess.project_path
-        if not cwd_key:
-            continue
-        if cwd_key not in _readme_cache:
-            found = ""
-            try:
-                cwd_p = Path(cwd_key)
-                for name in _README_NAMES:
-                    candidate = cwd_p / name
-                    if candidate.is_file():
-                        found = str(candidate)
-                        break
-            except Exception:
-                pass
-            _readme_cache[cwd_key] = found
-        sess.readme_path = _readme_cache[cwd_key]
+        info = _cwd_info.get(cwd_key, {})
+        sess.git_remote = info.get("git_remote", "")
+        sess.git_commits = info.get("git_commits", 0)
+        sess.git_upstream = info.get("git_upstream")
+        sess.git_ahead = info.get("git_ahead")
+        sess.git_behind = info.get("git_behind")
+        sess.git_dirty = info.get("git_dirty")
+        sess.readme_path = info.get("readme_path", "")
 
     all_sessions.sort(key=lambda s: s.modified, reverse=True)
-    log.info("scan_local: found %d sessions", len(all_sessions))
+    # Persist the cache to disk every scan so a fresh process restart starts
+    # warm. Even on a 100%-hit cycle we save: the previous run may have
+    # crashed before persisting, leaving an out-of-date disk file. ~50ms
+    # for 400 entries — not worth a more elaborate dirty-bit guard.
+    if total_files > 0:
+        try:
+            _save_persisted_cache(_cache)
+        except Exception as exc:
+            log.debug("scan cache persist failed: %s", exc)
+    _total_ms = int((time.monotonic() - _scan_t0) * 1000)
+    log.info(
+        "scan_local: %d sessions in %dms "
+        "(parse=%dms[hit=%d incr=%d cold=%d of %d] pid=%dms git=%dms[%d/%d cached] cwds=%d)",
+        len(all_sessions), _total_ms, _phase_parse_ms,
+        _cache_hits, _cache_incremental,
+        total_files - _cache_hits - _cache_incremental, total_files,
+        _phase_pid_ms, _phase_git_ms, _git_hits, len(unique_cwds), len(unique_cwds),
+    )
     tl.event("cm.scan.local.ok",
              machine=machine, sessions=len(all_sessions),
-             elapsed_ms=int((time.monotonic() - _scan_t0) * 1000))
+             elapsed_ms=_total_ms, parse_ms=_phase_parse_ms,
+             pid_ms=_phase_pid_ms, git_ms=_phase_git_ms,
+             cwds=len(unique_cwds), files=total_files,
+             parse_cache_hits=_cache_hits,
+             parse_incremental=_cache_incremental,
+             git_cache_hits=_git_hits)
     return all_sessions
 
 

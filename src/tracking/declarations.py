@@ -105,6 +105,13 @@ _declare("cm.api.request",  screen="Api")
 _declare("cm.api.response", after=["cm.api.request"], screen="Api",
          within_ms_of=("cm.api.request", 30000.0))
 
+# Scan-button (POST /api/sessions/scan) phase progress
+_declare("cm.api.scan.start",         screen="Api")
+_declare("cm.api.scan.fleet_done",    after=["cm.api.scan.start"], screen="Api")
+_declare("cm.api.scan.sessions_done", after=["cm.api.scan.start"], screen="Api")
+_declare("cm.api.scan.tmux_done",     after=["cm.api.scan.start"], screen="Api")
+_declare("cm.api.scan.done",          after=["cm.api.scan.start"], screen="Api")
+
 
 # ----------------------------------------------------------------------
 # WebSocket (src/server.py — WS lifecycle)

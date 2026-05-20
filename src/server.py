@@ -389,13 +389,38 @@ async def _background_scan(app: web.Application) -> None:
                 })
                 await store.push_raw(payload)
 
-            sessions, tmux = await asyncio.gather(
-                scan_all(local_machine, fleet, on_progress=_emit_scan_progress),
-                list_all_tmux(local_machine, fleet),
-            )
+            # Push fleet+tmux to the UI as soon as they're ready instead of
+            # waiting on the (much slower) session scan. Previously these were
+            # gathered in parallel BUT both store.update_* fired only after
+            # the slowest leg finished — so tmux (≤1s) sat invisible behind
+            # scan_all (≥40s) and the user saw an empty TMUX panel forever.
+            # Now tmux + fleet hit WS the moment each completes, and sessions
+            # update independently when scan_all returns.
             await store.update_fleet(fleet)
-            await store.update_sessions(sessions)
-            await store.update_tmux(tmux)
+
+            tmux_task = asyncio.create_task(list_all_tmux(local_machine, fleet))
+            scan_task = asyncio.create_task(
+                scan_all(local_machine, fleet, on_progress=_emit_scan_progress)
+            )
+
+            async def _push_when_done(task, store_update):
+                try:
+                    result = await task
+                except Exception as exc:
+                    log.warning("scan leg failed: %s", exc)
+                    return None
+                await store_update(result)
+                return result
+
+            # Both legs run concurrently; whichever finishes first pushes its
+            # snapshot immediately. asyncio.gather waits for both so we can
+            # log the wall time and emit the cycle.done event with full counts.
+            tmux, sessions = await asyncio.gather(
+                _push_when_done(tmux_task, store.update_tmux),
+                _push_when_done(scan_task, store.update_sessions),
+            )
+            tmux = tmux or []
+            sessions = sessions or []
             store.set_last_scan(_now_iso())
             elapsed = time.monotonic() - t0
             log.info(
@@ -1164,20 +1189,53 @@ async def handle_sessions_machine(request: web.Request) -> web.Response:
 
 
 async def handle_sessions_scan(request: web.Request) -> web.Response:
-    """Force an immediate rescan and return fresh results."""
+    """Force an immediate rescan and return fresh results.
+
+    Runs fleet discovery, session scan, and tmux list in PARALLEL via
+    asyncio.gather. Pushes each result to the WS store as soon as it
+    arrives so the UI updates progressively (sessions + tmux can land
+    asymmetrically — tmux is typically <1s while session scan is the
+    slow leg). Previously serial: fleet → scan → tmux totalled the sum
+    of all three; now total = max(scan, tmux) + a few ms of fleet probe.
+    """
+    from .tracking import tl
     app = request.app
     local_machine = app["local_machine"]
     store: StateStore = app["store"]
     t0 = time.monotonic()
+    tl.event("cm.api.scan.start")
     try:
+        # Fleet runs first (it's fast — <1s) so we know which machines to
+        # scan. After that, sessions + tmux run concurrently.
         fleet = await discover_fleet()
-        sessions = await scan_all(local_machine, fleet)
-        tmux = await list_all_tmux(local_machine, fleet)
         await store.update_fleet(fleet)
-        await store.update_sessions(sessions)
-        await store.update_tmux(tmux)
+        tl.event("cm.api.scan.fleet_done",
+                 elapsed_ms=round((time.monotonic() - t0) * 1000, 1),
+                 online=sum(1 for m in fleet.values() if m.get("online")))
+
+        async def _scan_leg():
+            s = await scan_all(local_machine, fleet)
+            await store.update_sessions(s)
+            tl.event("cm.api.scan.sessions_done",
+                     elapsed_ms=round((time.monotonic() - t0) * 1000, 1),
+                     sessions=len(s))
+            return s
+
+        async def _tmux_leg():
+            t = await list_all_tmux(local_machine, fleet)
+            await store.update_tmux(t)
+            tl.event("cm.api.scan.tmux_done",
+                     elapsed_ms=round((time.monotonic() - t0) * 1000, 1),
+                     tmux=len(t))
+            return t
+
+        sessions, tmux = await asyncio.gather(_scan_leg(), _tmux_leg())
         store.set_last_scan(_now_iso())
-        log.info("POST /api/sessions/scan: %d sessions, %.2fs", len(sessions), time.monotonic() - t0)
+        elapsed = time.monotonic() - t0
+        log.info("POST /api/sessions/scan: %d sessions, %d tmux, %.2fs",
+                 len(sessions), len(tmux), elapsed)
+        tl.event("cm.api.scan.done", elapsed_ms=round(elapsed * 1000, 1),
+                 sessions=len(sessions), tmux=len(tmux))
         return web.json_response(
             {
                 "ok": True,
