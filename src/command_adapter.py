@@ -10,6 +10,7 @@ import logging
 import re
 import shlex
 from .config import FLEET_MACHINES
+from .tracking import tl
 
 log = logging.getLogger("claude_manager.command_adapter")
 
@@ -25,6 +26,11 @@ def sanitize_mux_name(name: str) -> str:
     sanitized = re.sub(r'[^A-Za-z0-9_-]+', '-', name).strip('-') or 'session'
     if sanitized != name:
         log.info("sanitize_mux_name: %r -> %r", name, sanitized)
+        tl.event(
+            "cm.adapter.sanitize.name_changed",
+            original=(name or "")[:120],
+            sanitized=(sanitized or "")[:120],
+        )
     return sanitized
 
 

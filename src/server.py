@@ -531,7 +531,15 @@ _GITHUB_API_URL = "https://api.github.com/repos/raphaelbgr/claude-manager/commit
 
 
 async def _fetch_github_latest() -> dict | None:
-    """Fetch the latest commit from GitHub. Returns a metadata dict or None on failure."""
+    """Fetch the latest commit from GitHub. Returns a metadata dict or None on failure.
+
+    NOTE: The returned dict intentionally omits the `version` field. Our local
+    `version` is `git rev-list --count HEAD` — the GitHub commits API has no
+    equivalent and synthesizing one would require N additional round trips. The
+    UI must tolerate `latest.version` being absent and render the commit hash
+    alone in that case (see `Header` in src/web/index.html — bug fix for the
+    `Update → v? · <sha>` rendering).
+    """
     try:
         import aiohttp as _aiohttp
         async with _aiohttp.ClientSession() as session:
@@ -550,6 +558,7 @@ async def _fetch_github_latest() -> dict | None:
             "commit_full": data["sha"],
             "date": data["commit"]["author"]["date"],
             "message": msg,
+            # `version` deliberately absent — see docstring.
         }
     except Exception as exc:
         log.debug("github version fetch failed: %s", exc)

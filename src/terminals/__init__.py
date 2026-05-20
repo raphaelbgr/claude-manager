@@ -19,6 +19,7 @@ import logging
 from typing import Awaitable, Callable
 
 from .base import TerminalAdapter
+from ..tracking import tl
 
 log = logging.getLogger("claude_manager.terminals")
 
@@ -65,8 +66,28 @@ async def list_available(os: str, runner: Runner) -> list[dict]:
     async def _probe(a: TerminalAdapter) -> TerminalAdapter | None:
         try:
             rc, _, _ = await asyncio.wait_for(runner(a.probe_shell()), timeout=8)
+            try:
+                tl.event(
+                    "cm.adapter.probe.attempt",
+                    adapter_id=a.id,
+                    os=os,
+                    rc=int(rc),
+                    probe=(a.probe_shell() or "")[:200],
+                )
+            except Exception:
+                pass
             return a if rc == 0 else None
         except Exception as exc:
+            try:
+                tl.event(
+                    "cm.adapter.probe.attempt",
+                    adapter_id=a.id,
+                    os=os,
+                    rc=-1,
+                    error=(str(exc) or "")[:200],
+                )
+            except Exception:
+                pass
             log.debug("probe(%s/%s) failed: %s", os, a.id, exc)
             return None
 

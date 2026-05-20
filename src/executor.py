@@ -9,10 +9,12 @@ import hashlib
 import os
 import shlex
 import sys
+import time
 from typing import Protocol
 
 from .config import FLEET_MACHINES, SSH_TIMEOUT, detect_local_machine
 from .subprocess_utils import run_with_timeout, _win32_kwargs
+from .tracking import tl, span
 
 
 # Hardcoded native-OS PATH fallbacks so the daemon finds tmux/psmux/claude/git
@@ -247,12 +249,18 @@ class SSHExecutor:
             self._path_prefix + remote_shell_str
             if not self._is_windows else remote_shell_str
         )
+        _t0 = time.monotonic()
+        _cmd_head = (remote_shell_str or "")[:200]
         # Prefer the pool — reuses a single connection for the whole app lifecycle.
         try:
             from .ssh_pool import default_pool, asyncssh as _asyncssh
             if _asyncssh is not None:
                 pool = default_pool()
-                return await pool.run(self.machine, remote_str, timeout=timeout, input=input)
+                with span("cm.ssh.exec", machine=self.machine,
+                          cmd_head=_cmd_head, transport="pool") as s:
+                    rc, out, err = await pool.run(self.machine, remote_str, timeout=timeout, input=input)
+                    s.update(rc=rc, elapsed_ms=int((time.monotonic() - _t0) * 1000))
+                    return rc, out, err
         except Exception as exc:
             # Silent fallback to subprocess on any pool failure (asyncssh missing,
             # backoff window, auth failure, etc). Logged at debug so it doesn't
@@ -262,7 +270,11 @@ class SSHExecutor:
                 "exec_shell(%s): pool unavailable (%s), falling back to subprocess", self.machine, exc
             )
         ssh_cmd = self._build_ssh_cmd_raw(remote_shell_str)
-        return await run_with_timeout(ssh_cmd, timeout=timeout, input=input)
+        with span("cm.ssh.exec", machine=self.machine,
+                  cmd_head=_cmd_head, transport="subprocess") as s:
+            rc, out, err = await run_with_timeout(ssh_cmd, timeout=timeout, input=input)
+            s.update(rc=rc, elapsed_ms=int((time.monotonic() - _t0) * 1000))
+            return rc, out, err
 
 
 def get_executor(machine: str) -> LocalExecutor | SSHExecutor:

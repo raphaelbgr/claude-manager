@@ -8,6 +8,7 @@ from .config import FLEET_MACHINES, detect_local_machine, SSH_TIMEOUT
 from .executor import get_executor, SSHExecutor
 from .mux_parser import parse_mux_output
 from .subprocess_utils import run_with_timeout
+from .tracking import tl
 
 log = logging.getLogger("claude_manager.tmux_manager")
 
@@ -48,19 +49,24 @@ async def list_local_tmux() -> list[TmuxSession]:
     """List all tmux sessions on the local machine."""
     machine = detect_local_machine()
     fmt = "#{session_name}|#{session_created}|#{session_windows}|#{session_attached}|#{pane_current_path}|#{pane_current_command}"
+    tl.event("cm.mux.list.start", machine=machine, scope="local")
     try:
         rc, stdout, _ = await run_with_timeout(
             ["tmux", "list-sessions", "-F", fmt],
             timeout=10,
         )
-    except (FileNotFoundError, asyncio.TimeoutError):
+    except (FileNotFoundError, asyncio.TimeoutError) as exc:
+        tl.event("cm.mux.list.err", machine=machine, scope="local", err=str(exc)[:200])
         return []
 
     if rc != 0:
         # "no server running" or similar — not an error we surface
+        tl.event("cm.mux.list.ok", machine=machine, scope="local", count=0, rc=rc)
         return []
 
-    return _dicts_to_sessions(parse_mux_output(stdout.decode()), machine, is_local=True)
+    sessions = _dicts_to_sessions(parse_mux_output(stdout.decode()), machine, is_local=True)
+    tl.event("cm.mux.list.ok", machine=machine, scope="local", count=len(sessions))
+    return sessions
 
 
 async def list_remote_tmux_via_api(machine_name: str, ip: str, dispatch_port: int) -> list[TmuxSession]:
@@ -92,6 +98,7 @@ async def list_remote_tmux(machine_name: str, ssh_alias: str, mux: str) -> list[
     """List tmux/psmux sessions on a remote machine via SSH."""
     fmt = "#{session_name}|#{session_created}|#{session_windows}|#{session_attached}|#{pane_current_path}|#{pane_current_command}"
     executor = SSHExecutor(machine_name)
+    tl.event("cm.mux.list.start", machine=machine_name, scope="remote", mux=mux)
 
     async def _run_remote(cmd_str: str) -> tuple[int, str]:
         try:
@@ -108,6 +115,7 @@ async def list_remote_tmux(machine_name: str, ssh_alias: str, mux: str) -> list[
     if not parsed and mux == "psmux":
         rc, out = await _run_remote("psmux list-sessions")
         if rc != 0 or not out.strip():
+            tl.event("cm.mux.list.ok", machine=machine_name, scope="remote", mux=mux, count=0, rc=rc)
             return []
         parsed = parse_mux_output(out)
 
@@ -132,6 +140,7 @@ async def list_remote_tmux(machine_name: str, ssh_alias: str, mux: str) -> list[
 
     sessions = _dicts_to_sessions(parsed, machine_name, is_local=False)
     log.info("list_remote_tmux(%s): %d sessions", machine_name, len(sessions))
+    tl.event("cm.mux.list.ok", machine=machine_name, scope="remote", mux=mux, count=len(sessions))
     return sessions
 
 
@@ -147,6 +156,16 @@ async def list_all_tmux(local_machine: str, fleet_status: dict) -> list[TmuxSess
         Sorted list of TmuxSession objects (by machine, then name).
     """
     tasks: list[asyncio.coroutine] = [list_local_tmux()]
+    online_remotes = sum(
+        1 for m, _ in FLEET_MACHINES.items()
+        if m != local_machine and fleet_status.get(m, {}).get("online", False)
+    )
+    tl.event(
+        "cm.mux.list.start",
+        scope="all",
+        local_machine=local_machine,
+        machines=online_remotes + 1,
+    )
 
     for machine_name, info in FLEET_MACHINES.items():
         if machine_name == local_machine:
@@ -187,12 +206,22 @@ async def list_all_tmux(local_machine: str, fleet_status: dict) -> list[TmuxSess
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     all_sessions: list[TmuxSession] = []
+    errors = 0
     for result in results:
         if isinstance(result, list):
             all_sessions.extend(result)
+        else:
+            errors += 1
         # Silently skip exceptions — individual machine failures are non-fatal
 
     all_sessions.sort(key=lambda s: (s.machine, s.name))
+    tl.event(
+        "cm.mux.list.ok",
+        scope="all",
+        count=len(all_sessions),
+        machines=len(tasks),
+        errors=errors,
+    )
     return all_sessions
 
 
@@ -219,6 +248,16 @@ async def create_tmux_session(
     # via send-keys for psmux only.
     use_c_flag = bool(cwd) and mux == "tmux"
 
+    tl.event(
+        "cm.mux.create.start",
+        machine=machine,
+        name=name[:120],
+        mux=mux,
+        has_cwd=bool(cwd),
+        has_command=bool(command),
+        is_local=bool(executor.is_local),
+    )
+
     try:
         if executor.is_local:
             # Step 1: Create detached session. Use -c for tmux; psmux gets cd via send-keys.
@@ -229,6 +268,7 @@ async def create_tmux_session(
             if _rc_create != 0:
                 err = stderr.decode().strip()
                 log.error("create_tmux_session(%s, %s): %s", machine, name, err)
+                tl.event("cm.mux.create.err", machine=machine, name=name[:120], err=err[:200], rc=_rc_create)
                 return {"ok": False, "error": err}
 
             # Step 2: cd into the working directory via send-keys (psmux only;
@@ -248,6 +288,7 @@ async def create_tmux_session(
                 )
 
             log.info("create_tmux_session(%s, %s): ok (local, cwd=%s)", machine, name, cwd)
+            tl.event("cm.mux.create.ok", machine=machine, name=name[:120], scope="local")
             return {"ok": True, "name": name}
         else:
             assert isinstance(executor, SSHExecutor)
@@ -265,6 +306,13 @@ async def create_tmux_session(
             err_lower = err.lower() if err else ""
             if rc != 0 or "already exists" in err_lower or "duplicate" in err_lower:
                 log.error("create_tmux_session(%s, %s): %s", machine, name, err or "(no stderr)")
+                tl.event(
+                    "cm.mux.create.err",
+                    machine=machine,
+                    name=name[:120],
+                    err=(err or "(no stderr)")[:200],
+                    rc=rc,
+                )
                 return {"ok": False, "error": err or f"failed to create session '{name}'"}
 
             # Step 2: cd via send-keys (psmux only; tmux started in cwd via -c).
@@ -277,12 +325,15 @@ async def create_tmux_session(
                 await _ssh_run(adapter.mux_send_keys(name, command))
 
             log.info("create_tmux_session(%s, %s): ok (remote, cwd=%s)", machine, name, cwd)
+            tl.event("cm.mux.create.ok", machine=machine, name=name[:120], scope="remote")
             return {"ok": True, "name": name, "machine": machine, "session": name}
     except asyncio.TimeoutError:
         log.error("create_tmux_session(%s, %s): timed out", machine, name)
+        tl.event("cm.mux.create.err", machine=machine, name=name[:120], err="timeout")
         return {"ok": False, "error": "Timed out"}
     except OSError as exc:
         log.error("create_tmux_session(%s, %s): %s", machine, name, exc)
+        tl.event("cm.mux.create.err", machine=machine, name=name[:120], err=str(exc)[:200])
         return {"ok": False, "error": str(exc)}
 
 
@@ -433,6 +484,7 @@ async def kill_tmux_session(machine: str, name: str) -> dict:
     info = FLEET_MACHINES.get(machine, {})
     mux = info.get("mux", "tmux")
     executor = get_executor(machine)
+    tl.event("cm.mux.kill", machine=machine, name=name[:120], mux=mux, is_local=bool(executor.is_local))
 
     try:
         if executor.is_local:

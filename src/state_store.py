@@ -13,6 +13,8 @@ import json
 import logging
 from typing import Any, Callable
 
+from .tracking import tl
+
 log = logging.getLogger("claude_manager.state_store")
 
 
@@ -27,16 +29,31 @@ class StateStore:
     # ------------------------------------------------------------------
 
     async def update_sessions(self, sessions: list) -> None:
+        prev = len(self._state.get("sessions") or [])
+        count = len(sessions)
         self._state["sessions"] = sessions
+        tl.event("cm.state.sessions.set", count=count, delta=count - prev)
         await self._push("sessions", [s.to_dict() for s in sessions])
 
     async def update_tmux(self, tmux: list) -> None:
+        prev = len(self._state.get("tmux") or [])
+        count = len(tmux)
         self._state["tmux"] = tmux
+        tl.event("cm.state.tmux.set", count=count, delta=count - prev)
         from .session_link import enrich_tmux_dicts
         await self._push("tmux", enrich_tmux_dicts(tmux, self._state.get("sessions", [])))
 
     async def update_fleet(self, fleet: dict) -> None:
+        prev_state = self._state.get("fleet") or {}
+        online = sum(1 for v in (fleet or {}).values() if isinstance(v, dict) and v.get("online"))
+        prev_online = sum(1 for v in prev_state.values() if isinstance(v, dict) and v.get("online"))
         self._state["fleet"] = fleet
+        tl.event(
+            "cm.state.fleet.set",
+            machines=len(fleet or {}),
+            online=online,
+            delta_online=online - prev_online,
+        )
         await self._push("fleet", fleet)
 
     def set_last_scan(self, ts: str) -> None:
@@ -86,24 +103,49 @@ class StateStore:
         """Send update message to all WS clients subscribed to channel."""
         payload = json.dumps({"type": "update", "channel": channel, "data": data, "action": "refresh"})
         dead = set()
+        delivered = 0
         for ws in list(self._state["ws_clients"]):
             subs: set[str] = getattr(ws, "_subscribed_channels", set())
             if channel in subs:
                 try:
                     await ws.send_str(payload)
+                    delivered += 1
                 except Exception:
                     dead.add(ws)
         self._state["ws_clients"] -= dead
+        tl.event(
+            "cm.ws.broadcast",
+            msg_type="update",
+            channel=channel,
+            recipient_count=delivered,
+            dropped=len(dead),
+        )
 
     async def push_raw(self, payload: str) -> None:
         """Broadcast a pre-serialised payload to ALL WS clients (e.g. scan_progress)."""
         dead = set()
+        delivered = 0
+        msg_type = "raw"
+        try:
+            parsed = json.loads(payload)
+            if isinstance(parsed, dict):
+                msg_type = parsed.get("type") or parsed.get("channel") or "raw"
+        except Exception:
+            pass
         for ws in list(self._state["ws_clients"]):
             try:
                 await ws.send_str(payload)
+                delivered += 1
             except Exception:
                 dead.add(ws)
         self._state["ws_clients"] -= dead
+        tl.event(
+            "cm.ws.broadcast",
+            msg_type=str(msg_type)[:120],
+            channel="*",
+            recipient_count=delivered,
+            dropped=len(dead),
+        )
 
     async def push_to_channel(self, channel: str, data: Any) -> None:
         """Public alias for _push — used by server handlers after manual state updates."""

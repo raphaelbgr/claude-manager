@@ -440,10 +440,11 @@ async def launch_claude_session(cwd: str, session_id: str, machine: str, skip_pe
     remote_os = info.get("os", "")
 
     # Remote: title = Origin -> Dest -> Project. The title is set INSIDE the
-    # SSH session so it reflects the remote context (both the origin terminal
-    # title and the post-SSH title get the arrow-chain label).
+    # SSH session so it reflects the remote context. Skipped for Windows
+    # targets — see launch_tmux_attach for the POSIX-quote-in-PS context
+    # explanation (PSMUX_SESSION nested-session error).
     title = build_window_title(local_machine, machine, None, project_name)
-    inner_prefix = title_prefix_for(remote_os, title)
+    inner_prefix = "" if remote_os == "win32" else title_prefix_for(remote_os, title)
 
     # Same approach for ALL platforms: SSH -t with single command.
     # Windows: build_session_command_ssh converts C:\path to /c/path for Git Bash.
@@ -576,7 +577,16 @@ async def launch_tmux_attach(session_name: str, machine: str, skip_permissions: 
         return await launch_terminal(prefix + adapter.mux_attach(session_name), terminal_id=terminal_id, title=title)
 
     title = build_window_title(local_machine, machine, session_name, None)
-    inner_prefix = title_prefix_for(remote_os, title)
+    # When remote is Windows, the in-shell title-setter uses single-quoted
+    # PowerShell ('try { $Host.UI.RawUI.WindowTitle = '...' } catch {} ;') which
+    # ``shlex.quote`` then POSIX-escapes (`'\''`). On a Windows LOCAL host
+    # (wt/pwsh/powershell), PowerShell does not understand POSIX `'\''` — it
+    # tokenises the inner `;` outside any string and runs the trailing
+    # `psmux attach -t name` as a separate LOCAL statement, hitting psmux's
+    # nested-session guard with `PSMUX_SESSION` already set in the user's
+    # outer shell. Skip the inner title-set for Windows targets; the outer
+    # `wt --title` already labels the tab.
+    inner_prefix = "" if remote_os == "win32" else title_prefix_for(remote_os, title)
 
     if adapter.mux_type == "psmux":
         # psmux attach over SSH -t fails with "Incorrect function (os error 1)"

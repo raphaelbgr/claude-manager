@@ -10,6 +10,7 @@ import asyncio
 import logging
 import subprocess
 import sys
+import time
 from typing import Any
 
 import aiohttp
@@ -17,6 +18,7 @@ import aiohttp
 from .config import FLEET_MACHINES, SSH_TIMEOUT
 from .executor import SSHExecutor
 from .subprocess_utils import run_with_timeout
+from .tracking import tl
 
 log = logging.getLogger("claude_manager.fleet")
 
@@ -49,6 +51,7 @@ async def check_machine_health(name: str, info: dict[str, Any]) -> dict[str, Any
     }
 
     port = info.get("dispatch_port")
+    _t0 = time.monotonic()
 
     # --- HTTP probe ---
     if port is not None:
@@ -68,6 +71,9 @@ async def check_machine_health(name: str, info: dict[str, Any]) -> dict[str, Any
                             health_data=data,
                         )
                         log.info("check_machine_health(%s): online=True via http", name)
+                        tl.event("cm.fleet.health.ok",
+                                 machine=name, transport="http",
+                                 elapsed_ms=int((time.monotonic() - _t0) * 1000))
                         return base
         except Exception:
             pass  # fall through to SSH
@@ -79,11 +85,22 @@ async def check_machine_health(name: str, info: dict[str, Any]) -> dict[str, Any
         if rc == 0 and b"ok" in stdout:
             base.update(online=True, method="ssh", health_data={"ssh": "ok"})
             log.info("check_machine_health(%s): online=True via ssh", name)
+            tl.event("cm.fleet.health.ok",
+                     machine=name, transport="ssh",
+                     elapsed_ms=int((time.monotonic() - _t0) * 1000))
             return base
-    except Exception:
-        pass
+    except Exception as exc:
+        tl.event("cm.fleet.health.err",
+                 machine=name, transport="ssh",
+                 err=str(exc)[:200],
+                 elapsed_ms=int((time.monotonic() - _t0) * 1000))
+        log.info("check_machine_health(%s): online=False", name)
+        return base
 
     log.info("check_machine_health(%s): online=False", name)
+    tl.event("cm.fleet.health.err",
+             machine=name, transport="none", err="unreachable",
+             elapsed_ms=int((time.monotonic() - _t0) * 1000))
     return base
 
 
@@ -101,6 +118,9 @@ async def discover_fleet(
     """
     if machines is None:
         machines = FLEET_MACHINES
+
+    tl.event("cm.fleet.discover.start", total=len(machines))
+    _t0 = time.monotonic()
 
     tasks = [
         check_machine_health(name, info) for name, info in machines.items()
@@ -125,4 +145,7 @@ async def discover_fleet(
     online = sum(1 for v in fleet_status.values() if v.get("online"))
     total = len(fleet_status)
     log.info("discover_fleet: %d/%d machines online", online, total)
+    tl.event("cm.fleet.discover.done",
+             online_count=online, total=total,
+             elapsed_ms=int((time.monotonic() - _t0) * 1000))
     return fleet_status

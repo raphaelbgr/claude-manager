@@ -11,6 +11,7 @@ import shlex
 
 from .base import TerminalAdapter
 from ..subprocess_utils import run_with_timeout
+from ..tracking import tl
 
 
 def _applescript_string(s: str) -> str:
@@ -44,6 +45,17 @@ class ItermAdapter(TerminalAdapter):
         return 'test -d /Applications/iTerm.app'
 
     async def launch(self, command: str, *, title: str | None = None) -> dict:
+        try:
+            tl.event(
+                "cm.adapter.spawn",
+                adapter=self.id,
+                kind="iterm2-osascript",
+                fallback_used=False,
+                title_present=bool(title),
+                cmd_head=(command or "")[:120],
+            )
+        except Exception:
+            pass
         cmd_esc = _applescript_string(command)
         script = (
             'tell application "iTerm2"\n'
@@ -68,6 +80,17 @@ class TerminalAppAdapter(TerminalAdapter):
         return 'test -d /System/Applications/Utilities/Terminal.app || test -d /Applications/Utilities/Terminal.app'
 
     async def launch(self, command: str, *, title: str | None = None) -> dict:
+        try:
+            tl.event(
+                "cm.adapter.spawn",
+                adapter=self.id,
+                kind="terminal.app-osascript",
+                fallback_used=False,
+                title_present=bool(title),
+                cmd_head=(command or "")[:120],
+            )
+        except Exception:
+            pass
         cmd_esc = _applescript_string(command)
         # Terminal.app honors the OSC 0 sequence for titles — it's already
         # injected upstream by launcher.title_prefix_for when requested, so we
@@ -94,7 +117,7 @@ class AlacrittyDarwinAdapter(TerminalAdapter):
         bin_paths = ["/opt/homebrew/bin/alacritty", "/usr/local/bin/alacritty", "/Applications/Alacritty.app/Contents/MacOS/alacritty"]
         args = ["--title", title] if title else []
         args += ["-e", "bash", "-lc", f"{command}; exec bash"]
-        for path in bin_paths:
+        for idx, path in enumerate(bin_paths):
             try:
                 proc = await asyncio.create_subprocess_exec(
                     path, *args,
@@ -105,8 +128,29 @@ class AlacrittyDarwinAdapter(TerminalAdapter):
                     _, _ = await asyncio.wait_for(proc.communicate(), timeout=3)
                 except asyncio.TimeoutError:
                     pass  # expected — GUI app keeps running
+                try:
+                    tl.event(
+                        "cm.adapter.spawn",
+                        adapter=self.id,
+                        kind="alacritty-darwin",
+                        fallback_used=(idx > 0),
+                        bin_path=(path or "")[:200],
+                        title_present=bool(title),
+                        cmd_head=(command or "")[:120],
+                    )
+                except Exception:
+                    pass
                 return {"ok": True}
             except FileNotFoundError:
+                try:
+                    tl.event(
+                        "cm.adapter.fallback",
+                        adapter=self.id,
+                        reason="FileNotFoundError",
+                        skipped_path=(path or "")[:200],
+                    )
+                except Exception:
+                    pass
                 continue
         return {"ok": False, "error": "alacritty binary not found in expected paths"}
 
@@ -124,7 +168,7 @@ class KittyDarwinAdapter(TerminalAdapter):
         bin_paths = ["/opt/homebrew/bin/kitty", "/usr/local/bin/kitty", "/Applications/kitty.app/Contents/MacOS/kitty"]
         args = ["--title", title] if title else []
         args += ["bash", "-lc", f"{command}; exec bash"]
-        for path in bin_paths:
+        for idx, path in enumerate(bin_paths):
             try:
                 proc = await asyncio.create_subprocess_exec(
                     path, *args,
@@ -135,8 +179,29 @@ class KittyDarwinAdapter(TerminalAdapter):
                     _, _ = await asyncio.wait_for(proc.communicate(), timeout=3)
                 except asyncio.TimeoutError:
                     pass
+                try:
+                    tl.event(
+                        "cm.adapter.spawn",
+                        adapter=self.id,
+                        kind="kitty-darwin",
+                        fallback_used=(idx > 0),
+                        bin_path=(path or "")[:200],
+                        title_present=bool(title),
+                        cmd_head=(command or "")[:120],
+                    )
+                except Exception:
+                    pass
                 return {"ok": True}
             except FileNotFoundError:
+                try:
+                    tl.event(
+                        "cm.adapter.fallback",
+                        adapter=self.id,
+                        reason="FileNotFoundError",
+                        skipped_path=(path or "")[:200],
+                    )
+                except Exception:
+                    pass
                 continue
         return {"ok": False, "error": "kitty binary not found"}
 
@@ -162,6 +227,17 @@ class GhosttyAdapter(TerminalAdapter):
             try:
                 _, _ = await asyncio.wait_for(proc.communicate(), timeout=3)
             except asyncio.TimeoutError:
+                pass
+            try:
+                tl.event(
+                    "cm.adapter.spawn",
+                    adapter=self.id,
+                    kind="ghostty-darwin",
+                    fallback_used=False,
+                    title_present=bool(title),
+                    cmd_head=(command or "")[:120],
+                )
+            except Exception:
                 pass
             return {"ok": True}
         except FileNotFoundError:

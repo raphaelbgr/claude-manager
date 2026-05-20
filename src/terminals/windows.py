@@ -12,6 +12,7 @@ import shutil
 
 from .base import TerminalAdapter
 from ..subprocess_utils import _win32_asyncio_kwargs
+from ..tracking import tl
 
 
 _PWSH_PATH: str | None = None
@@ -30,6 +31,14 @@ def _wt_shell() -> str:
     if not _PWSH_PROBED:
         _PWSH_PATH = shutil.which("pwsh") or shutil.which("pwsh.exe")
         _PWSH_PROBED = True
+        try:
+            tl.event(
+                "cm.adapter.wt.host_picked",
+                host=("pwsh.exe" if _PWSH_PATH else "powershell.exe"),
+                pwsh_path=(_PWSH_PATH or "")[:200],
+            )
+        except Exception:
+            pass
     return "pwsh.exe" if _PWSH_PATH else "powershell.exe"
 
 
@@ -79,6 +88,18 @@ class WindowsTerminalAdapter(TerminalAdapter):
         title_arg = f'--title "{_escape_pwsh(title)}" ' if title else ""
         host = _wt_shell()
         shell = f'cmd /c start "" wt.exe {title_arg}-- {host} -NoExit -EncodedCommand {encoded}'
+        try:
+            tl.event(
+                "cm.adapter.spawn",
+                adapter=self.id,
+                kind="wt-encodedcommand",
+                host=host,
+                encoded_len=len(encoded),
+                title_present=bool(title),
+                cmd_head=(command or "")[:120],
+            )
+        except Exception:
+            pass
         return await _spawn_shell(shell)
 
 
@@ -96,6 +117,16 @@ class PowerShellAdapter(TerminalAdapter):
         # title is embedded via $Host.UI.RawUI.WindowTitle inside the shell
         title_cmd = f"$Host.UI.RawUI.WindowTitle='{_escape_pwsh(title)}'; " if title else ""
         shell = f'cmd /c start powershell -NoExit -Command "{title_cmd}{escaped}"'
+        try:
+            tl.event(
+                "cm.adapter.spawn",
+                adapter=self.id,
+                kind="powershell-classic",
+                title_present=bool(title),
+                cmd_head=(command or "")[:120],
+            )
+        except Exception:
+            pass
         return await _spawn_shell(shell)
 
 
@@ -112,6 +143,16 @@ class Pwsh7Adapter(TerminalAdapter):
         escaped = _escape_pwsh(command)
         title_cmd = f"$Host.UI.RawUI.WindowTitle='{_escape_pwsh(title)}'; " if title else ""
         shell = f'cmd /c start pwsh -NoExit -Command "{title_cmd}{escaped}"'
+        try:
+            tl.event(
+                "cm.adapter.spawn",
+                adapter=self.id,
+                kind="pwsh7",
+                title_present=bool(title),
+                cmd_head=(command or "")[:120],
+            )
+        except Exception:
+            pass
         return await _spawn_shell(shell)
 
 
@@ -129,6 +170,16 @@ class CmdAdapter(TerminalAdapter):
         # Start a new cmd window that runs the command then keeps open (/k).
         t = title.replace('"', '') if title else ""
         shell = f'cmd /c start "{t}" cmd /k "{command}"'
+        try:
+            tl.event(
+                "cm.adapter.spawn",
+                adapter=self.id,
+                kind="cmd-start-k",
+                title_present=bool(title),
+                cmd_head=(command or "")[:120],
+            )
+        except Exception:
+            pass
         return await _spawn_shell(shell)
 
 
@@ -146,10 +197,30 @@ class GitBashAdapter(TerminalAdapter):
         # via cmd-start which reuses the Windows console. mintty supports titles.
         escaped = command.replace('"', '\\"')
         if title:
+            try:
+                tl.event(
+                    "cm.adapter.spawn",
+                    adapter=self.id,
+                    kind="git-bash-mintty",
+                    title_present=True,
+                    cmd_head=(command or "")[:120],
+                )
+            except Exception:
+                pass
             return await _spawn_shell(
                 f'cmd /c start "" "%ProgramFiles%\\Git\\usr\\bin\\mintty.exe" '
                 f'--title "{title}" -e bash -lc "{escaped}"'
             )
+        try:
+            tl.event(
+                "cm.adapter.spawn",
+                adapter=self.id,
+                kind="git-bash-login",
+                title_present=False,
+                cmd_head=(command or "")[:120],
+            )
+        except Exception:
+            pass
         return await _spawn_shell(
             f'cmd /c start "" "%ProgramFiles%\\Git\\bin\\bash.exe" --login -i -c "{escaped}"'
         )

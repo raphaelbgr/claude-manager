@@ -28,6 +28,7 @@ import psutil
 
 from .subprocess_utils import run_with_timeout, _win32_kwargs
 from .executor import SSHExecutor
+from .tracking import tl
 
 log = logging.getLogger("claude_manager.scanner")
 
@@ -452,8 +453,14 @@ def scan_local(
     if claude_home is None:
         claude_home = Path.home() / ".claude"
 
+    _scan_t0 = time.monotonic()
+
     projects_dir = claude_home / "projects"
     if not projects_dir.is_dir():
+        tl.event("cm.scan.local.ok",
+                 machine=machine, sessions=0,
+                 elapsed_ms=int((time.monotonic() - _scan_t0) * 1000),
+                 reason="no_projects_dir")
         return []
 
     active_pids, session_names = _load_active_pids(claude_home)
@@ -574,6 +581,9 @@ def scan_local(
 
     all_sessions.sort(key=lambda s: s.modified, reverse=True)
     log.info("scan_local: found %d sessions", len(all_sessions))
+    tl.event("cm.scan.local.ok",
+             machine=machine, sessions=len(all_sessions),
+             elapsed_ms=int((time.monotonic() - _scan_t0) * 1000))
     return all_sessions
 
 
@@ -881,10 +891,15 @@ async def scan_remote_via_api(machine_name: str, ip: str, dispatch_port: int) ->
     """Query the dispatch daemon's /sessions endpoint instead of SSH."""
     import aiohttp
     url = f"http://{ip}:{dispatch_port}/sessions"
+    _t0 = time.monotonic()
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=3)) as resp:
                 if resp.status != 200:
+                    tl.event("cm.scan.remote.err",
+                             machine=machine_name, transport="api",
+                             err=f"http {resp.status}",
+                             elapsed_ms=int((time.monotonic() - _t0) * 1000))
                     return []
                 data = await resp.json()
                 sessions = []
@@ -917,9 +932,17 @@ async def scan_remote_via_api(machine_name: str, ip: str, dispatch_port: int) ->
                     )
                     sessions.append(s)
                 log.info("scan_remote(%s): %d sessions via api", machine_name, len(sessions))
+                tl.event("cm.scan.remote.ok",
+                         machine=machine_name, sessions=len(sessions),
+                         transport="api",
+                         elapsed_ms=int((time.monotonic() - _t0) * 1000))
                 return sessions
     except Exception as exc:
         log.warning("scan_remote(%s): api failed: %s", machine_name, exc)
+        tl.event("cm.scan.remote.err",
+                 machine=machine_name, transport="api",
+                 err=str(exc)[:200],
+                 elapsed_ms=int((time.monotonic() - _t0) * 1000))
         return []
 
 
@@ -939,6 +962,7 @@ async def scan_remote(
     """
     script = REMOTE_SCAN_SCRIPT.strip()
     executor = SSHExecutor(machine_name)
+    _t0 = time.monotonic()
     try:
         rc, stdout, stderr = await executor.exec_shell(
             "python3 -",
@@ -947,19 +971,33 @@ async def scan_remote(
         )
     except asyncio.TimeoutError:
         log.warning("scan_remote(%s): SSH timed out", machine_name)
+        tl.event("cm.scan.remote.err",
+                 machine=machine_name, transport="ssh", err="timeout",
+                 elapsed_ms=int((time.monotonic() - _t0) * 1000))
         return []
     except Exception as exc:
         log.warning("scan_remote(%s): failed: %s", machine_name, exc)
+        tl.event("cm.scan.remote.err",
+                 machine=machine_name, transport="ssh",
+                 err=str(exc)[:200],
+                 elapsed_ms=int((time.monotonic() - _t0) * 1000))
         return []
 
     if rc != 0:
         log.warning("scan_remote(%s): SSH exited %d", machine_name, rc)
+        tl.event("cm.scan.remote.err",
+                 machine=machine_name, transport="ssh",
+                 err=f"rc={rc}",
+                 elapsed_ms=int((time.monotonic() - _t0) * 1000))
         return []
 
     try:
         raw_list: list[dict] = json.loads(stdout.decode("utf-8", errors="replace"))
     except json.JSONDecodeError:
         log.warning("scan_remote(%s): JSON parse error", machine_name)
+        tl.event("cm.scan.remote.err",
+                 machine=machine_name, transport="ssh", err="json_decode",
+                 elapsed_ms=int((time.monotonic() - _t0) * 1000))
         return []
 
     sessions: list[ClaudeSession] = []
@@ -996,6 +1034,10 @@ async def scan_remote(
             continue
 
     log.info("scan_remote(%s): %d sessions via ssh", machine_name, len(sessions))
+    tl.event("cm.scan.remote.ok",
+             machine=machine_name, sessions=len(sessions),
+             transport="ssh",
+             elapsed_ms=int((time.monotonic() - _t0) * 1000))
     return sessions
 
 

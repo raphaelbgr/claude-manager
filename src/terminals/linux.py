@@ -5,6 +5,7 @@ import asyncio
 import shlex
 
 from .base import TerminalAdapter
+from ..tracking import tl
 
 
 async def _spawn(argv: list[str]) -> dict:
@@ -46,6 +47,16 @@ class GnomeTerminalAdapter(TerminalAdapter):
         if title:
             argv += ["--title", title]
         argv += ["--", "bash", "-lc", _wrap(command)]
+        try:
+            tl.event(
+                "cm.adapter.spawn",
+                adapter=self.id,
+                kind="gnome-terminal",
+                title_present=bool(title),
+                cmd_head=(command or "")[:120],
+            )
+        except Exception:
+            pass
         return await _spawn(argv)
 
 
@@ -63,6 +74,16 @@ class KonsoleAdapter(TerminalAdapter):
         if title:
             argv += ["-p", f"tabtitle={title}"]
         argv += ["-e", "bash", "-lc", _wrap(command)]
+        try:
+            tl.event(
+                "cm.adapter.spawn",
+                adapter=self.id,
+                kind="konsole",
+                title_present=bool(title),
+                cmd_head=(command or "")[:120],
+            )
+        except Exception:
+            pass
         return await _spawn(argv)
 
 
@@ -80,6 +101,16 @@ class Xfce4TerminalAdapter(TerminalAdapter):
         if title:
             argv += ["--title", title]
         argv += ["-e", f"bash -lc {shlex.quote(_wrap(command))}"]
+        try:
+            tl.event(
+                "cm.adapter.spawn",
+                adapter=self.id,
+                kind="xfce4-terminal",
+                title_present=bool(title),
+                cmd_head=(command or "")[:120],
+            )
+        except Exception:
+            pass
         return await _spawn(argv)
 
 
@@ -97,6 +128,16 @@ class AlacrittyLinuxAdapter(TerminalAdapter):
         if title:
             argv += ["--title", title]
         argv += ["-e", "bash", "-lc", _wrap(command)]
+        try:
+            tl.event(
+                "cm.adapter.spawn",
+                adapter=self.id,
+                kind="alacritty-linux",
+                title_present=bool(title),
+                cmd_head=(command or "")[:120],
+            )
+        except Exception:
+            pass
         return await _spawn(argv)
 
 
@@ -114,6 +155,16 @@ class KittyLinuxAdapter(TerminalAdapter):
         if title:
             argv += ["--title", title]
         argv += ["bash", "-lc", _wrap(command)]
+        try:
+            tl.event(
+                "cm.adapter.spawn",
+                adapter=self.id,
+                kind="kitty-linux",
+                title_present=bool(title),
+                cmd_head=(command or "")[:120],
+            )
+        except Exception:
+            pass
         return await _spawn(argv)
 
 
@@ -131,4 +182,14 @@ class XtermAdapter(TerminalAdapter):
         if title:
             argv += ["-T", title]
         argv += ["-e", f"bash -lc {shlex.quote(_wrap(command))}"]
+        try:
+            tl.event(
+                "cm.adapter.spawn",
+                adapter=self.id,
+                kind="xterm",
+                title_present=bool(title),
+                cmd_head=(command or "")[:120],
+            )
+        except Exception:
+            pass
         return await _spawn(argv)

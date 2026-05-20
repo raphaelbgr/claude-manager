@@ -21,6 +21,7 @@ import asyncio
 import logging
 import pathlib
 import shlex
+import time
 from typing import Optional
 
 try:
@@ -29,6 +30,7 @@ except ImportError:  # pragma: no cover — dep is pinned in pyproject.toml
     asyncssh = None  # type: ignore
 
 from .config import FLEET_MACHINES, SSH_TIMEOUT
+from .tracking import tl
 
 log = logging.getLogger("claude_manager.ssh_pool")
 
@@ -76,14 +78,22 @@ class _MachineConn:
 
             now = asyncio.get_event_loop().time()
             if self._last_fail_ts and (now - self._last_fail_ts) < self._fail_backoff:
+                tl.event("cm.ssh.pool.backoff",
+                         machine=self.machine,
+                         backoff_s=round(self._fail_backoff, 2))
                 raise ConnectionError(
                     f"{self.machine}: in backoff window ({self._fail_backoff:.1f}s), skipping"
                 )
 
+            tl.event("cm.ssh.pool.connect.start", machine=self.machine, host=(self._host or "")[:120])
+            _t0 = time.monotonic()
             try:
                 self._conn = await self._open()
                 self._fail_backoff = 1.0  # reset on success
                 log.info("ssh_pool: opened connection to %s (%s)", self.machine, self._host)
+                tl.event("cm.ssh.pool.connect.ok",
+                         machine=self.machine,
+                         elapsed_ms=int((time.monotonic() - _t0) * 1000))
                 return self._conn
             except Exception as exc:
                 self._last_fail_ts = now
@@ -92,6 +102,11 @@ class _MachineConn:
                     "ssh_pool: connect to %s (%s) failed: %s — next retry in %.1fs",
                     self.machine, self._host, exc, self._fail_backoff,
                 )
+                tl.event("cm.ssh.pool.connect.err",
+                         machine=self.machine,
+                         err=str(exc)[:200],
+                         next_backoff_s=round(self._fail_backoff, 2),
+                         elapsed_ms=int((time.monotonic() - _t0) * 1000))
                 self._conn = None
                 raise
 

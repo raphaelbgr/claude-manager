@@ -57,14 +57,18 @@ _declare("cm.fleet.discover.done",  after=["cm.fleet.discover.start"], screen="F
 # Terminal adapter spawn (src/launcher.py + src/terminals/*)
 # ----------------------------------------------------------------------
 
-_declare("cm.adapter.probe.start", screen="Launch")
-_declare("cm.adapter.probe.ok",    after=["cm.adapter.probe.start"], screen="Launch")
-_declare("cm.adapter.pick",        after=["cm.adapter.probe.ok"], screen="Launch")
+_declare("cm.adapter.probe.start",   screen="Launch")
+_declare("cm.adapter.probe.attempt", after=["cm.adapter.probe.start"], screen="Launch")
+_declare("cm.adapter.probe.ok",      after=["cm.adapter.probe.start"], screen="Launch")
+_declare("cm.adapter.pick",          after=["cm.adapter.probe.ok"], screen="Launch")
 
-_declare("cm.adapter.launch.start", after=["cm.adapter.pick"], screen="Launch")
-_declare("cm.adapter.launch.ok",    after=["cm.adapter.launch.start"], screen="Launch",
+_declare("cm.adapter.launch.start",   after=["cm.adapter.pick"], screen="Launch")
+_declare("cm.adapter.spawn",          after=["cm.adapter.launch.start"], screen="Launch")
+_declare("cm.adapter.fallback",       after=["cm.adapter.launch.start"], screen="Launch")
+_declare("cm.adapter.wt.host_picked", screen="Launch")
+_declare("cm.adapter.launch.ok",      after=["cm.adapter.launch.start"], screen="Launch",
          within_ms_of=("cm.adapter.launch.start", 10000.0))
-_declare("cm.adapter.launch.err",   after=["cm.adapter.launch.start"], screen="Launch",
+_declare("cm.adapter.launch.err",     after=["cm.adapter.launch.start"], screen="Launch",
          within_ms_of=("cm.adapter.launch.start", 10000.0))
 
 
@@ -109,3 +113,36 @@ _declare("cm.api.response", after=["cm.api.request"], screen="Api",
 _declare("cm.ws.connect", screen="Ws")
 _declare("cm.ws.broadcast", after=["cm.ws.connect"], screen="Ws")
 _declare("cm.ws.disconnect", after=["cm.ws.connect"], screen="Ws")
+
+
+# ----------------------------------------------------------------------
+# State store (src/state_store.py)
+# ----------------------------------------------------------------------
+
+_declare("cm.state.sessions.set", screen="State")
+_declare("cm.state.tmux.set", screen="State")
+_declare("cm.state.fleet.set", screen="State")
+
+
+# ----------------------------------------------------------------------
+# Command adapter (src/command_adapter.py)
+# ----------------------------------------------------------------------
+
+_declare("cm.adapter.sanitize.name_changed", screen="Adapter")
+
+
+# ----------------------------------------------------------------------
+# SSH executor (src/executor.py — exec_shell unified entry)
+# ----------------------------------------------------------------------
+
+_declare("cm.ssh.exec", screen="Ssh")
+
+
+# ----------------------------------------------------------------------
+# SSH connection pool (src/ssh_pool.py — persistent asyncssh connections)
+# ----------------------------------------------------------------------
+
+_declare("cm.ssh.pool.connect.start", screen="Ssh")
+_declare("cm.ssh.pool.connect.ok",  after=["cm.ssh.pool.connect.start"], screen="Ssh")
+_declare("cm.ssh.pool.connect.err", after=["cm.ssh.pool.connect.start"], screen="Ssh")
+_declare("cm.ssh.pool.backoff", screen="Ssh")

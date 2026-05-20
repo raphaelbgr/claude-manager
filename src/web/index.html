@@ -3927,7 +3927,15 @@ function Header({ health, sessions, tmuxSessions, fleet, onScan, scanning, scanP
           ? 'Updating…'
           : updateAvailable
             ? h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '240px', display: 'inline-block', verticalAlign: 'middle', whiteSpace: 'nowrap' } },
-                `Update → v${latestVersion || '?'} · ${latestCommitShort || '?'}`)
+                // GitHub commits API doesn't expose a rev-list count, so latestVersion
+                // is normally absent. When it's missing, render the commit alone instead
+                // of the bogus `v?` placeholder. When the commit is also missing there's
+                // nothing meaningful to show — fall back to "check failed".
+                latestVersion
+                  ? `Update → v${latestVersion} · ${latestCommitShort || '?'}`
+                  : latestCommitShort
+                    ? `Update → ${latestCommitShort}`
+                    : 'Update → check failed')
             : h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '240px', display: 'inline-block', verticalAlign: 'middle', whiteSpace: 'nowrap' } },
                 `v${currentVersion || '?'} · ${currentCommitShort || '?'}`),
       ),
