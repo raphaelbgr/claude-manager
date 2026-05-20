@@ -7,6 +7,7 @@ import sys
 from .command_adapter import get_adapter, sanitize_mux_name
 from .config import FLEET_MACHINES, detect_local_machine, SSH_TIMEOUT
 from .subprocess_utils import _win32_asyncio_kwargs
+from .tracking import tl, span
 
 log = logging.getLogger("claude_manager.launcher")
 
@@ -140,10 +141,14 @@ async def _auto_pick_local_adapter_id() -> str | None:
     """
     reg_os = _reg_os_for_local()
     if reg_os in _AUTO_ADAPTER_CACHE:
-        return _AUTO_ADAPTER_CACHE[reg_os]
+        cached = _AUTO_ADAPTER_CACHE[reg_os]
+        tl.event("cm.adapter.pick", id=cached, source="cache", os=reg_os)
+        return cached
 
     from . import terminals as _terms
     from .subprocess_utils import _win32_asyncio_kwargs
+
+    tl.event("cm.adapter.probe.start", os=reg_os)
 
     async def runner(shell_script: str) -> tuple[int, bytes, bytes]:
         if sys.platform == "win32":
@@ -172,8 +177,11 @@ async def _auto_pick_local_adapter_id() -> str | None:
     _AUTO_ADAPTER_CACHE[reg_os] = picked_id
     if picked_id:
         log.info("auto-picked terminal adapter: %s (%s)", picked_id, reg_os)
+        tl.event("cm.adapter.probe.ok", picked=picked_id, os=reg_os)
+        tl.event("cm.adapter.pick", id=picked_id, source="probe", os=reg_os)
     else:
         log.warning("auto-pick: no adapter installed on %s — using legacy spawn", reg_os)
+        tl.event("cm.adapter.probe.ok", picked=None, os=reg_os, fallback="legacy")
     return picked_id
 
 
@@ -205,11 +213,19 @@ async def launch_terminal(
         from . import terminals as _terms
         adapter = _terms.get_adapter(_reg_os_for_local(), terminal_id)
         if adapter is not None:
+            tl.event("cm.adapter.launch.start",
+                     adapter=terminal_id, cmd_head=(command or "")[:120], has_title=bool(title))
             result = await adapter.launch(command, title=title)
-            if not result.get("ok"):
-                log.error("launch_terminal(%s): %s", terminal_id, result.get("error"))
+            if result.get("ok"):
+                tl.event("cm.adapter.launch.ok", adapter=terminal_id)
+            else:
+                err = str(result.get("error", ""))[:200]
+                log.error("launch_terminal(%s): %s", terminal_id, err)
+                tl.event("cm.adapter.launch.err", adapter=terminal_id, err=err)
             return result
         log.warning("launch_terminal: unknown terminal_id=%r, falling back to auto", terminal_id)
+        tl.event("cm.adapter.launch.err",
+                 adapter=terminal_id, err="unknown terminal_id, falling back")
 
     if sys.platform == "darwin":
         result = await _launch_macos(command)
@@ -405,6 +421,10 @@ async def launch_claude_session(cwd: str, session_id: str, machine: str, skip_pe
     adapter = get_adapter(machine)
     log.info("launch_claude_session(%s, %s): mode=terminal", machine, session_id[:12])
 
+    tl.event("cm.launch.session.start",
+             machine=machine, session_id_head=(session_id or "")[:12],
+             skip_permissions=skip_permissions, terminal_id=terminal_id or "auto")
+
     project_name = (cwd or "").replace("\\", "/").rstrip("/").split("/")[-1] or None
 
     if machine == local_machine:
@@ -475,6 +495,8 @@ async def _ensure_claude_running(machine: str, session_name: str, skip_permissio
     if not _looks_like_shell_prompt(pane):
         return
 
+    tl.event("cm.launch.ensure_claude.run", machine=machine, session=session_name,
+             skip_permissions=skip_permissions)
     adapter = get_adapter(machine)
     claude_cmd = "claude --dangerously-skip-permissions" if skip_permissions else "claude"
     send_keys = adapter.mux_send_keys(session_name, claude_cmd)
@@ -537,6 +559,10 @@ async def launch_tmux_attach(session_name: str, machine: str, skip_permissions: 
     alias = info.get("ssh_alias", machine)
     adapter = get_adapter(machine)
     remote_os = info.get("os", "")
+
+    tl.event("cm.launch.tmux.start",
+             machine=machine, remote_os=remote_os, session=session_name,
+             skip_permissions=skip_permissions, terminal_id=terminal_id or "auto")
 
     # Pre-attach probe: if no claude is running inside the session, start one.
     await _ensure_claude_running(machine, session_name, skip_permissions=skip_permissions)

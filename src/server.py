@@ -285,6 +285,33 @@ async def rate_limit_middleware(request: web.Request, handler) -> web.Response:
     return await handler(request)
 
 
+@web.middleware
+async def trace_middleware(request: web.Request, handler) -> web.Response:
+    """Emit cm.api.request / cm.api.response for every non-static, non-OPTIONS path.
+
+    Static asset hits (/, /favicon.ico) and CORS preflights are filtered out
+    to keep the trace volume bounded — every non-trivial endpoint and its
+    duration land in the JSONL stream.
+    """
+    if request.method == "OPTIONS" or request.path in ("/", "/favicon.ico"):
+        return await handler(request)
+    from .tracking import tl
+    import time as _t
+    t0 = _t.monotonic()
+    tl.event("cm.api.request", method=request.method, path=request.path)
+    try:
+        resp = await handler(request)
+    except Exception as exc:
+        tl.event("cm.api.response", method=request.method, path=request.path,
+                 status=500, err=type(exc).__name__,
+                 elapsed_ms=round((_t.monotonic() - t0) * 1000, 1))
+        raise
+    tl.event("cm.api.response", method=request.method, path=request.path,
+             status=getattr(resp, "status", 0),
+             elapsed_ms=round((_t.monotonic() - t0) * 1000, 1))
+    return resp
+
+
 # ---------------------------------------------------------------------------
 # State helpers
 # ---------------------------------------------------------------------------
@@ -337,8 +364,10 @@ async def _background_scan(app: web.Application) -> None:
     else:
         log.info("background_scan: 30s timeout reached, scanning anyway")
 
+    from .tracking import tl
     while True:
         t0 = time.monotonic()
+        tl.event("cm.scan.cycle.start")
         try:
             fleet = await discover_fleet()
 
@@ -367,10 +396,14 @@ async def _background_scan(app: web.Application) -> None:
                 "background_scan: %d sessions, %d tmux, %d fleet machines in %.2fs",
                 len(sessions), len(tmux), len(fleet), elapsed,
             )
+            tl.event("cm.scan.cycle.done",
+                     sessions=len(sessions), tmux=len(tmux), fleet=len(fleet),
+                     elapsed_ms=round(elapsed * 1000, 1))
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             log.exception("background scan failed: %s", exc)
+            tl.event("cm.scan.cycle.done", error=str(exc)[:200])
 
         await asyncio.sleep(SCAN_INTERVAL)
 
@@ -394,8 +427,12 @@ async def on_startup(app: web.Application) -> None:
     # whole app lifecycle. Replaces subprocess-ssh storms (esp. on Windows
     # where ControlMaster is a no-op).
     from .ssh_pool import default_pool
+    from .tracking import tl, init as tl_init
+    tl_init()
+    tl.event("cm.proc.start", local_machine=app.get("local_machine"))
     app["ssh_pool"] = default_pool()
     app["bg_task"] = asyncio.ensure_future(_background_scan(app))
+    tl.event("cm.proc.ready")
 
 
 async def on_cleanup(app: web.Application) -> None:
@@ -3118,6 +3155,7 @@ def create_app(
     # chain become structured JSON 500 responses the UI can render.
     app = web.Application(middlewares=[
         error_middleware,
+        trace_middleware,
         cors_middleware,
         rate_limit_middleware,
         auth_middleware,
