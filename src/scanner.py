@@ -363,32 +363,66 @@ def _mark_active_sessions(
     - 'working' — PID alive AND (JSONL modified within last 15s OR CPU > 5%)
     - 'active'  — PID alive but not currently working (waiting for user input)
     - 'idle'    — PID not alive or session not in active_pids
+
+    CPU measurement uses the batched-prime pattern instead of per-process
+    ``cpu_percent(interval=0.1)`` — that previously cost N × 100ms because
+    each call slept individually. Now we prime every process first (each
+    prime call returns immediately, its return value is the throwaway 0.0
+    baseline), sleep once for 100ms, then read every process. Total cost
+    drops from ~N×100ms to a single 100ms regardless of how many active
+    sessions are present.
     """
+    # Collect Process handles for all active PIDs up front.
+    procs: dict[str, psutil.Process] = {}
+    for sess in sessions:
+        pid = active_pids.get(sess.session_id)
+        if not pid:
+            continue
+        try:
+            procs[sess.session_id] = psutil.Process(pid)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+
+    # Prime cpu_percent (first call returns 0.0 baseline, doesn't sleep).
+    for proc in procs.values():
+        try:
+            proc.cpu_percent(interval=None)
+        except Exception:
+            pass
+
+    # One 100ms sleep for the WHOLE batch instead of per-process.
+    if procs:
+        time.sleep(0.1)
+
+    # Read the delta-since-prime for every process.
+    cpu_map: dict[str, float] = {}
+    for sid, proc in procs.items():
+        try:
+            cpu_map[sid] = proc.cpu_percent(interval=None)
+        except Exception:
+            cpu_map[sid] = 0.0
+
     for sess in sessions:
         pid = active_pids.get(sess.session_id)
         if pid:
             sess.pid = pid
-            # Determine working vs active using JSONL mtime + CPU
             is_working = False
-            # Check 1: JSONL file modified recently (within 15 seconds)
             try:
                 mtime_ts = datetime.fromisoformat(sess.modified).timestamp()
-                age = time.time() - mtime_ts
-                if age < 15:
+                if time.time() - mtime_ts < 15:
                     is_working = True
             except Exception:
                 pass
-            # Check 2: CPU usage (if psutil available)
-            cpu = 0.0
-            try:
-                proc = psutil.Process(pid)
-                cpu = proc.cpu_percent(interval=0.1)
-                sess.cpu_percent = round(cpu, 1)
-                if cpu > 5.0:
-                    is_working = True
-                sess.subprocess_count = len(proc.children(recursive=True))
-            except Exception:
-                pass
+            cpu = cpu_map.get(sess.session_id, 0.0)
+            sess.cpu_percent = round(cpu, 1)
+            if cpu > 5.0:
+                is_working = True
+            proc = procs.get(sess.session_id)
+            if proc is not None:
+                try:
+                    sess.subprocess_count = len(proc.children(recursive=True))
+                except Exception:
+                    pass
             sess.status = "working" if is_working else "active"
         if names:
             n = names.get(sess.session_id, "")

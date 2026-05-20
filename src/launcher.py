@@ -381,11 +381,20 @@ async def _launch_linux(command: str) -> dict:
 
 
 async def _launch_windows(command: str) -> dict:
-    """Launch a PowerShell window on Windows. Prefers pwsh 7 over powershell 5.1."""
-    # Escape double quotes inside the command for PowerShell -Command string
-    ps_command = command.replace('"', '`"')
+    """Launch a PowerShell window on Windows. Prefers pwsh 7 over powershell 5.1.
+
+    Uses ``-EncodedCommand`` (base64 UTF-16-LE, PowerShell's standard remote-
+    command transport) instead of ``-Command "<escaped>"``. The previous
+    ``command.replace('"', '`"')`` escape only handled ``"`` — when the caller
+    had already POSIX-shlex-quoted the command (which injects ``'"'"'`` for
+    inner single quotes), pwsh tokenised the result wrong and a trailing
+    statement leaked out as a separate local command. Encoded transport
+    sidesteps every quoting and parsing layer.
+    """
+    import base64
+    encoded = base64.b64encode(command.encode("utf-16-le")).decode("ascii")
     host = "pwsh" if (shutil.which("pwsh") or shutil.which("pwsh.exe")) else "powershell"
-    full_cmd = f'cmd /c start {host} -NoExit -Command "{ps_command}"'
+    full_cmd = f'cmd /c start {host} -NoExit -EncodedCommand {encoded}'
     try:
         proc = await asyncio.create_subprocess_shell(
             full_cmd,
@@ -500,10 +509,21 @@ async def _ensure_claude_running(machine: str, session_name: str, skip_permissio
              skip_permissions=skip_permissions)
     adapter = get_adapter(machine)
     claude_cmd = "claude --dangerously-skip-permissions" if skip_permissions else "claude"
-    send_keys = adapter.mux_send_keys(session_name, claude_cmd)
 
     local_machine = detect_local_machine()
     if machine == local_machine:
+        # Pick the right send-keys variant for the LOCAL shell that
+        # create_subprocess_shell will use. On Windows that's cmd.exe,
+        # which can't tokenise POSIX `'\''` escapes — so the bash-style
+        # ``mux_send_keys`` (uses shlex.quote) silently mangles the
+        # command for any session_name/command containing single quotes
+        # (or, for the multi-token claude_cmd, becomes
+        # `'claude --dangerously-skip-permissions'` which cmd.exe passes
+        # as ONE quoted blob that psmux types literally).
+        if sys.platform == "win32" and hasattr(adapter, "mux_send_keys_ps"):
+            send_keys = adapter.mux_send_keys_ps(session_name, claude_cmd)
+        else:
+            send_keys = adapter.mux_send_keys(session_name, claude_cmd)
         try:
             proc = await asyncio.create_subprocess_shell(
                 send_keys,
@@ -515,6 +535,12 @@ async def _ensure_claude_running(machine: str, session_name: str, skip_permissio
         except Exception as exc:
             log.warning("ensure_claude: local send-keys failed: %s", exc)
         return
+
+    # Remote path uses the bash/posix send-keys form because asyncssh hands
+    # the cmd straight to the remote shell (PowerShell on Windows targets,
+    # bash on POSIX). Both handle plain-quoted args; the POSIX wrapping
+    # survives because there's no second shell-parse layer.
+    send_keys = adapter.mux_send_keys(session_name, claude_cmd)
 
     # Route the pre-attach keystroke through the asyncssh pool so Windows
     # targets don't spawn a fresh sshd-session (and its conhost child) per
