@@ -1,8 +1,8 @@
 {
-  "version": 205,
-  "commit": "c8766d4",
-  "commit_full": "c8766d42bdec9c64ddb4ed398287360d2a3e723e",
+  "version": 207,
+  "commit": "84c53d7",
+  "commit_full": "84c53d77eda9741fe56a664a1115640a7d34838f",
   "branch": "master",
-  "date": "2026-05-20T16:48:04-03:00",
-  "message": "feat(web): per-machine \"+ New\" / \"+ Tmux\" buttons in Project view run header"
+  "date": "2026-05-20T16:56:25-03:00",
+  "message": "fix(desktop): preflight pythonnet on Windows; ImportError raised before create_window so main.py's web-mode fallback fires cleanly"
 }
