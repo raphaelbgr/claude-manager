@@ -1,8 +1,8 @@
 {
-  "version": 191,
-  "commit": "d820ff9",
-  "commit_full": "d820ff9f90800086d570fa2a5164a34f0ac7bcb9",
+  "version": 193,
+  "commit": "91205e6",
+  "commit_full": "91205e6ca749f26bfc0dd0c3faddaea05b00e1fd",
   "branch": "master",
-  "date": "2026-05-20T07:04:36-03:00",
-  "message": "perf(scan): persist git cache to disk too \u00e2\u20ac\u201d cold-restart git phase drops on warm-disk start"
+  "date": "2026-05-20T07:57:17-03:00",
+  "message": "perf(scan)+fix(restart): throttle scan_progress + keep state on Restart"
 }
