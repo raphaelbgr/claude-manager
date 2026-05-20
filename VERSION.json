@@ -1,8 +1,8 @@
 {
-  "version": 189,
-  "commit": "5f1f007",
-  "commit_full": "5f1f007f87ddcd64cfd2385cc8181f95071c5acb",
+  "version": 191,
+  "commit": "d820ff9",
+  "commit_full": "d820ff9f90800086d570fa2a5164a34f0ac7bcb9",
   "branch": "master",
-  "date": "2026-05-20T06:58:51-03:00",
-  "message": "perf(scan): incremental + disk-persisted cache eliminates the cold-scan tax"
+  "date": "2026-05-20T07:04:36-03:00",
+  "message": "perf(scan): persist git cache to disk too \u00e2\u20ac\u201d cold-restart git phase drops on warm-disk start"
 }
