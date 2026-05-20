@@ -377,9 +377,26 @@ async def _background_scan(app: web.Application) -> None:
         try:
             fleet = await discover_fleet()
 
+            # Throttle scan_progress to ≤20 emits/sec. scan_local calls this
+            # once per parsed JSONL file — with 399 files that produces ~300+
+            # WS broadcasts in <10s, each serialising JSON + writing to every
+            # connected client. The trace showed those broadcasts dominating
+            # the first-load wall time more than the actual parse work. We
+            # always emit (a) the very first call, (b) the last call (found
+            # == total), and (c) anything separated from the prior emit by
+            # ≥ _PROGRESS_MIN_INTERVAL_S. UI updates feel smooth at 20 Hz.
+            _PROGRESS_MIN_INTERVAL_S = 0.05
+            _last_emit = [0.0]
+
             async def _emit_scan_progress(
                 machine: str, found: int, total: int, current_file: str
             ) -> None:
+                now = time.monotonic()
+                is_first = found <= 1
+                is_last = total > 0 and found >= total
+                if not is_first and not is_last and (now - _last_emit[0]) < _PROGRESS_MIN_INTERVAL_S:
+                    return
+                _last_emit[0] = now
                 payload = json.dumps({
                     "type": "scan_progress",
                     "machine": machine,
@@ -2184,29 +2201,35 @@ async def handle_update_watchdog(request: web.Request) -> web.Response:
 
 
 async def handle_restart(request: web.Request) -> web.Response:
-    """POST /api/restart — reset the scan cycle without killing the server."""
+    """POST /api/restart — reset the scan cycle without killing the server.
+
+    DOES NOT clear current state (sessions/fleet/tmux) — the previous
+    implementation cleared everything and the UI went blank for ~30s
+    waiting for the next scan. We keep showing the last snapshot and
+    just kick the background loop into starting a new scan immediately.
+
+    The cancelled task is awaited in fire-and-forget mode (asyncio.shield
+    + a tiny grace window) so the HTTP response returns fast even when
+    the current scan is mid-flight.
+    """
     app = request.app
 
     try:
-        # Cancel the background scan task
         bg = app.get("bg_task")
-        if bg:
+        if bg and not bg.done():
             bg.cancel()
+            # Bounded wait so the response doesn't block on a long parse.
             try:
-                await bg
-            except asyncio.CancelledError:
+                await asyncio.wait_for(asyncio.shield(bg), timeout=0.5)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+            except Exception:
                 pass
 
-        # Clear state to force a fresh scan on next cycle
-        store: StateStore = app["store"]
-        await store.update_sessions([])
-        await store.update_fleet({})
-        await store.update_tmux([])
-        store.set_last_scan(None)
-
-        # Restart background scan
+        # Restart background scan; do NOT wipe state — UI keeps showing the
+        # last snapshot until the new cycle replaces it.
         app["bg_task"] = asyncio.ensure_future(_background_scan(app))
-        log.info("Server restarted (background scan reset)")
+        log.info("Server restarted (background scan reset, state preserved)")
 
         return web.json_response({"ok": True, "message": "Scan cycle restarted"})
     except Exception as exc:
