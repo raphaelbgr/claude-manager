@@ -2657,7 +2657,7 @@ function NewTmuxModal({ fleet, onClose, onCreated }) {
 
 // ─── Pinned Section ───────────────────────────────────────────────────────────
 
-function PinnedSection({ pinnedIds, onLaunch, launchingId, onTmuxLaunch, tmuxLaunchingId, skipPermissions, onPin, onUnpin, onArchive, onUnarchive, archivedIds, expandedCards, onToggleExpand, hwCache, fetchHardware, wsUpdateCount }) {
+function PinnedSection({ pinnedIds, onLaunch, launchingId, onTmuxLaunch, tmuxLaunchingId, skipPermissions, onPin, onUnpin, onArchive, onUnarchive, archivedIds, expandedCards, onToggleExpand, hwCache, fetchHardware, wsUpdateCount, onNewSessionInProject, onNewTmuxInProject, getMatchingTmux, onAttachTmux, onHighlightTmux }) {
   // Pinned projects now — we fetch /api/projects and filter by pinned project_ids.
   // The entire project folder (with all its sessions) moves into this section
   // above everything else. Section itself is collapsible (state persisted).
@@ -2755,6 +2755,7 @@ function PinnedSection({ pinnedIds, onLaunch, launchingId, onTmuxLaunch, tmuxLau
           onArchive, onUnarchive, archivedIds,
           expandedCards, onToggleExpand, hwCache, fetchHardware,
           getMatchingTmux, onAttachTmux, onHighlightTmux,
+          onNewSessionInProject, onNewTmuxInProject,
         }),
       )
     ),
@@ -2763,7 +2764,7 @@ function PinnedSection({ pinnedIds, onLaunch, launchingId, onTmuxLaunch, tmuxLau
 
 // ─── Project Run List (grouped same-machine runs inside expanded project) ──────
 
-function ProjectRunList({ project, onLaunch, onTmuxLaunch, launchingId, tmuxLaunchingId, skipPermissions, onPin, onUnpin, pinnedIds, onArchive, onUnarchive, archivedIds, expandedCards, onToggleExpand, hwCache, fetchHardware, getMatchingTmux, onAttachTmux, onHighlightTmux, onPull, pullingKey }) {
+function ProjectRunList({ project, onLaunch, onTmuxLaunch, launchingId, tmuxLaunchingId, skipPermissions, onPin, onUnpin, pinnedIds, onArchive, onUnarchive, archivedIds, expandedCards, onToggleExpand, hwCache, fetchHardware, getMatchingTmux, onAttachTmux, onHighlightTmux, onPull, pullingKey, onNewSessionInProject, onNewTmuxInProject }) {
   // extraMap keyed by "{project_id}::{machine}::{firstSessionId}" — how many extra rows beyond 3 to show
   const [extraMap, setExtraMap] = useState({});
 
@@ -2796,14 +2797,49 @@ function ProjectRunList({ project, onLaunch, onTmuxLaunch, launchingId, tmuxLaun
           paddingLeft: 6,
         }
       },
-        // Run header: small machine-name label shown above the sessions in this run
-        h('div', {
-          style: {
-            fontSize: '0.6rem', fontWeight: 700, letterSpacing: '0.08em',
-            textTransform: 'uppercase', color: mc.color,
-            padding: '2px 0 4px 2px',
+        // Run header: small machine-name label + per-run "New session" buttons.
+        // The buttons launch a FRESH `claude` in this project's cwd on this
+        // machine (no --resume). cwd source preference:
+        //   1. machines_detail[machine].cwd — the per-cwd entry from the
+        //      project metadata (most accurate; one per working tree on the
+        //      machine; uses the first when there are multiple).
+        //   2. run.sessions[0].cwd — the first session's recorded cwd.
+        //   3. run.sessions[0].project_path — last-ditch fallback.
+        // Hidden when onNewSessionInProject isn't wired (older callers).
+        (() => {
+          const cwdForRun =
+            ((project.machines_detail || []).find(d => d.machine === run.machine) || {}).cwd
+            || run.sessions[0].cwd
+            || run.sessions[0].project_path
+            || '';
+          return h('div', {
+            style: {
+              display: 'flex', alignItems: 'center', gap: 6,
+              padding: '2px 0 4px 2px', flexWrap: 'wrap',
+            },
           },
-        }, run.machine),
+            h('span', {
+              style: {
+                fontSize: '0.6rem', fontWeight: 700, letterSpacing: '0.08em',
+                textTransform: 'uppercase', color: mc.color,
+              },
+            }, run.machine),
+            // "New session" — plain terminal, no resume, no mux.
+            onNewSessionInProject && cwdForRun && h('button', {
+              className: 'compact-action-btn btn-launch',
+              onClick: (e) => { e.stopPropagation(); onNewSessionInProject(run.machine, cwdForRun); },
+              title: `Open a NEW Claude session on ${run.machine} in ${cwdForRun} (no --resume)`,
+              style: { padding: '2px 8px', fontSize: '0.6rem', marginLeft: 4 },
+            }, '+ New'),
+            // "New tmux" — fresh mux session attached, also no resume.
+            onNewTmuxInProject && cwdForRun && h('button', {
+              className: 'compact-action-btn btn-tmux',
+              onClick: (e) => { e.stopPropagation(); onNewTmuxInProject(run.machine, cwdForRun); },
+              title: `Open a NEW tmux/psmux session on ${run.machine} in ${cwdForRun} running fresh claude`,
+              style: { padding: '2px 8px', fontSize: '0.6rem' },
+            }, '+ Tmux'),
+          );
+        })(),
         // Per-cwd git state + Pull button (Phase D). One row per distinct
         // working-tree on this machine within this project. Pull button is
         // gated on: branch ∈ {master,main} AND not dirty AND ahead==0 AND
@@ -2933,7 +2969,7 @@ function ProjectRunList({ project, onLaunch, onTmuxLaunch, launchingId, tmuxLaun
 
 // ─── Projects View ────────────────────────────────────────────────────────────
 
-function ProjectsView({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaunchingId, skipPermissions, scanning, pinnedIds, onPin, onUnpin, onArchive, onUnarchive, archivedIds, expandedCards, onToggleExpand, hwCache, fetchHardware, wsUpdateCount, getMatchingTmux, onAttachTmux, onHighlightTmux }) {
+function ProjectsView({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaunchingId, skipPermissions, scanning, pinnedIds, onPin, onUnpin, onArchive, onUnarchive, archivedIds, expandedCards, onToggleExpand, hwCache, fetchHardware, wsUpdateCount, getMatchingTmux, onAttachTmux, onHighlightTmux, onNewSessionInProject, onNewTmuxInProject }) {
   const [projects, setProjects] = useState([]);
   const [projectsLoading, setProjectsLoading] = useState(true);
   const [expandedProjects, setExpandedProjects] = useState(() => {
@@ -3212,6 +3248,11 @@ function ProjectsView({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaunc
           fetchHardware,
           onPull: handlePull,
           pullingKey,
+          onNewSessionInProject,
+          onNewTmuxInProject,
+          getMatchingTmux,
+          onAttachTmux,
+          onHighlightTmux,
         }),
       );
     })
@@ -3290,6 +3331,11 @@ function SessionsPanel({ sessions, onLaunch, onTmuxLaunch, launchingId, tmuxLaun
       hwCache,
       fetchHardware,
       wsUpdateCount,
+      onNewSessionInProject,
+      onNewTmuxInProject,
+      getMatchingTmux,
+      onAttachTmux,
+      onHighlightTmux,
     }),
     // Scan progress indicator
     scanning && h('div', {
@@ -5648,6 +5694,8 @@ function App() {
                     getMatchingTmux,
                     onAttachTmux: handleAttachAndFlash,
                     onHighlightTmux: (t) => selectTmuxCard(t.machine, t.session_name || t.name),
+                    onNewSessionInProject: handleNewSessionInProject,
+                    onNewTmuxInProject: handleNewTmuxInProject,
                   })
                 : h(SessionsPanel, {
                     sessions: filteredSessions,

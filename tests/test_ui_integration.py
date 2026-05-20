@@ -1049,3 +1049,73 @@ class TestNewSessionTerminalPicker:
         """terminal_id must go into the /api/sessions/launch body."""
         # Both handlers include terminal_id in the JSON.stringify
         assert html.count("terminal_id: terminalId || null") >= 2
+
+
+class TestProjectRunListNewSessionButtons:
+    """Project view's per-machine run header now exposes a "+ New" and
+    "+ Tmux" button so the user can spawn a fresh claude (no --resume)
+    on that machine in that project's cwd. Verified live via the browser
+    MCP — these tests guard against regression.
+    """
+
+    def test_projects_view_accepts_new_session_handlers(self, html):
+        """ProjectsView destructures onNewSessionInProject + onNewTmuxInProject
+        from its props so it can forward them to ProjectRunList."""
+        # The function signature spans one line — assert both names appear in it.
+        sig_start = html.find("function ProjectsView({")
+        assert sig_start != -1
+        sig_end = html.find("}) {", sig_start)
+        sig = html[sig_start:sig_end]
+        assert "onNewSessionInProject" in sig, "ProjectsView must accept onNewSessionInProject"
+        assert "onNewTmuxInProject" in sig, "ProjectsView must accept onNewTmuxInProject"
+
+    def test_project_run_list_accepts_new_session_handlers(self, html):
+        sig_start = html.find("function ProjectRunList({")
+        assert sig_start != -1
+        sig_end = html.find("}) {", sig_start)
+        sig = html[sig_start:sig_end]
+        assert "onNewSessionInProject" in sig
+        assert "onNewTmuxInProject" in sig
+
+    def test_app_wires_handlers_into_projects_view(self, html):
+        """App's render call for ProjectsView must wire the handlers to the
+        existing handleNewSessionInProject / handleNewTmuxInProject useCallbacks."""
+        # Look for both kwargs inside an ``h(ProjectsView, { ... })`` block.
+        m = re.search(
+            r"h\(ProjectsView,\s*\{[^}]*"
+            r"onNewSessionInProject:\s*handleNewSessionInProject[^}]*"
+            r"onNewTmuxInProject:\s*handleNewTmuxInProject",
+            html,
+            re.DOTALL,
+        )
+        assert m, "h(ProjectsView, {…}) must pass both handlers"
+
+    def test_run_header_emits_plus_new_button(self, html):
+        """ProjectRunList run header must contain a '+ New' button wired to
+        onNewSessionInProject(run.machine, cwdForRun)."""
+        idx = html.find("onNewSessionInProject(run.machine, cwdForRun)")
+        assert idx != -1, "'+ New' button must invoke onNewSessionInProject"
+        # The literal label
+        assert html.find("'+ New'", idx - 1000, idx + 1000) != -1
+
+    def test_run_header_emits_plus_tmux_button(self, html):
+        idx = html.find("onNewTmuxInProject(run.machine, cwdForRun)")
+        assert idx != -1, "'+ Tmux' button must invoke onNewTmuxInProject"
+        assert html.find("'+ Tmux'", idx - 1000, idx + 1000) != -1
+
+    def test_run_header_cwd_resolution_falls_back(self, html):
+        """cwdForRun preference order: machines_detail[machine].cwd →
+        run.sessions[0].cwd → run.sessions[0].project_path."""
+        assert "machines_detail || []" in html
+        assert "run.sessions[0].cwd" in html
+        assert "run.sessions[0].project_path" in html
+
+    def test_pinned_section_passes_handlers_through(self, html):
+        """The PinnedSection inside SessionsPanel forwards both handlers so
+        pinned-project rows can also expose the buttons."""
+        sig_start = html.find("function PinnedSection({")
+        assert sig_start != -1
+        sig_end = html.find("}) {", sig_start)
+        sig = html[sig_start:sig_end]
+        assert "onNewSessionInProject" in sig
+        assert "onNewTmuxInProject" in sig
