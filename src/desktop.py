@@ -225,7 +225,17 @@ def _setup_mac_tray(window, base_url: str) -> None:
 
 
 def run_desktop(bind: str = "0.0.0.0", port: int = 44740):
-    """Launch the native desktop GUI with embedded API server."""
+    """Launch the native desktop GUI with embedded API server.
+
+    Windows preflight: pywebview's WinForms backend requires ``pythonnet``
+    (imports as ``clr``). If pywebview is present but ``clr`` is missing,
+    pywebview logs ``pythonnet cannot be loaded`` and then exits the
+    process via ``sys.exit`` — which the caller's ``except Exception``
+    in main.py does NOT catch (SystemExit isn't an Exception). The
+    process dies silently, fleet-watchdog respawns it, repeat forever
+    (observed on avell-i7 2026-05-20). Raise ImportError up front so
+    main.py falls back to web-server-only mode cleanly.
+    """
     try:
         import webview
     except ImportError as exc:
@@ -233,6 +243,16 @@ def run_desktop(bind: str = "0.0.0.0", port: int = 44740):
             "Desktop GUI requires: pip install pywebview\n"
             "Optional tray icon: pip install pystray Pillow"
         ) from exc
+
+    if sys.platform == "win32":
+        try:
+            import clr  # noqa: F401 — pywebview WinForms backend dep
+        except ImportError as exc:
+            raise ImportError(
+                "Desktop GUI on Windows needs pythonnet (pywebview WinForms "
+                "backend imports `clr`). Falling back to web mode. To enable "
+                "the native window: pip install pythonnet"
+            ) from exc
 
     base_url = f"http://{bind}:{port}"
     local_url = f"http://localhost:{port}"

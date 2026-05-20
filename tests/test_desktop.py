@@ -238,6 +238,74 @@ class TestRunDesktop:
             else:
                 sys.modules["webview"] = saved
 
+    def test_windows_without_pythonnet_raises_import_error(self):
+        """Avell-i7 regression: pywebview was installed in the venv but
+        pythonnet (its WinForms backend dep, imported as `clr`) was not.
+        pywebview's webview.create_window() would log "pythonnet cannot
+        be loaded" then sys.exit(), which BaseException-derived path
+        skipped the ImportError/Exception fallback in main.py — fleet-
+        watchdog kept respawning a process that died instantly.
+
+        run_desktop now preflights `import clr` on Windows and raises
+        ImportError BEFORE touching create_window."""
+        from src.desktop import run_desktop
+
+        import sys
+        mock_webview = MagicMock()
+        saved_webview = sys.modules.get("webview", None)
+        saved_clr = sys.modules.get("clr", None)
+        sys.modules["webview"] = mock_webview
+        sys.modules["clr"] = None  # type: ignore[assignment]
+        try:
+            with patch("src.desktop.sys.platform", "win32"), \
+                 pytest.raises(ImportError, match="pythonnet"):
+                run_desktop()
+            # Critical: the preflight must have prevented create_window from
+            # being called. If it WAS called, pywebview would log and exit.
+            mock_webview.create_window.assert_not_called()
+        finally:
+            if saved_webview is None:
+                sys.modules.pop("webview", None)
+            else:
+                sys.modules["webview"] = saved_webview
+            if saved_clr is None:
+                sys.modules.pop("clr", None)
+            else:
+                sys.modules["clr"] = saved_clr
+
+    def test_windows_with_pythonnet_proceeds_past_preflight(self):
+        """When pythonnet IS available on Windows, run_desktop must NOT raise
+        the preflight ImportError — it should proceed to the server-bind
+        + create_window path."""
+        from src.desktop import run_desktop
+
+        import sys, types
+        mock_webview = MagicMock()
+        mock_window = MagicMock()
+        mock_window.events.closed = MagicMock()
+        mock_webview.create_window.return_value = mock_window
+        mock_clr = types.ModuleType("clr")
+        saved_webview = sys.modules.get("webview", None)
+        saved_clr = sys.modules.get("clr", None)
+        sys.modules["webview"] = mock_webview
+        sys.modules["clr"] = mock_clr
+        try:
+            with patch("src.desktop.sys.platform", "win32"), \
+                 patch("src.desktop._server_is_ours", return_value=True), \
+                 patch("src.desktop.threading.Thread"):
+                # Must NOT raise ImportError — preflight passes.
+                run_desktop()
+            mock_webview.create_window.assert_called_once()
+        finally:
+            if saved_webview is None:
+                sys.modules.pop("webview", None)
+            else:
+                sys.modules["webview"] = saved_webview
+            if saved_clr is None:
+                sys.modules.pop("clr", None)
+            else:
+                sys.modules["clr"] = saved_clr
+
     def test_run_desktop_checks_if_server_is_ours(self):
         """If a server is already running, run_desktop reuses it instead of starting a new one."""
         from src.desktop import run_desktop
