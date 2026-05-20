@@ -1,8 +1,8 @@
 {
-  "version": 195,
-  "commit": "4aad170",
-  "commit_full": "4aad170b8551a0f4cd0477a493b0d4a7f106cd62",
+  "version": 197,
+  "commit": "b9e30a7",
+  "commit_full": "b9e30a776d780a1408f89f8fd17821fdc1e1aa48",
   "branch": "master",
-  "date": "2026-05-20T08:12:37-03:00",
-  "message": "perf+fix: batched pid CPU sampling + audit-bug cleanup"
+  "date": "2026-05-20T08:49:23-03:00",
+  "message": "docs+tests: gotchas writeup, audit-fix tests, perf-coverage tests"
 }
