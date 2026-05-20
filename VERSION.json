@@ -1,8 +1,8 @@
 {
-  "version": 193,
-  "commit": "91205e6",
-  "commit_full": "91205e6ca749f26bfc0dd0c3faddaea05b00e1fd",
+  "version": 195,
+  "commit": "4aad170",
+  "commit_full": "4aad170b8551a0f4cd0477a493b0d4a7f106cd62",
   "branch": "master",
-  "date": "2026-05-20T07:57:17-03:00",
-  "message": "perf(scan)+fix(restart): throttle scan_progress + keep state on Restart"
+  "date": "2026-05-20T08:12:37-03:00",
+  "message": "perf+fix: batched pid CPU sampling + audit-bug cleanup"
 }
