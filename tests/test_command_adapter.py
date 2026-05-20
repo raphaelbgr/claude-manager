@@ -155,11 +155,11 @@ class TestCdCommandSsh:
 
     def test_windows_set_location(self):
         result = self.win.cd_command_ssh("C:\\Users\\rbgnr\\project")
-        assert result == "Set-Location 'C:\\Users\\rbgnr\\project'"
+        assert result == 'Set-Location "C:\\Users\\rbgnr\\project"'
 
     def test_windows_unix_path(self):
         result = self.win.cd_command_ssh("/c/Users/rbgnr")
-        assert result == "Set-Location '/c/Users/rbgnr'"
+        assert result == 'Set-Location "/c/Users/rbgnr"'
 
 
 # ---------------------------------------------------------------------------
@@ -189,13 +189,13 @@ class TestBuildSessionCommandSsh:
         result = self.win.build_session_command_ssh(
             "C:\\Users\\rbgnr\\project", self.SESSION_ID
         )
-        assert "Set-Location 'C:\\Users\\rbgnr\\project'" in result
+        assert 'Set-Location "C:\\Users\\rbgnr\\project"' in result
 
     def test_windows_d_drive(self):
         result = self.win.build_session_command_ssh(
             "D:\\Work\\myapp", self.SESSION_ID
         )
-        assert "Set-Location 'D:\\Work\\myapp'" in result
+        assert 'Set-Location "D:\\Work\\myapp"' in result
 
     def test_windows_chained_with_semicolon_not_amp(self):
         """PowerShell 5.1 does NOT support && — use ; separator."""
@@ -211,12 +211,18 @@ class TestBuildSessionCommandSsh:
         )
         assert "--dangerously-skip-permissions" in result
 
-    def test_windows_escapes_single_quotes_in_path(self):
-        """Paths with single quotes must be escaped by doubling in PowerShell."""
+    def test_windows_path_with_single_quote(self):
+        """Paths with single quotes pass through unchanged in PS double-quote wrap.
+
+        Before: builder produced ``Set-Location 'C:\\O''Brien\\app'`` (PS
+        single-quote escape = double the inner '). After the switch to PS
+        double-quote wrap with backtick escapes for $/`/", single quotes are
+        no longer special and pass through literally.
+        """
         result = self.win.build_session_command_ssh(
             "C:\\O'Brien\\app", self.SESSION_ID
         )
-        assert "O''Brien" in result
+        assert "C:\\O'Brien\\app" in result
 
 
 class TestBuildNewSessionCommandSsh:
@@ -239,7 +245,7 @@ class TestBuildNewSessionCommandSsh:
 
     def test_windows_uses_powershell_syntax(self):
         result = self.win.build_new_session_command_ssh(self.CWD_WIN)
-        assert "Set-Location 'C:\\Users\\rbgnr\\git\\proj'" in result
+        assert 'Set-Location "C:\\Users\\rbgnr\\git\\proj"' in result
         assert "; claude" in result
         assert " && " not in result
 
@@ -668,14 +674,14 @@ class TestBuildPaneCommand:
     def test_psmux_new_session_uses_powershell(self):
         a = CommandAdapter(target_os="win32", mux_type="psmux")
         cmd = a.build_pane_command("C:\\Users\\rbgnr\\git\\smart-kanban")
-        assert cmd == "Set-Location 'C:\\Users\\rbgnr\\git\\smart-kanban'; claude"
+        assert cmd == 'Set-Location "C:\\Users\\rbgnr\\git\\smart-kanban"; claude'
         assert "cd /d" not in cmd
         assert "&&" not in cmd  # PS 5.1 doesn't support it
 
     def test_psmux_resume_uses_powershell(self):
         a = CommandAdapter(target_os="win32", mux_type="psmux")
         cmd = a.build_pane_command("C:\\proj", session_id="abc-123")
-        assert cmd.startswith("Set-Location 'C:\\proj'; claude --resume")
+        assert cmd.startswith('Set-Location "C:\\proj"; claude --resume')
         assert "abc-123" in cmd
 
     def test_psmux_skip_permissions_flag(self):
@@ -683,11 +689,17 @@ class TestBuildPaneCommand:
         cmd = a.build_pane_command("C:\\proj", skip_permissions=True)
         assert "--dangerously-skip-permissions" in cmd
 
-    def test_psmux_escapes_single_quote_in_path(self):
-        """PowerShell single-quoted strings escape ' by doubling."""
+    def test_psmux_path_with_single_quote(self):
+        """PowerShell double-quoted strings treat ' literally — no escape needed.
+
+        Switched from single-quote wrap (which required doubling ' to '') to
+        double-quote wrap (which only backtick-escapes $/`/"). Paths with '
+        pass through as-is, eliminating the POSIX-shlex-quote interaction
+        that broke the outer SSH wrap on Windows local hosts.
+        """
         a = CommandAdapter(target_os="win32", mux_type="psmux")
         cmd = a.build_pane_command("C:\\foo's\\bar")
-        assert "'C:\\foo''s\\bar'" in cmd
+        assert '"C:\\foo\'s\\bar"' in cmd
 
     def test_tmux_unix_uses_bash_syntax(self):
         a = CommandAdapter(target_os="darwin", mux_type="tmux")

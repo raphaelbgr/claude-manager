@@ -476,7 +476,11 @@ class TestLaunchWindows:
             await _launch_windows("echo hello")
 
         full_cmd = mock_shell.call_args[0][0]
-        assert "powershell" in full_cmd.lower()
+        # The launcher prefers pwsh 7 (binary name "pwsh") when present and
+        # falls back to "powershell". Either token is acceptable — both are
+        # PowerShell hosts.
+        lowered = full_cmd.lower()
+        assert " pwsh " in lowered or "powershell" in lowered
 
     @pytest.mark.asyncio
     async def test_uses_cmd_start(self):
@@ -491,7 +495,12 @@ class TestLaunchWindows:
         assert "start" in full_cmd.lower()
 
     @pytest.mark.asyncio
-    async def test_double_quotes_in_command_escaped(self):
+    async def test_uses_encoded_command_transport(self):
+        """_launch_windows now uses -EncodedCommand (base64 UTF-16-LE) instead
+        of -Command "<escaped>" — sidesteps every quoting and parsing layer
+        so callers' POSIX-quoted commands (with '\\'' inner escapes) survive
+        intact when pwsh decodes the payload."""
+        import base64
         from src.launcher import _launch_windows
 
         proc = _make_proc(0)
@@ -499,8 +508,11 @@ class TestLaunchWindows:
             await _launch_windows('echo "hello"')
 
         full_cmd = mock_shell.call_args[0][0]
-        # Double-quotes inside the command should be escaped for PowerShell
-        assert '`"' in full_cmd
+        assert "-EncodedCommand" in full_cmd
+        # The encoded blob decodes back to the original command.
+        encoded = full_cmd.split("-EncodedCommand", 1)[1].strip().split()[0]
+        decoded = base64.b64decode(encoded).decode("utf-16-le")
+        assert decoded == 'echo "hello"'
 
     @pytest.mark.asyncio
     async def test_oserror_returns_error(self):
@@ -670,10 +682,13 @@ class TestLaunchTmuxAttach:
     async def test_remote_psmux_ssh_only(self):
         """psmux attach — on macOS the code takes the _launch_macos_multi
         path so the user can watch the SSH login land before the attach
-        command is typed. Assert that path dispatches SSH to the target."""
+        command is typed. Assert that path dispatches SSH to the target.
+        Patches sys.platform too so this test passes regardless of the
+        host OS the test suite runs on."""
         from src.launcher import launch_tmux_attach
 
-        with patch("src.launcher.detect_local_machine", return_value="mac-mini"), \
+        with patch("src.launcher.sys.platform", "darwin"), \
+             patch("src.launcher.detect_local_machine", return_value="mac-mini"), \
              patch("src.launcher._ensure_claude_running", new=AsyncMock()), \
              patch("src.launcher._launch_macos_multi",
                    new=AsyncMock(return_value={"ok": True})) as mock_multi:
@@ -687,10 +702,11 @@ class TestLaunchTmuxAttach:
 
     @pytest.mark.asyncio
     async def test_remote_psmux_windows_desktop(self):
-        """windows-desktop psmux — same _launch_macos_multi path."""
+        """windows-desktop psmux — same _launch_macos_multi path on macOS."""
         from src.launcher import launch_tmux_attach
 
-        with patch("src.launcher.detect_local_machine", return_value="mac-mini"), \
+        with patch("src.launcher.sys.platform", "darwin"), \
+             patch("src.launcher.detect_local_machine", return_value="mac-mini"), \
              patch("src.launcher._ensure_claude_running", new=AsyncMock()), \
              patch("src.launcher._launch_macos_multi",
                    new=AsyncMock(return_value={"ok": True})) as mock_multi:

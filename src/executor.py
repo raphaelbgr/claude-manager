@@ -97,9 +97,20 @@ def _ssh_control_path(machine: str) -> str:
 
     macOS enforces a 104-char limit on Unix socket paths; hashing the machine
     name keeps the path well under that limit regardless of alias length.
+
+    Cross-platform: ``os.getuid`` doesn't exist on Windows. We fall back to
+    a stable per-user hash of the username so the function never AttributeErrors
+    even though Windows code paths shouldn't actually invoke the subprocess SSH
+    fallback (the asyncssh pool handles Windows targets). Tests force the
+    fallback path via mocks — the AttributeError surfaced there 2026-05-20.
     """
     h = hashlib.sha256(machine.encode()).hexdigest()[:10]
-    return f"/tmp/cm-ssh-{os.getuid()}-{h}"
+    if hasattr(os, "getuid"):
+        uid_str = str(os.getuid())
+    else:
+        # Windows: cheap stable per-user id from USERNAME.
+        uid_str = hashlib.sha256((os.environ.get("USERNAME") or "user").encode()).hexdigest()[:8]
+    return f"/tmp/cm-ssh-{uid_str}-{h}"
 
 # PATH prefix injected before commands on Unix SSH targets so that
 # Homebrew (/opt/homebrew/bin), snap (/snap/bin), etc. are found in

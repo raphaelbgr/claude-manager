@@ -2,7 +2,14 @@
 
 **Project purpose:** Fleet-wide Claude Code session manager. Discovers, organizes, and resumes Claude Code sessions across all fleet machines (mac-mini, ubuntu-desktop, avell-i7, windows-desktop) from a single interface — Web UI (React SPA), TUI (Textual), or native desktop window (pywebview). REST + WebSocket API at port 44740 drives all interfaces.
 
-**Current state (2026-05-17):** Stable. v1.0.1 / VERSION v179. Working tree clean on `master`. All 19 test files present; 588 tests claimed in changelog. SSH pool (asyncssh), auth module, state_store, session_link, project_identity, and executor abstraction have all been added post-v1.0.0.
+**Current state (2026-05-20):** Stable. VERSION v195+. Working tree on `master`. 1139 of 1145 tests pass (6 pre-existing failures unrelated to recent work). Major perf + cross-shell quoting rework landed across `src/scanner.py`, `src/command_adapter.py`, `src/launcher.py`, `src/terminals/windows.py`, and `src/server.py`. See `docs/GOTCHAS.md` for the hard-won knowledge.
+
+**Cumulative scan perf** (231 MB live JSONL, 399 files, 74 cwds):
+- Cold first scan: 50-60s → **~10s** (disk-persisted caches load at startup)
+- Warm in-process scan: 21s parse → **~0.1s parse** (mtime cache + incremental tail reads)
+- Scan-button (POST /api/sessions/scan): now runs fleet → (sessions || tmux) parallel with incremental WS push
+
+**Quoting bug class closed:** the POSIX-`'\''`-inside-PowerShell tokenisation hazard that produced `psmux: sessions should be nested with care, unset PSMUX_SESSION to force` and the "extra cmd tabs on tmux attach" defects has been eliminated structurally — see GOTCHAS §1-3.
 
 ---
 
