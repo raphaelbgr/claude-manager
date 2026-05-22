@@ -25,7 +25,9 @@ class TmuxSession:
     pane_current_command: str = ""  # foreground process name in the pane (e.g. "node", "bash")
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        d["session_name"] = d["name"]
+        return d
 
 
 def _dicts_to_sessions(parsed: list[dict], machine: str, is_local: bool) -> list[TmuxSession]:
