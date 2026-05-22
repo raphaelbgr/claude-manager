@@ -1,8 +1,8 @@
 {
-  "version": 207,
-  "commit": "84c53d7",
-  "commit_full": "84c53d77eda9741fe56a664a1115640a7d34838f",
+  "version": 209,
+  "commit": "1c05562",
+  "commit_full": "1c05562fb2504dd49a049ab3b5f8d22b8aa1f0dc",
   "branch": "master",
-  "date": "2026-05-20T16:56:25-03:00",
-  "message": "fix(desktop): preflight pythonnet on Windows; ImportError raised before create_window so main.py's web-mode fallback fires cleanly"
+  "date": "2026-05-22T18:17:17-03:00",
+  "message": "fix(tmux): add session_name field, dedup guard, and refresh fallback"
 }
