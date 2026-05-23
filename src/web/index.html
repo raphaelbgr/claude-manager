@@ -695,6 +695,17 @@ function getMachineOS(machine) {
   return MACHINE_INFO[machine]?.os || 'unknown';
 }
 
+function getAttachCommand(session) {
+  const name = session.session_name || session.name;
+  const targetOS = getMachineOS(session.machine);
+  const mux = targetOS === 'Windows' ? 'psmux' : 'tmux';
+  const local = isLocalMachine(session.machine);
+  if (local) return `${mux} attach -t ${name}`;
+  const alias = session.machine;
+  if (mux === 'tmux') return `ssh ${alias} -t "${mux} attach -t ${name}"`;
+  return `ssh ${alias}\npsmux attach -t ${name}`;
+}
+
 function formatFileSize(bytes) {
   if (!bytes) return '';
   if (bytes < 1024) return bytes + ' B';
@@ -1726,6 +1737,22 @@ function TmuxCard({ session, onConnect, connecting, onKill, killing, onRemoteAtt
             onPick: tid => onConnect(session, tid),
           }),
         ),
+        h('button', {
+          className: 'compact-action-btn btn',
+          onClick: (e) => {
+            e.stopPropagation();
+            const cmd = getAttachCommand(session);
+            navigator.clipboard.writeText(cmd).then(() => {
+              const el = e.currentTarget;
+              el.textContent = 'Copied!';
+              el.style.color = '#7ee787';
+              el.style.borderColor = '#2d5a3a';
+              setTimeout(() => { el.textContent = '⧉ Cmd'; el.style.color = '#8b949e'; el.style.borderColor = '#30363d'; }, 1500);
+            });
+          },
+          title: getAttachCommand(session),
+          style: { borderColor: '#30363d', color: '#8b949e', fontSize: '0.65rem' },
+        }, '⧉ Cmd'),
       ),
 
       // Stream toggle + terminal preview
@@ -4627,10 +4654,13 @@ function App() {
 
     // Secondary path: cwd-based lookup. Picks up tmuxes the server suppressed
     // (pane at a shell prompt, not running claude) but still usable for attach.
+    // Skip tmux sessions already claimed by a DIFFERENT Claude session to avoid
+    // every project-mate card showing identical chips.
     const candidatePaths = [session.cwd, session.project_path].filter(Boolean);
     for (const p of candidatePaths) {
       const key = session.machine + '|' + normalizePath(p);
       for (const t of (tmuxByCwdKey[key] || [])) {
+        if (t.claude_session_id && t.claude_session_id !== session.session_id) continue;
         const id = t.machine + ':' + (t.session_name || t.name);
         if (!seen.has(id)) { seen.add(id); out.push(t); }
       }
