@@ -47,12 +47,104 @@ if sys.platform == "win32":
             "creationflags": _subprocess_mod.CREATE_NO_WINDOW,
             "startupinfo": si,
         }
+
+    _SESSION_ID: int | None = None
+
+    def _win32_is_session_zero() -> bool:
+        """True when the process runs in Session 0 (background/service context).
+
+        Background processes (WMI-spawned, services, SSH sessions) run in
+        Session 0 where UI windows are invisible to the logged-in user.
+        """
+        global _SESSION_ID
+        if _SESSION_ID is None:
+            try:
+                pid = ctypes.windll.kernel32.GetCurrentProcessId()
+                sid = ctypes.c_ulong()
+                ctypes.windll.kernel32.ProcessIdToSessionId(pid, ctypes.byref(sid))
+                _SESSION_ID = sid.value
+            except Exception:
+                _SESSION_ID = -1
+        return _SESSION_ID == 0
+
+    async def _win32_spawn_in_user_session(shell_cmd: str) -> dict:
+        """Run shell_cmd in the interactive desktop session via a scheduled task.
+
+        Session 0 processes cannot create visible windows.  This writes the
+        command to a temp .cmd file and launches it through schtasks, which
+        targets the logged-in user's interactive desktop.
+        """
+        import os
+        import tempfile
+        import uuid
+
+        task_id = uuid.uuid4().hex[:8]
+        task_name = f"cm-{task_id}"
+        bat = os.path.join(tempfile.gettempdir(), f"{task_name}.cmd")
+
+        with open(bat, "w", encoding="utf-8") as f:
+            f.write(f"@echo off\r\n{shell_cmd}\r\n")
+
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                f'schtasks /Create /TN "{task_name}" /TR "{bat}" /SC ONCE /ST 00:00 /F',
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+                **_win32_asyncio_kwargs(),
+            )
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=5)
+            if proc.returncode != 0:
+                return {"ok": False, "error": f"schtasks create: {stderr.decode(errors='replace').strip()}"}
+
+            proc = await asyncio.create_subprocess_shell(
+                f'schtasks /Run /TN "{task_name}"',
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+                **_win32_asyncio_kwargs(),
+            )
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=5)
+            if proc.returncode != 0:
+                return {"ok": False, "error": f"schtasks run: {stderr.decode(errors='replace').strip()}"}
+
+            asyncio.ensure_future(_schtask_cleanup(task_name, bat))
+            return {"ok": True}
+        except Exception as exc:
+            try:
+                os.unlink(bat)
+            except Exception:
+                pass
+            return {"ok": False, "error": str(exc)}
+
+    async def _schtask_cleanup(task_name: str, bat_path: str) -> None:
+        import os
+        await asyncio.sleep(5)
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                f'schtasks /Delete /TN "{task_name}" /F',
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+                **_win32_asyncio_kwargs(),
+            )
+            await asyncio.wait_for(proc.communicate(), timeout=5)
+        except Exception:
+            pass
+        try:
+            os.unlink(bat_path)
+        except Exception:
+            pass
+
 else:
     def _win32_kwargs() -> dict:
         return {}
 
     def _win32_asyncio_kwargs() -> dict:
         return {}
+
+    def _win32_is_session_zero() -> bool:
+        return False
+
+    async def _win32_spawn_in_user_session(shell_cmd: str) -> dict:
+        return {"ok": False, "error": "Not Windows"}
 
 
 async def run_with_timeout(

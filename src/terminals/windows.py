@@ -11,7 +11,7 @@ import base64
 import shutil
 
 from .base import TerminalAdapter
-from ..subprocess_utils import _win32_asyncio_kwargs
+from ..subprocess_utils import _win32_asyncio_kwargs, _win32_is_session_zero, _win32_spawn_in_user_session
 from ..tracking import tl
 
 
@@ -43,6 +43,8 @@ def _wt_shell() -> str:
 
 
 async def _spawn_shell(shell_cmd: str) -> dict:
+    if _win32_is_session_zero():
+        return await _win32_spawn_in_user_session(shell_cmd)
     try:
         proc = await asyncio.create_subprocess_shell(
             shell_cmd,

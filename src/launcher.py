@@ -392,9 +392,12 @@ async def _launch_windows(command: str) -> dict:
     sidesteps every quoting and parsing layer.
     """
     import base64
+    from .subprocess_utils import _win32_is_session_zero, _win32_spawn_in_user_session
     encoded = base64.b64encode(command.encode("utf-16-le")).decode("ascii")
     host = "pwsh" if (shutil.which("pwsh") or shutil.which("pwsh.exe")) else "powershell"
     full_cmd = f'cmd /c start {host} -NoExit -EncodedCommand {encoded}'
+    if _win32_is_session_zero():
+        return await _win32_spawn_in_user_session(full_cmd)
     try:
         proc = await asyncio.create_subprocess_shell(
             full_cmd,
