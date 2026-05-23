@@ -1,8 +1,8 @@
 {
-  "version": 209,
-  "commit": "1c05562",
-  "commit_full": "1c05562fb2504dd49a049ab3b5f8d22b8aa1f0dc",
+  "version": 211,
+  "commit": "e6461c0",
+  "commit_full": "e6461c0f013dd7c5de9307e0bdeaa7a76a60131e",
   "branch": "master",
-  "date": "2026-05-22T18:17:17-03:00",
-  "message": "fix(tmux): add session_name field, dedup guard, and refresh fallback"
+  "date": "2026-05-23T12:08:30-03:00",
+  "message": "fix(web): dedup tmux chips on session cards + add copy-attach-command button"
 }
