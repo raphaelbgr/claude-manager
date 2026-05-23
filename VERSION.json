@@ -1,8 +1,8 @@
 {
-  "version": 213,
-  "commit": "a7858a2",
-  "commit_full": "a7858a21eb80736a5f2c7e82fc613fa0c2ca1dda",
+  "version": 215,
+  "commit": "1ce52c0",
+  "commit_full": "1ce52c05740332a8008e536dd8ca9283572ef85b",
   "branch": "master",
-  "date": "2026-05-23T12:18:41-03:00",
-  "message": "fix(win32): spawn terminal in interactive session via schtask from Session 0"
+  "date": "2026-05-23T12:22:27-03:00",
+  "message": "fix(win32): add logging to Session 0 schtask path for tracing"
 }
