@@ -8,7 +8,10 @@ worry about orphaned ssh or python3 - workers accumulating memory.
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
+
+log = logging.getLogger("claude_manager.subprocess_utils")
 
 
 # ---------------------------------------------------------------------------
@@ -65,6 +68,7 @@ if sys.platform == "win32":
                 _SESSION_ID = sid.value
             except Exception:
                 _SESSION_ID = -1
+            log.info("win32 session id: %d (session_zero=%s)", _SESSION_ID, _SESSION_ID == 0)
         return _SESSION_ID == 0
 
     async def _win32_spawn_in_user_session(shell_cmd: str) -> dict:
@@ -86,6 +90,7 @@ if sys.platform == "win32":
             f.write(f"@echo off\r\n{shell_cmd}\r\n")
 
         try:
+            log.info("session_zero: creating schtask %s -> %s", task_name, bat)
             proc = await asyncio.create_subprocess_shell(
                 f'schtasks /Create /TN "{task_name}" /TR "{bat}" /SC ONCE /ST 00:00 /F',
                 stdout=asyncio.subprocess.DEVNULL,
@@ -94,8 +99,11 @@ if sys.platform == "win32":
             )
             _, stderr = await asyncio.wait_for(proc.communicate(), timeout=5)
             if proc.returncode != 0:
-                return {"ok": False, "error": f"schtasks create: {stderr.decode(errors='replace').strip()}"}
+                err = f"schtasks create: {stderr.decode(errors='replace').strip()}"
+                log.error("session_zero: %s", err)
+                return {"ok": False, "error": err}
 
+            log.info("session_zero: running schtask %s", task_name)
             proc = await asyncio.create_subprocess_shell(
                 f'schtasks /Run /TN "{task_name}"',
                 stdout=asyncio.subprocess.DEVNULL,
@@ -104,8 +112,11 @@ if sys.platform == "win32":
             )
             _, stderr = await asyncio.wait_for(proc.communicate(), timeout=5)
             if proc.returncode != 0:
-                return {"ok": False, "error": f"schtasks run: {stderr.decode(errors='replace').strip()}"}
+                err = f"schtasks run: {stderr.decode(errors='replace').strip()}"
+                log.error("session_zero: %s", err)
+                return {"ok": False, "error": err}
 
+            log.info("session_zero: schtask %s launched successfully", task_name)
             asyncio.ensure_future(_schtask_cleanup(task_name, bat))
             return {"ok": True}
         except Exception as exc:
