@@ -1,8 +1,8 @@
 {
-  "version": 217,
-  "commit": "f583558",
-  "commit_full": "f5835587342fd869463c82a3f9ca03fb6b3d503b",
+  "version": 219,
+  "commit": "554b90c",
+  "commit_full": "554b90cee5acefb5f3871a0c4c45d1c8dac74552",
   "branch": "master",
-  "date": "2026-06-07T18:39:34-03:00",
-  "message": "fix(web): mobile responsive \u00e2\u20ac\u201d stacked panels no longer split the fixed 100vh 50/50"
+  "date": "2026-06-07T19:00:25-03:00",
+  "message": "fix(web): mobile \u00e2\u20ac\u201d scroll the whole app shell so the fleet-status footer scrolls with content"
 }
