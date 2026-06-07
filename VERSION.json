@@ -1,8 +1,8 @@
 {
-  "version": 215,
-  "commit": "1ce52c0",
-  "commit_full": "1ce52c05740332a8008e536dd8ca9283572ef85b",
+  "version": 217,
+  "commit": "f583558",
+  "commit_full": "f5835587342fd869463c82a3f9ca03fb6b3d503b",
   "branch": "master",
-  "date": "2026-05-23T12:22:27-03:00",
-  "message": "fix(win32): add logging to Session 0 schtask path for tracing"
+  "date": "2026-06-07T18:39:34-03:00",
+  "message": "fix(web): mobile responsive \u00e2\u20ac\u201d stacked panels no longer split the fixed 100vh 50/50"
 }
