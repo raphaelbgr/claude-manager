@@ -172,8 +172,17 @@
     }
 
     @media (max-width: 768px) {
-      .main-panels { flex-direction: column !important; }
-      .panel-sessions, .panel-tmux { width: 100% !important; min-width: 0 !important; }
+      /* Stacked panels must NOT split the fixed 100vh height 50/50 — that squished the
+         projects/sessions panel to ~1 row behind a tiny inner scrollbar. Size each panel
+         to its content and let the whole panel area scroll like a normal page. */
+      .main-panels { flex-direction: column !important; overflow-y: auto !important; overflow-x: hidden !important; }
+      .panel-sessions, .panel-tmux {
+        width: 100% !important; min-width: 0 !important;
+        flex: 0 0 auto !important;      /* content height, don't share the column 50/50 */
+        overflow: visible !important;
+      }
+      .panel-sessions { border-right: none !important; border-bottom: 1px solid #30363d !important; }
+      .panel-scroll { overflow-y: visible !important; flex: 0 0 auto !important; min-height: 0 !important; }
     }
 
     /* Session card action buttons — responsive row */
