@@ -392,8 +392,13 @@ class TestScanLocal:
         result = scan_local(claude_home=claude_home)
         assert result == []
 
-    def test_caps_at_20_sessions_per_project(self, tmp_path):
-        """At most 20 JSONL files per project should be returned."""
+    def test_returns_all_sessions_per_project(self, tmp_path):
+        """Every JSONL file in a project must be returned — no per-folder cap.
+
+        Regression guard: a previous `jsonl_files[:20]` cap silently dropped
+        older sessions, so folders with >20 sessions never showed them all in
+        the Project tab.
+        """
         claude_home = tmp_path / ".claude"
         proj = claude_home / "projects" / "-Users-rbgnr-git-big"
         proj.mkdir(parents=True)
@@ -407,7 +412,7 @@ class TestScanLocal:
         for i in range(25):
             (proj / f"sess{i:03d}.jsonl").write_text(line + "\n", encoding="utf-8")
         result = scan_local(claude_home=claude_home)
-        assert len(result) <= 20
+        assert len(result) == 25
 
     def test_unix_style_folder_decoded(self, mock_claude_home):
         result = scan_local(claude_home=mock_claude_home)

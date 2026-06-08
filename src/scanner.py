@@ -638,7 +638,7 @@ def scan_local(
 
     - Skips folders that don't look like encoded paths (no '-' at position 1
       for drive-style OR not starting with '-' for Unix-style).
-    - Reads at most 20 most-recent sessions per project folder.
+    - Reads every session per project folder, ordered most-recent first.
     - Cross-references ~/.claude/sessions/*.json for live PIDs via psutil.
     - Returns all sessions sorted by modified descending.
     """
@@ -680,13 +680,15 @@ def scan_local(
 
         project_path = decode_project_folder(folder_name)
 
-        # Collect JSONL files, sorted by mtime desc, cap at 20
+        # Collect JSONL files, ordered most-recent first. No per-folder cap:
+        # a cap silently dropped older sessions so the Project tab never
+        # showed them. The 4-layer scan cache keeps full scans cheap, so
+        # surfacing every session costs nothing on warm cycles.
         jsonl_files = list(entry.glob("*.jsonl"))
         if not jsonl_files:
             continue
 
         jsonl_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-        jsonl_files = jsonl_files[:20]
 
         for jf in jsonl_files:
             all_jsonl.append((jf, project_path, folder_name))
@@ -982,7 +984,7 @@ if projects_dir.is_dir():
         if not is_unix and not is_win:
             continue
         proj_path = decode(fn)
-        jsonls = sorted(entry.glob('*.jsonl'), key=lambda p: p.stat().st_mtime, reverse=True)[:20]
+        jsonls = sorted(entry.glob('*.jsonl'), key=lambda p: p.stat().st_mtime, reverse=True)
         for jf in jsonls:
             try:
                 stat = jf.stat()
