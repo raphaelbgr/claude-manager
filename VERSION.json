@@ -1,8 +1,8 @@
 {
-  "version": 219,
-  "commit": "554b90c",
-  "commit_full": "554b90cee5acefb5f3871a0c4c45d1c8dac74552",
+  "version": 221,
+  "commit": "44f4ec8",
+  "commit_full": "44f4ec84223fe426a1f60cba2bbb4a1eadaa212e",
   "branch": "master",
-  "date": "2026-06-07T19:00:25-03:00",
-  "message": "fix(web): mobile \u00e2\u20ac\u201d scroll the whole app shell so the fleet-status footer scrolls with content"
+  "date": "2026-06-07T21:20:24-03:00",
+  "message": "fix(scanner): show all sessions per project \u00e2\u20ac\u201d remove the 20-per-folder cap"
 }
